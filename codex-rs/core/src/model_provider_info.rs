@@ -28,9 +28,11 @@ const MAX_STREAM_MAX_RETRIES: u64 = 100;
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
+const GEMINI_PROVIDER_NAME: &str = "Gemini";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
+pub const GEMINI_PROVIDER_ID: &str = "gemini";
 
 /// Wire protocol that the provider speaks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
@@ -39,6 +41,8 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// Google Gemini JSON API via `:generateContent` endpoints.
+    Gemini,
 }
 
 impl<'de> Deserialize<'de> for WireApi {
@@ -49,8 +53,12 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
+            "gemini" => Ok(Self::Gemini),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "gemini"],
+            )),
         }
     }
 }
@@ -263,6 +271,68 @@ impl ModelProviderInfo {
     pub fn is_openai(&self) -> bool {
         self.name == OPENAI_PROVIDER_NAME
     }
+
+    pub fn is_gemini(&self) -> bool {
+        self.name == GEMINI_PROVIDER_NAME
+    }
+
+    /// Apply this provider's HTTP headers (both static and env-based) to a
+    /// `reqwest::RequestBuilder`. This is used by the Gemini streaming path
+    /// which builds its own requests outside of the `codex-api` layer.
+    pub fn apply_http_headers(&self, mut builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(extra) = &self.http_headers {
+            for (k, v) in extra {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+        }
+        if let Some(env_headers) = &self.env_http_headers {
+            for (header, env_var) in env_headers {
+                if let Ok(val) = std::env::var(env_var) {
+                    if !val.trim().is_empty() {
+                        builder = builder.header(header.as_str(), val.as_str());
+                    }
+                }
+            }
+        }
+        builder
+    }
+
+    pub fn create_gemini_provider() -> ModelProviderInfo {
+        let base_url = std::env::var("GEMINI_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
+
+        ModelProviderInfo {
+            name: GEMINI_PROVIDER_NAME.into(),
+            base_url: Some(base_url),
+            env_key: Some("GEMINI_API_KEY".into()),
+            env_key_instructions: Some(
+                "Get a Gemini API key at https://aistudio.google.com/apikey and set GEMINI_API_KEY."
+                    .into(),
+            ),
+            experimental_bearer_token: None,
+            wire_api: WireApi::Gemini,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: Some(
+                [
+                    (
+                        "X-Goog-Api-Key".to_string(),
+                        "GEMINI_API_KEY".to_string(),
+                    ),
+                    ("Cookie".to_string(), "GEMINI_COOKIE".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            request_max_retries: Some(3),
+            stream_max_retries: Some(3),
+            stream_idle_timeout_ms: Some(300_000),
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
 }
 
 pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;
@@ -281,6 +351,10 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     // `model_providers` in config.toml to add their own providers.
     [
         ("openai", P::create_openai_provider()),
+        (
+            GEMINI_PROVIDER_ID,
+            P::create_gemini_provider(),
+        ),
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),

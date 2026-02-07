@@ -195,6 +195,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     };
     let prior_user_json = serde_json::to_value(&prior_user).unwrap();
     writeln!(
@@ -217,6 +218,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     };
     let prior_system_json = serde_json::to_value(&prior_system).unwrap();
     writeln!(
@@ -239,6 +241,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         }],
         end_turn: None,
         phase: Some(MessagePhase::Commentary),
+        thought_signature: None,
     };
     let prior_item_json = serde_json::to_value(&prior_item).unwrap();
     writeln!(
@@ -1298,6 +1301,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     });
     prompt.input.push(ResponseItem::WebSearchCall {
         id: Some("web-search-id".into()),
@@ -1312,6 +1316,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         name: "do_thing".into(),
         arguments: "{}".into(),
         call_id: "function-call-id".into(),
+        thought_signature: None,
     });
     prompt.input.push(ResponseItem::FunctionCallOutput {
         call_id: "function-call-id".into(),

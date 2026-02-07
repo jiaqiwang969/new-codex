@@ -237,6 +237,7 @@ pub(crate) async fn exit_review_mode(
                 content: vec![ContentItem::InputText { text: user_message }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             }],
         )
         .await;
@@ -257,6 +258,7 @@ pub(crate) async fn exit_review_mode(
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         )
         .await;

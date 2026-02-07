@@ -305,6 +305,9 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the status-line setup UI without changing config.
     StatusLineSetupCancelled,
+
+    /// Trigger the next Ralph Loop iteration after a delay.
+    RalphLoopDelayedContinue,
 }
 
 /// The exit strategy requested by the UI layer.

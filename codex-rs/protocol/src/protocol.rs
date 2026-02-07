@@ -303,6 +303,35 @@ pub enum Op {
     /// Request to shut down codex instance.
     Shutdown,
 
+    /// Set reference images for image-capable models.
+    ///
+    /// Paths may be absolute or relative to the session `cwd`. The core
+    /// session will resolve them and convert each path into an image
+    /// data URL suitable for inlineData image models.
+    SetReferenceImages {
+        /// Image paths to treat as reference images, in user-specified order.
+        paths: Vec<PathBuf>,
+    },
+
+    /// Clear any active reference images so subsequent turns use only
+    /// per-turn heuristics (such as explicit user images or the last
+    /// assistant image) when selecting inlineData.
+    ClearReferenceImages,
+
+    /// Set the image generation quality (output size) for Gemini image models.
+    /// Valid values: "1K" (1024x1024), "2K" (2048x2048), "4K" (4096x4096).
+    SetImageQuality {
+        /// Image size string (e.g., "1K", "2K", "4K")
+        size: String,
+    },
+
+    /// Set the aspect ratio for Gemini image generation.
+    /// Valid values: "1:1", "16:9", "9:16", "4:3", "3:4".
+    SetAspectRatio {
+        /// Aspect ratio string (e.g., "1:1", "16:9")
+        ratio: String,
+    },
+
     /// Execute a user-initiated one-off shell command (triggered by "!cmd").
     ///
     /// The command string is executed using the user's default shell and may
@@ -1728,6 +1757,7 @@ impl From<CompactedItem> for ResponseItem {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 }

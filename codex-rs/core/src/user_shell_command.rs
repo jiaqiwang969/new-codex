@@ -64,6 +64,7 @@ pub fn user_shell_command_record_item(
         }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     }
 }
 

@@ -2269,6 +2269,9 @@ impl App {
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }
+            AppEvent::RalphLoopDelayedContinue => {
+                self.chat_widget.handle_ralph_loop_delayed_continue();
+            }
         }
         Ok(AppRunControl::Continue)
     }

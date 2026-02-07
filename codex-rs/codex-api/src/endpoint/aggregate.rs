@@ -92,6 +92,7 @@ impl Stream for AggregatedStream {
                             }],
                             end_turn: None,
                             phase: None,
+                            thought_signature: None,
                         };
                         this.pending
                             .push_back(ResponseEvent::OutputItemDone(aggregated_message));

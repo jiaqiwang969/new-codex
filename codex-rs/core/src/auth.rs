@@ -306,6 +306,7 @@ impl CodexAuth {
         let auth_dot_json = AuthDotJson {
             auth_mode: Some(ApiAuthMode::Chatgpt),
             openai_api_key: None,
+            gemini_api_key: None,
             tokens: Some(TokenData {
                 id_token: Default::default(),
                 access_token: "Access Token".to_string(),
@@ -371,6 +372,29 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+pub const GEMINI_API_KEY_ENV_VAR: &str = "GEMINI_API_KEY";
+
+/// Read the Gemini API key from the `GEMINI_API_KEY` environment variable.
+pub fn read_gemini_api_key_from_env() -> Option<String> {
+    env::var(GEMINI_API_KEY_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Read the Gemini API key from auth.json, falling back to the OpenAI key.
+pub fn read_gemini_api_key_from_auth_json(
+    codex_home: &Path,
+    store_mode: AuthCredentialsStoreMode,
+) -> Option<String> {
+    let storage = create_auth_storage(codex_home.to_path_buf(), store_mode);
+    let auth = storage.load().ok()??;
+    // Prefer a dedicated gemini_api_key if present, otherwise fall back to openai_api_key.
+    auth.gemini_api_key
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| auth.openai_api_key.filter(|k| !k.trim().is_empty()))
+}
+
 /// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
 /// if a file was removed, `Ok(false)` if no auth file was present.
 pub fn logout(
@@ -390,6 +414,7 @@ pub fn login_with_api_key(
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(ApiAuthMode::ApiKey),
         openai_api_key: Some(api_key.to_string()),
+        gemini_api_key: None,
         tokens: None,
         last_refresh: None,
     };
@@ -739,6 +764,7 @@ impl AuthDotJson {
         Self {
             auth_mode: Some(ApiAuthMode::ChatgptAuthTokens),
             openai_api_key: None,
+            gemini_api_key: None,
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
         }
@@ -1394,6 +1420,7 @@ mod tests {
             AuthDotJson {
                 auth_mode: None,
                 openai_api_key: None,
+                gemini_api_key: None,
                 tokens: Some(TokenData {
                     id_token: IdTokenInfo {
                         email: Some("user@example.com".to_string()),
@@ -1438,6 +1465,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             auth_mode: Some(ApiAuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
+            gemini_api_key: None,
             tokens: None,
             last_refresh: None,
         };

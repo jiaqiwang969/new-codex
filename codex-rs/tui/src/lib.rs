@@ -95,6 +95,8 @@ mod selection_list;
 mod session_log;
 mod shimmer;
 mod skills_helpers;
+mod ralph_loop;
+mod batch_image;
 mod slash_command;
 mod status;
 mod status_indicator_widget;

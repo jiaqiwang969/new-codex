@@ -1372,6 +1372,14 @@
             "role": {
               "type": "string"
             },
+            "thought_signature": {
+              "description": "Gemini thought signature for this message (preserved for round-tripping). Never serialized on the protocol wire — only used internally so Gemini integrations can preserve and replay thoughtSignature fields between turns.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "writeOnly": true
+            },
             "type": {
               "enum": [
                 "message"
@@ -1488,6 +1496,13 @@
             },
             "name": {
               "type": "string"
+            },
+            "thought_signature": {
+              "description": "Gemini thought signature for this function call (preserved for round-tripping).",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "enum": [

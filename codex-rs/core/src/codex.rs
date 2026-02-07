@@ -680,6 +680,30 @@ impl SessionConfiguration {
         if let Some(cwd) = updates.cwd.clone() {
             next_configuration.cwd = cwd;
         }
+
+        // Auto-switch provider when the model family changes between
+        // Gemini and non-Gemini.  This ensures that `/model` switches
+        // at runtime route requests to the correct API endpoint.
+        let new_model = next_configuration.collaboration_mode.model();
+        let is_gemini_model = new_model.starts_with("gemini-");
+        let is_gemini_provider =
+            next_configuration.provider.wire_api == crate::model_provider_info::WireApi::Gemini;
+
+        if is_gemini_model && !is_gemini_provider {
+            // Switching TO a Gemini model: use the built-in Gemini provider.
+            let providers = crate::model_provider_info::built_in_model_providers();
+            if let Some(gemini) =
+                providers.get(crate::model_provider_info::GEMINI_PROVIDER_ID)
+            {
+                next_configuration.provider = gemini.clone();
+            }
+        } else if !is_gemini_model && is_gemini_provider {
+            // Switching FROM a Gemini model back to a non-Gemini model:
+            // restore the user's explicitly configured provider (before auto-switching).
+            next_configuration.provider =
+                next_configuration.original_config_do_not_use.user_configured_provider.clone();
+        }
+
         Ok(next_configuration)
     }
 }
@@ -2071,6 +2095,7 @@ impl Session {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
 
         self.record_conversation_items(ctx, &[item]).await;
@@ -2803,6 +2828,18 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::Review { review_request } => {
                 handlers::review(&sess, &config, sub.id.clone(), review_request).await;
             }
+            Op::SetReferenceImages { paths } => {
+                handlers::set_reference_images(&sess, paths).await;
+            }
+            Op::ClearReferenceImages => {
+                handlers::clear_reference_images(&sess).await;
+            }
+            Op::SetImageQuality { size } => {
+                handlers::set_image_quality(&sess, &size).await;
+            }
+            Op::SetAspectRatio { ratio } => {
+                handlers::set_aspect_ratio(&sess, &ratio).await;
+            }
             _ => {} // Ignore unknown ops; enum is non_exhaustive to allow extensions.
         }
     }
@@ -3496,6 +3533,89 @@ mod handlers {
             }
         }
     }
+
+    pub async fn set_reference_images(sess: &Arc<Session>, paths: Vec<std::path::PathBuf>) {
+        use codex_protocol::models::ContentItem;
+        use codex_protocol::models::ResponseInputItem;
+        use codex_protocol::user_input::UserInput;
+
+        let cwd = {
+            let state = sess.state.lock().await;
+            state.session_configuration.cwd.clone()
+        };
+
+        let mut images: Vec<String> = Vec::new();
+
+        for path in paths {
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
+
+            let input = UserInput::LocalImage { path: absolute };
+            let item = ResponseInputItem::from(vec![input]);
+            if let ResponseInputItem::Message { content, .. } = item {
+                for entry in content {
+                    if let ContentItem::InputImage { image_url } = entry {
+                        if !image_url.trim().is_empty() {
+                            images.push(image_url);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut state = sess.state.lock().await;
+        state.set_reference_images(images);
+    }
+
+    pub async fn clear_reference_images(sess: &Arc<Session>) {
+        let mut state = sess.state.lock().await;
+        state.clear_reference_images();
+    }
+
+    pub async fn set_image_quality(sess: &Arc<Session>, size: &str) {
+        use crate::gemini_types::GeminiImageSize;
+
+        let parsed_size = match size.to_uppercase().as_str() {
+            "1K" => Some(GeminiImageSize::Size1K),
+            "2K" => Some(GeminiImageSize::Size2K),
+            "4K" => Some(GeminiImageSize::Size4K),
+            _ => {
+                tracing::warn!(
+                    "Invalid image quality '{}'. Valid options: 1K, 2K, 4K",
+                    size
+                );
+                return;
+            }
+        };
+
+        let mut state = sess.state.lock().await;
+        state.set_image_size(parsed_size);
+    }
+
+    pub async fn set_aspect_ratio(sess: &Arc<Session>, ratio: &str) {
+        use crate::gemini_types::GeminiAspectRatio;
+
+        let parsed_ratio = match ratio {
+            "1:1" => Some(GeminiAspectRatio::Square),
+            "16:9" => Some(GeminiAspectRatio::Landscape),
+            "9:16" => Some(GeminiAspectRatio::Portrait),
+            "4:3" => Some(GeminiAspectRatio::Standard),
+            "3:4" => Some(GeminiAspectRatio::StandardPortrait),
+            _ => {
+                tracing::warn!(
+                    "Invalid aspect ratio '{}'. Valid options: 1:1, 16:9, 9:16, 4:3, 3:4",
+                    ratio
+                );
+                return;
+            }
+        };
+
+        let mut state = sess.state.lock().await;
+        state.set_aspect_ratio(parsed_ratio);
+    }
 }
 
 /// Spawn a review thread using the given prompt.
@@ -3797,7 +3917,12 @@ pub(crate) async fn run_turn(
     let turn_metadata_header = turn_context.resolve_turn_metadata_header().await;
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
-    let mut client_session = sess.services.model_client.new_session();
+    // Use the turn-scoped provider so that runtime `/model` switches between
+    // GPT (Responses API) and Gemini route to the correct endpoint.
+    let mut client_session = sess
+        .services
+        .model_client
+        .new_session_with_provider(turn_context.provider.clone());
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -4103,6 +4228,20 @@ async fn run_sampling_request(
 
     let base_instructions = sess.get_base_instructions().await;
 
+    let (persisted_reference_images, image_size, aspect_ratio) = {
+        let state = sess.state.lock().await;
+        (
+            state.reference_images().to_vec(),
+            state.image_size(),
+            state.aspect_ratio(),
+        )
+    };
+    let reference_images = if persisted_reference_images.is_empty() {
+        derive_reference_images_for_turn(&input)
+    } else {
+        persisted_reference_images
+    };
+
     let prompt = Prompt {
         input,
         tools: router.specs(),
@@ -4110,6 +4249,9 @@ async fn run_sampling_request(
         base_instructions,
         personality: turn_context.personality,
         output_schema: turn_context.final_output_json_schema.clone(),
+        reference_images,
+        image_size,
+        aspect_ratio,
     };
 
     let mut retries = 0;
@@ -4909,6 +5051,54 @@ pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -
     })
 }
 
+/// When no persisted reference images are set, derive them from the
+/// conversation history so image-capable models still receive context.
+///
+/// Priority:
+/// 1. Explicit images attached to the last user message in this turn.
+/// 2. The most recent image from an assistant message (e.g. a generated image).
+/// 3. Empty — no images to attach.
+fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
+    // Prefer explicit images attached to the last user message in this turn.
+    let last_user_index = input
+        .iter()
+        .rposition(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"));
+
+    if let Some(index) = last_user_index {
+        if let ResponseItem::Message { content, .. } = &input[index] {
+            let mut urls: Vec<String> = Vec::new();
+            for entry in content {
+                if let ContentItem::InputImage { image_url } = entry {
+                    if !image_url.trim().is_empty() {
+                        urls.push(image_url.clone());
+                    }
+                }
+            }
+            if !urls.is_empty() {
+                return urls;
+            }
+        }
+    }
+
+    // Otherwise, fall back to the last assistant message that carried an image.
+    for item in input.iter().rev() {
+        if let ResponseItem::Message { role, content, .. } = item {
+            if role != "assistant" {
+                continue;
+            }
+            for entry in content.iter().rev() {
+                if let ContentItem::InputImage { image_url } = entry {
+                    if !image_url.trim().is_empty() {
+                        return vec![image_url.clone()];
+                    }
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
 #[cfg(test)]
@@ -4981,6 +5171,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 
@@ -5339,6 +5530,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -5348,6 +5540,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         sess.record_into_history(&turn_1, tc.as_ref()).await;
@@ -5361,6 +5554,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -5370,6 +5564,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         sess.record_into_history(&turn_2, tc.as_ref()).await;
@@ -5403,6 +5598,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }];
         sess.record_into_history(&turn_1, tc.as_ref()).await;
 
@@ -6269,6 +6465,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         assert!(
             history.raw_items().iter().any(|item| item == &expected),
@@ -6508,6 +6705,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         live_history.record_items(std::iter::once(&user1), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user1.clone()));
@@ -6520,6 +6718,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         live_history.record_items(std::iter::once(&assistant1), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant1.clone()));
@@ -6546,6 +6745,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         live_history.record_items(std::iter::once(&user2), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user2.clone()));
@@ -6558,6 +6758,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         live_history.record_items(std::iter::once(&assistant2), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant2.clone()));
@@ -6584,6 +6785,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         live_history.record_items(std::iter::once(&user3), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user3));
@@ -6596,6 +6798,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         live_history.record_items(std::iter::once(&assistant3), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant3));

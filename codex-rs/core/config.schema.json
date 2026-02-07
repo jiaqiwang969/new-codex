@@ -1142,6 +1142,13 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "Google Gemini JSON API via `:generateContent` endpoints.",
+          "enum": [
+            "gemini"
+          ],
+          "type": "string"
         }
       ]
     }

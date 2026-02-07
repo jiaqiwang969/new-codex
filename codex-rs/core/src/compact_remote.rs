@@ -88,6 +88,9 @@ async fn run_remote_compact_task_inner_impl(
         base_instructions,
         personality: turn_context.personality,
         output_schema: None,
+        reference_images: Vec::new(),
+        image_size: None,
+        aspect_ratio: None,
     };
 
     let mut new_history = sess

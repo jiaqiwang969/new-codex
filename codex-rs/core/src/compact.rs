@@ -350,6 +350,7 @@ fn build_compacted_history_with_limit(
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         });
     }
 
@@ -365,6 +366,7 @@ fn build_compacted_history_with_limit(
         content: vec![ContentItem::InputText { text: summary_text }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     });
 
     history
@@ -464,6 +466,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: Some("user".to_string()),
@@ -473,6 +476,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Other,
         ];
@@ -494,6 +498,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -503,6 +508,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -512,6 +518,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
         ];
 
@@ -595,6 +602,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -642,6 +650,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
 

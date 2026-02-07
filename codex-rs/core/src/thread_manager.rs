@@ -538,6 +538,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
     fn assistant_msg(text: &str) -> ResponseItem {
@@ -549,6 +550,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 
@@ -573,6 +575,7 @@ mod tests {
                 call_id: "c1".to_string(),
                 name: "tool".to_string(),
                 arguments: "{}".to_string(),
+                thought_signature: None,
             },
             assistant_msg("a4"),
         ];

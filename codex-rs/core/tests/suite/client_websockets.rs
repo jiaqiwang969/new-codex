@@ -623,6 +623,7 @@ fn message_item(text: &str) -> ResponseItem {
         content: vec![ContentItem::InputText { text: text.into() }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     }
 }
 

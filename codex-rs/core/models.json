@@ -124,7 +124,7 @@
         }
       ],
       "shell_type": "shell_command",
-      "visibility": "list",
+      "visibility": "hide",
       "minimal_client_version": "0.62.0",
       "supported_in_api": true,
       "upgrade": {
@@ -204,7 +204,7 @@
         }
       ],
       "shell_type": "shell_command",
-      "visibility": "list",
+      "visibility": "hide",
       "minimal_client_version": "0.60.0",
       "supported_in_api": true,
       "upgrade": {
