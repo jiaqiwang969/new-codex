@@ -128,6 +128,7 @@ mod tests {
     use codex_api::TransportError;
     use http::HeaderMap;
     use http::StatusCode;
+    use std::collections::HashMap;
 
     #[test]
     fn map_api_error_maps_model_cap_headers() {
@@ -172,6 +173,33 @@ mod tests {
         assert_eq!(
             auth_provider.token.as_deref(),
             Some("xai-auth-key-from-auth-json")
+        );
+    }
+
+    #[test]
+    fn auth_provider_prefers_env_key_specific_auth_json_key_when_provider_env_key_is_missing() {
+        const TEST_ENV_KEY: &str = "CODEX_TEST_PROVIDER_KEY_DO_NOT_SET";
+        // SAFETY: tests in this module run in-process and this key is unique to this test.
+        unsafe {
+            std::env::remove_var(TEST_ENV_KEY);
+        }
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.env_key = Some(TEST_ENV_KEY.to_string());
+        provider.env_key_instructions = Some("set the test key".to_string());
+
+        let auth = Some(CodexAuth::from_api_key_and_env_keys_for_testing(
+            "openai-fallback-key",
+            HashMap::from([(
+                TEST_ENV_KEY.to_string(),
+                "provider-specific-key".to_string(),
+            )]),
+        ));
+        let auth_provider = auth_provider_from_auth(auth, &provider)
+            .expect("provider-specific auth fallback should work when env key is missing");
+
+        assert_eq!(
+            auth_provider.token.as_deref(),
+            Some("provider-specific-key")
         );
     }
 
@@ -227,6 +255,16 @@ pub(crate) fn auth_provider_from_auth(
         }
         Ok(None) => {}
         Err(env_err) => {
+            if let Some(env_key) = provider.env_key.as_deref()
+                && let Some(api_key) = auth
+                    .as_ref()
+                    .and_then(|auth| auth.api_key_for_env_key(env_key))
+            {
+                return Ok(CoreAuthProvider {
+                    token: Some(api_key.to_string()),
+                    account_id: None,
+                });
+            }
             if let Some(api_key) = auth.as_ref().and_then(|auth| auth.api_key()) {
                 // Allow auth.json API key fallback when provider env keys are
                 // unset, so custom providers can be configured via auth+config.

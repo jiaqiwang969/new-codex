@@ -419,10 +419,33 @@
       ],
       "type": "string"
     },
+    "ModelProviderAccount": {
+      "additionalProperties": false,
+      "description": "Serializable representation of an account entry within a provider.",
+      "properties": {
+        "base_url": {
+          "description": "Base URL for this account's OpenAI-compatible API endpoint.",
+          "type": "string"
+        },
+        "env_key": {
+          "description": "Environment variable that stores the API key for this account.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ModelProviderInfo": {
       "additionalProperties": false,
       "description": "Serializable representation of a provider definition.",
       "properties": {
+        "account_pool": {
+          "default": [],
+          "description": "Optional account pool for provider-local failover. Each account is a `(base_url, env_key)` pair.",
+          "items": {
+            "$ref": "#/definitions/ModelProviderAccount"
+          },
+          "type": "array"
+        },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"

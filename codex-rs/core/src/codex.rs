@@ -90,6 +90,7 @@ use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
+use toml_edit::value;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::error;
@@ -101,6 +102,7 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
+use crate::ModelProviderAccount;
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
 use crate::client::ModelClientSession;
@@ -112,6 +114,8 @@ use crate::config::Config;
 use crate::config::Constrained;
 use crate::config::ConstraintResult;
 use crate::config::GhostSnapshotConfig;
+use crate::config::edit::ConfigEdit;
+use crate::config::edit::ConfigEditsBuilder;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::config::types::McpServerConfig;
 use crate::config::types::ShellEnvironmentPolicy;
@@ -368,6 +372,7 @@ impl Codex {
             },
         };
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -595,6 +600,9 @@ impl TurnContext {
 #[derive(Clone)]
 pub(crate) struct SessionConfiguration {
     /// Provider identifier ("openai", "openrouter", ...).
+    provider_id: String,
+
+    /// Provider configuration.
     provider: ModelProviderInfo,
 
     collaboration_mode: CollaborationMode,
@@ -649,7 +657,7 @@ impl SessionConfiguration {
     fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
-            model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
+            model_provider_id: self.provider_id.clone(),
             approval_policy: self.approval_policy.value(),
             sandbox_policy: self.sandbox_policy.get().clone(),
             cwd: self.cwd.clone(),
@@ -682,6 +690,17 @@ impl SessionConfiguration {
         if let Some(cwd) = updates.cwd.clone() {
             next_configuration.cwd = cwd;
         }
+        if let (Some(provider_id), Some(provider)) = (
+            updates.model_provider_id.clone(),
+            updates.model_provider.clone(),
+        ) {
+            next_configuration.provider_id = provider_id;
+            next_configuration.provider = provider;
+            let mut updated_config = (*next_configuration.original_config_do_not_use).clone();
+            updated_config.model_provider_id = next_configuration.provider_id.clone();
+            updated_config.model_provider = next_configuration.provider.clone();
+            next_configuration.original_config_do_not_use = Arc::new(updated_config);
+        }
 
         // Auto-switch provider when the model family changes between
         // known provider families and default OpenAI-compatible models.
@@ -697,6 +716,7 @@ impl SessionConfiguration {
             if !provider_matches_builtin_family(&next_configuration.provider, target_provider_id) {
                 let providers = crate::model_provider_info::built_in_model_providers();
                 if let Some(provider) = providers.get(target_provider_id) {
+                    next_configuration.provider_id = target_provider_id.to_string();
                     next_configuration.provider = provider.clone();
                 }
             }
@@ -704,6 +724,10 @@ impl SessionConfiguration {
             // Switching FROM a family-specific provider back to a default
             // model family: restore the user's explicitly configured provider
             // (before auto-switching).
+            next_configuration.provider_id = next_configuration
+                .original_config_do_not_use
+                .model_provider_id
+                .clone();
             next_configuration.provider = next_configuration
                 .original_config_do_not_use
                 .user_configured_provider
@@ -747,6 +771,8 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
+    pub(crate) model_provider_id: Option<String>,
+    pub(crate) model_provider: Option<ModelProviderInfo>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
@@ -2996,6 +3022,7 @@ mod handlers {
                         reasoning_summary: Some(summary),
                         final_output_json_schema: Some(final_output_json_schema),
                         personality,
+                        ..Default::default()
                     },
                 )
             }
@@ -3831,7 +3858,7 @@ fn errors_to_info(errors: &[SkillError]) -> Vec<SkillErrorInfo> {
 ///
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
@@ -4015,7 +4042,12 @@ pub(crate) async fn run_turn(
         )
         .await
         {
-            Ok(sampling_request_output) => {
+            Ok(outcome) => {
+                let SamplingRequestOutcome {
+                    result: sampling_request_output,
+                    turn_context: updated_turn_context,
+                } = outcome;
+                turn_context = updated_turn_context;
                 let SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -4105,6 +4137,197 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
         run_inline_auto_compact_task(Arc::clone(sess), Arc::clone(turn_context)).await?;
     }
     Ok(())
+}
+
+fn should_switch_provider_account(err: &CodexErr, retries: u64, max_retries: u64) -> bool {
+    if matches!(err, CodexErr::EnvVar(_) | CodexErr::RetryLimit(_)) {
+        return true;
+    }
+    if let Some(status) = err.http_status_code_value()
+        && matches!(status, 401 | 403 | 429)
+    {
+        return true;
+    }
+    err.is_retryable() && retries >= max_retries
+}
+
+fn normalize_account_pool(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> Vec<ModelProviderAccount> {
+    if provider.account_pool.is_empty() {
+        return Vec::new();
+    }
+
+    let mut pool = Vec::new();
+    pool.extend(provider.account_pool.iter().cloned());
+    if let Some(current_account) = provider.current_account() {
+        pool.insert(0, current_account);
+    }
+
+    let mut seen = HashSet::new();
+    pool.into_iter()
+        .filter_map(|account| {
+            let base_url = account
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let env_key = account
+                .env_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let normalized = ModelProviderAccount { base_url, env_key };
+            if normalized.base_url.is_none() || normalized.env_key.is_none() {
+                warn!(
+                    "Skipping account entry for provider {provider_id}: missing base_url or env_key"
+                );
+                None
+            } else if seen.insert(normalized.clone()) {
+                Some(normalized)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn next_account_from_pool(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+    attempted_accounts: &mut HashSet<ModelProviderAccount>,
+) -> Option<ModelProviderAccount> {
+    let pool = normalize_account_pool(provider_id, provider);
+    let pool_len = pool.len();
+    if pool_len == 0 {
+        return None;
+    }
+
+    let current_account = provider.current_account();
+    let start_index = current_account
+        .as_ref()
+        .and_then(|account| pool.iter().position(|item| item == account))
+        .map(|index| (index + 1) % pool_len)
+        .unwrap_or(0);
+
+    for offset in 0..pool_len {
+        let index = (start_index + offset) % pool_len;
+        let account = pool[index].clone();
+        if attempted_accounts.insert(account.clone()) {
+            return Some(account);
+        }
+    }
+
+    None
+}
+
+async fn persist_provider_account_selection(
+    config: &Config,
+    provider_id: &str,
+    account: &ModelProviderAccount,
+) {
+    let mut edits = Vec::new();
+    if let Some(base_url) = &account.base_url {
+        edits.push(ConfigEdit::SetPath {
+            segments: vec![
+                "model_providers".to_string(),
+                provider_id.to_string(),
+                "base_url".to_string(),
+            ],
+            value: value(base_url.to_string()),
+        });
+    }
+    if let Some(env_key) = &account.env_key {
+        edits.push(ConfigEdit::SetPath {
+            segments: vec![
+                "model_providers".to_string(),
+                provider_id.to_string(),
+                "env_key".to_string(),
+            ],
+            value: value(env_key.to_string()),
+        });
+    }
+
+    if edits.is_empty() {
+        return;
+    }
+
+    if let Err(err) = ConfigEditsBuilder::new(&config.codex_home)
+        .with_edits(edits)
+        .apply()
+        .await
+    {
+        warn!("failed to persist account switch for provider {provider_id}: {err}");
+    }
+}
+
+async fn maybe_switch_provider_account(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    attempted_accounts: &mut HashSet<ModelProviderAccount>,
+    err: &CodexErr,
+    retries: u64,
+    max_retries: u64,
+) -> Option<Arc<TurnContext>> {
+    if !should_switch_provider_account(err, retries, max_retries) {
+        return None;
+    }
+
+    let (provider_id, provider) = {
+        let state = sess.state.lock().await;
+        (
+            state.session_configuration.provider_id.clone(),
+            state.session_configuration.provider.clone(),
+        )
+    };
+    let next_account = next_account_from_pool(provider_id.as_str(), &provider, attempted_accounts)?;
+    let next_provider = provider.with_account(&next_account);
+
+    if let Err(update_err) = sess
+        .update_settings(SessionSettingsUpdate {
+            model_provider_id: Some(provider_id.clone()),
+            model_provider: Some(next_provider),
+            ..Default::default()
+        })
+        .await
+    {
+        warn!("failed to switch provider account for {provider_id}: {update_err}");
+        return None;
+    }
+
+    let session_configuration = {
+        let state = sess.state.lock().await;
+        state.session_configuration.clone()
+    };
+    let updated_context = sess
+        .new_turn_from_configuration(
+            turn_context.sub_id.clone(),
+            session_configuration,
+            Some(turn_context.final_output_json_schema.clone()),
+            false,
+        )
+        .await;
+
+    persist_provider_account_selection(
+        turn_context.config.as_ref(),
+        provider_id.as_str(),
+        &next_account,
+    )
+    .await;
+    let account_base_url = next_account
+        .base_url
+        .clone()
+        .unwrap_or_else(|| "<default>".to_string());
+    sess.notify_background_event(
+        updated_context.as_ref(),
+        format!("Switched provider account for {provider_id} to {account_base_url} after {err}"),
+    )
+    .await;
+
+    Some(updated_context)
 }
 
 fn filter_connectors_for_input(
@@ -4216,14 +4439,14 @@ struct SamplingRequestToolSelection<'a> {
 )]
 async fn run_sampling_request(
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    mut turn_context: Arc<TurnContext>,
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
     input: Vec<ResponseItem>,
     tool_selection: SamplingRequestToolSelection<'_>,
     cancellation_token: CancellationToken,
-) -> CodexResult<SamplingRequestResult> {
+) -> CodexResult<SamplingRequestOutcome> {
     let mut mcp_tools = sess
         .services
         .mcp_connection_manager
@@ -4288,6 +4511,13 @@ async fn run_sampling_request(
     };
 
     let mut retries = 0;
+    let mut attempted_accounts = {
+        let mut attempted = HashSet::new();
+        if let Some(account) = turn_context.provider.current_account() {
+            attempted.insert(account);
+        }
+        attempted
+    };
     loop {
         let err = match try_run_sampling_request(
             Arc::clone(&router),
@@ -4302,7 +4532,10 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
-                return Ok(output);
+                return Ok(SamplingRequestOutcome {
+                    result: output,
+                    turn_context,
+                });
             }
             Err(CodexErr::ContextWindowExceeded) => {
                 sess.set_total_tokens_full(&turn_context).await;
@@ -4318,12 +4551,31 @@ async fn run_sampling_request(
             Err(err) => err,
         };
 
+        let max_retries = turn_context.provider.stream_max_retries();
+        if let Some(updated_context) = maybe_switch_provider_account(
+            &sess,
+            &turn_context,
+            &mut attempted_accounts,
+            &err,
+            retries,
+            max_retries,
+        )
+        .await
+        {
+            turn_context = updated_context;
+            *client_session = sess
+                .services
+                .model_client
+                .new_session_with_provider(turn_context.provider.clone());
+            retries = 0;
+            continue;
+        }
+
         if !err.is_retryable() {
             return Err(err);
         }
 
         // Use the configured provider-specific stream retry budget.
-        let max_retries = turn_context.provider.stream_max_retries();
         if retries >= max_retries
             && client_session.try_switch_fallback_transport(&turn_context.otel_manager)
         {
@@ -4364,6 +4616,12 @@ async fn run_sampling_request(
             return Err(err);
         }
     }
+}
+
+#[derive(Debug)]
+struct SamplingRequestOutcome {
+    result: SamplingRequestResult,
+    turn_context: Arc<TurnContext>,
 }
 
 #[derive(Debug)]
@@ -5232,6 +5490,93 @@ mod tests {
         }
     }
 
+    #[test]
+    fn normalize_account_pool_prefers_current_account_and_dedupes() {
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.base_url = Some("https://a.example/v1".to_string());
+        provider.env_key = Some("KEY_A".to_string());
+        provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://a.example/v1".to_string()),
+                env_key: Some("KEY_A".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://c.example/v1".to_string()),
+                env_key: Some("KEY_C".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("".to_string()),
+                env_key: Some("KEY_SKIP".to_string()),
+            },
+        ];
+
+        let normalized = normalize_account_pool("openai", &provider);
+        assert_eq!(
+            normalized,
+            vec![
+                ModelProviderAccount {
+                    base_url: Some("https://a.example/v1".to_string()),
+                    env_key: Some("KEY_A".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://b.example/v1".to_string()),
+                    env_key: Some("KEY_B".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://c.example/v1".to_string()),
+                    env_key: Some("KEY_C".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn next_account_from_pool_wraps_without_repeating_in_turn() {
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.base_url = Some("https://a.example/v1".to_string());
+        provider.env_key = Some("KEY_A".to_string());
+        provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://a.example/v1".to_string()),
+                env_key: Some("KEY_A".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://c.example/v1".to_string()),
+                env_key: Some("KEY_C".to_string()),
+            },
+        ];
+
+        let mut attempted = std::collections::HashSet::new();
+        attempted.insert(
+            provider
+                .current_account()
+                .expect("current account should be available"),
+        );
+
+        let first = next_account_from_pool("openai", &provider, &mut attempted)
+            .expect("second account should be selected first");
+        assert_eq!(first.env_key.as_deref(), Some("KEY_B"));
+
+        let second = next_account_from_pool("openai", &provider, &mut attempted)
+            .expect("third account should be selected next");
+        assert_eq!(second.env_key.as_deref(), Some("KEY_C"));
+
+        let third = next_account_from_pool("openai", &provider, &mut attempted);
+        assert_eq!(third, None);
+    }
+
     #[tokio::test]
     async fn apply_switches_to_grok_provider_for_namespaced_grok_model() {
         let (session, _) = make_session_and_context().await;
@@ -5951,6 +6296,7 @@ mod tests {
             },
         };
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -6034,6 +6380,7 @@ mod tests {
             },
         };
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -6308,6 +6655,7 @@ mod tests {
             },
         };
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -6440,6 +6788,7 @@ mod tests {
             },
         };
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,

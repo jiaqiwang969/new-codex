@@ -67,6 +67,16 @@ impl<'de> Deserialize<'de> for WireApi {
     }
 }
 
+/// Serializable representation of an account entry within a provider.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelProviderAccount {
+    /// Base URL for this account's OpenAI-compatible API endpoint.
+    pub base_url: Option<String>,
+    /// Environment variable that stores the API key for this account.
+    pub env_key: Option<String>,
+}
+
 /// Serializable representation of a provider definition.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -124,6 +134,11 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the Responses API WebSocket transport.
     #[serde(default)]
     pub supports_websockets: bool,
+
+    /// Optional account pool for provider-local failover. Each account is a
+    /// `(base_url, env_key)` pair.
+    #[serde(default)]
+    pub account_pool: Vec<ModelProviderAccount>,
 }
 
 impl ModelProviderInfo {
@@ -211,6 +226,33 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn current_account(&self) -> Option<ModelProviderAccount> {
+        let base_url = self
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let env_key = self
+            .env_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match (base_url, env_key) {
+            (Some(base_url), Some(env_key)) => Some(ModelProviderAccount {
+                base_url: Some(base_url.to_string()),
+                env_key: Some(env_key.to_string()),
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn with_account(&self, account: &ModelProviderAccount) -> Self {
+        let mut provider = self.clone();
+        provider.base_url = account.base_url.clone();
+        provider.env_key = account.env_key.clone();
+        provider
+    }
+
     /// Effective maximum number of request retries for this provider.
     pub fn request_max_retries(&self) -> u64 {
         self.request_max_retries
@@ -269,6 +311,7 @@ impl ModelProviderInfo {
             stream_idle_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
+            account_pool: Vec::new(),
         }
     }
 
@@ -346,6 +389,7 @@ impl ModelProviderInfo {
             stream_idle_timeout_ms: Some(300_000),
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         }
     }
 
@@ -372,6 +416,7 @@ impl ModelProviderInfo {
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         }
     }
 
@@ -396,6 +441,7 @@ impl ModelProviderInfo {
             stream_idle_timeout_ms: Some(300_000),
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         }
     }
 }
@@ -467,6 +513,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        account_pool: Vec::new(),
     }
 }
 
@@ -496,6 +543,7 @@ base_url = "http://localhost:11434/v1"
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -527,6 +575,7 @@ query_params = { api-version = "2025-04-01-preview" }
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -561,6 +610,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();

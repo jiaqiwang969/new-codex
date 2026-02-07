@@ -56,6 +56,11 @@ pub struct AuthDotJson {
     )]
     pub gemini_api_key: Option<String>,
 
+    /// Provider/API-key entries keyed by env var name (for example,
+    /// `XAI_API_KEY`, `OPENAI_API_KEY_token`, ...).
+    #[serde(default, flatten, skip_serializing_if = "HashMap::is_empty")]
+    pub provider_api_keys: HashMap<String, serde_json::Value>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<TokenData>,
 
@@ -359,6 +364,7 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("test-key".to_string()),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -380,6 +386,7 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("test-key".to_string()),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -403,6 +410,7 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: None,
         };
@@ -427,6 +435,7 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-ephemeral".to_string()),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -521,6 +530,7 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some(format!("{prefix}-api-key")),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: Some(TokenData {
                 id_token: id_token_with_prefix(prefix),
                 access_token: format!("{prefix}-access"),
@@ -543,6 +553,7 @@ mod tests {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test".to_string()),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: None,
         };
@@ -581,6 +592,7 @@ mod tests {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: None,
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: Some(TokenData {
                 id_token: Default::default(),
                 access_token: "access".to_string(),

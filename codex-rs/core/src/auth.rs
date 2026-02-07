@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde::Serialize;
 #[cfg(test)]
 use serial_test::serial;
+use std::collections::HashMap;
 use std::env;
 use std::fmt::Debug;
 use std::path::Path;
@@ -68,6 +69,7 @@ pub enum CodexAuth {
 #[derive(Debug, Clone)]
 pub struct ApiKeyAuth {
     api_key: String,
+    api_keys_by_env_var: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +169,10 @@ impl CodexAuth {
             let Some(api_key) = auth_dot_json.openai_api_key.as_deref() else {
                 return Err(std::io::Error::other("API key auth is missing a key."));
             };
-            return Ok(CodexAuth::from_api_key_with_client(api_key, client));
+            return Ok(CodexAuth::ApiKey(ApiKeyAuth {
+                api_key: api_key.to_string(),
+                api_keys_by_env_var: api_keys_by_env_var_from_auth_dot_json(&auth_dot_json),
+            }));
         }
 
         let storage_mode = auth_dot_json.storage_mode(auth_credentials_store_mode);
@@ -223,6 +228,23 @@ impl CodexAuth {
     pub fn api_key(&self) -> Option<&str> {
         match self {
             Self::ApiKey(auth) => Some(auth.api_key.as_str()),
+            Self::Chatgpt(_) | Self::ChatgptAuthTokens(_) => None,
+        }
+    }
+
+    pub fn api_key_for_env_key(&self, env_key: &str) -> Option<&str> {
+        match self {
+            Self::ApiKey(auth) => auth
+                .api_keys_by_env_var
+                .get(env_key)
+                .map(String::as_str)
+                .or({
+                    if matches!(env_key, OPENAI_API_KEY_ENV_VAR | GEMINI_API_KEY_ENV_VAR) {
+                        Some(auth.api_key.as_str())
+                    } else {
+                        None
+                    }
+                }),
             Self::Chatgpt(_) | Self::ChatgptAuthTokens(_) => None,
         }
     }
@@ -307,6 +329,7 @@ impl CodexAuth {
             auth_mode: Some(ApiAuthMode::Chatgpt),
             openai_api_key: None,
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: Some(TokenData {
                 id_token: Default::default(),
                 access_token: "Access Token".to_string(),
@@ -326,13 +349,28 @@ impl CodexAuth {
     }
 
     fn from_api_key_with_client(api_key: &str, _client: CodexHttpClient) -> Self {
+        let mut api_keys_by_env_var = HashMap::new();
+        api_keys_by_env_var.insert(OPENAI_API_KEY_ENV_VAR.to_string(), api_key.to_owned());
+        api_keys_by_env_var.insert(GEMINI_API_KEY_ENV_VAR.to_string(), api_key.to_owned());
         Self::ApiKey(ApiKeyAuth {
             api_key: api_key.to_owned(),
+            api_keys_by_env_var,
         })
     }
 
     pub fn from_api_key(api_key: &str) -> Self {
         Self::from_api_key_with_client(api_key, crate::default_client::create_client())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_api_key_and_env_keys_for_testing(
+        api_key: &str,
+        api_keys_by_env_var: HashMap<String, String>,
+    ) -> Self {
+        Self::ApiKey(ApiKeyAuth {
+            api_key: api_key.to_string(),
+            api_keys_by_env_var,
+        })
     }
 }
 
@@ -395,6 +433,43 @@ pub fn read_gemini_api_key_from_auth_json(
         .or_else(|| auth.openai_api_key.filter(|k| !k.trim().is_empty()))
 }
 
+fn api_keys_by_env_var_from_auth_dot_json(auth: &AuthDotJson) -> HashMap<String, String> {
+    let mut keys = HashMap::new();
+
+    if let Some(api_key) = auth.openai_api_key.as_deref().map(str::trim)
+        && !api_key.is_empty()
+    {
+        keys.insert(OPENAI_API_KEY_ENV_VAR.to_string(), api_key.to_string());
+    }
+
+    if let Some(api_key) = auth
+        .gemini_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|api_key| !api_key.is_empty())
+        .or_else(|| {
+            auth.openai_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|api_key| !api_key.is_empty())
+        })
+    {
+        keys.insert(GEMINI_API_KEY_ENV_VAR.to_string(), api_key.to_string());
+    }
+
+    for (env_key, value) in &auth.provider_api_keys {
+        if let Some(api_key) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|api_key| !api_key.is_empty())
+        {
+            keys.insert(env_key.clone(), api_key.to_string());
+        }
+    }
+
+    keys
+}
+
 /// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
 /// if a file was removed, `Ok(false)` if no auth file was present.
 pub fn logout(
@@ -415,6 +490,7 @@ pub fn login_with_api_key(
         auth_mode: Some(ApiAuthMode::ApiKey),
         openai_api_key: Some(api_key.to_string()),
         gemini_api_key: None,
+        provider_api_keys: HashMap::new(),
         tokens: None,
         last_refresh: None,
     };
@@ -765,6 +841,7 @@ impl AuthDotJson {
             auth_mode: Some(ApiAuthMode::ChatgptAuthTokens),
             openai_api_key: None,
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
         }
@@ -1421,6 +1498,7 @@ mod tests {
                 auth_mode: None,
                 openai_api_key: None,
                 gemini_api_key: None,
+                provider_api_keys: HashMap::new(),
                 tokens: Some(TokenData {
                     id_token: IdTokenInfo {
                         email: Some("user@example.com".to_string()),
@@ -1459,6 +1537,35 @@ mod tests {
         assert!(auth.get_token_data().is_err());
     }
 
+    #[tokio::test]
+    #[serial(codex_api_key)]
+    async fn loads_provider_specific_api_keys_from_auth_json() {
+        let dir = tempdir().unwrap();
+        let auth_file = dir.path().join("auth.json");
+        std::fs::write(
+            auth_file,
+            r#"{
+                "OPENAI_API_KEY":"sk-openai",
+                "XAI_API_KEY":"xai-key",
+                "OPENAI_API_KEY_token":"proxy-token"
+            }"#,
+        )
+        .unwrap();
+
+        let auth = super::load_auth(dir.path(), false, AuthCredentialsStoreMode::File)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            auth.api_key_for_env_key("OPENAI_API_KEY"),
+            Some("sk-openai")
+        );
+        assert_eq!(auth.api_key_for_env_key("XAI_API_KEY"), Some("xai-key"));
+        assert_eq!(
+            auth.api_key_for_env_key("OPENAI_API_KEY_token"),
+            Some("proxy-token")
+        );
+    }
+
     #[test]
     fn logout_removes_auth_file() -> Result<(), std::io::Error> {
         let dir = tempdir()?;
@@ -1466,6 +1573,7 @@ mod tests {
             auth_mode: Some(ApiAuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
             gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: None,
         };

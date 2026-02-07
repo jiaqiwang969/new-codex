@@ -162,6 +162,7 @@ pub fn write_chatgpt_auth(
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
+        provider_api_keys: std::collections::HashMap::new(),
         tokens: Some(tokens),
         last_refresh,
     };

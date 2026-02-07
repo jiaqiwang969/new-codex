@@ -563,6 +563,7 @@ pub(crate) async fn persist_tokens_async(
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: api_key,
             gemini_api_key: None,
+            provider_api_keys: std::collections::HashMap::new(),
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
         };
