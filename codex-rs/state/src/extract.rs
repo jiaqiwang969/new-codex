@@ -145,6 +145,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         });
 
         apply_rollout_item(&mut metadata, &item, "test-provider");

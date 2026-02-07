@@ -14,10 +14,10 @@ pub const HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG: &str =
 static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     vec![
         ModelPreset {
-            id: "gpt-5.2-codex".to_string(),
-            model: "gpt-5.2-codex".to_string(),
-            display_name: "gpt-5.2-codex".to_string(),
-            description: "Latest frontier agentic coding model.".to_string(),
+            id: "gpt-5.3-codex".to_string(),
+            model: "gpt-5.3-codex".to_string(),
+            display_name: "gpt-5.3-codex".to_string(),
+            description: "Latest frontier agentic coding model with enhanced reasoning.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -45,10 +45,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             input_modalities: default_input_modalities(),
         },
         ModelPreset {
-            id: "gpt-5.1-codex-max".to_string(),
-            model: "gpt-5.1-codex-max".to_string(),
-            display_name: "gpt-5.1-codex-max".to_string(),
-            description: "Codex-optimized flagship for deep and fast reasoning.".to_string(),
+            id: "gpt-5.2-codex".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            display_name: "gpt-5.2-codex".to_string(),
+            description: "Frontier agentic coding model.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -68,33 +68,9 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Extra high reasoning depth for complex problems".to_string(),
                 },
             ],
-            supports_personality: false,
+            supports_personality: true,
             is_default: false,
-            upgrade: Some(gpt_52_codex_upgrade()),
-            show_in_picker: true,
-            supported_in_api: true,
-            input_modalities: default_input_modalities(),
-        },
-        ModelPreset {
-            id: "gpt-5.1-codex-mini".to_string(),
-            model: "gpt-5.1-codex-mini".to_string(),
-            display_name: "gpt-5.1-codex-mini".to_string(),
-            description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
-            default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: vec![
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::Medium,
-                    description: "Dynamically adjusts reasoning based on the task".to_string(),
-                },
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::High,
-                    description: "Maximizes reasoning depth for complex or ambiguous problems"
-                        .to_string(),
-                },
-            ],
-            supports_personality: false,
-            is_default: false,
-            upgrade: Some(gpt_52_codex_upgrade()),
+            upgrade: Some(gpt_53_codex_upgrade()),
             show_in_picker: true,
             supported_in_api: true,
             input_modalities: default_input_modalities(),
@@ -189,6 +165,80 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             is_default: false,
             upgrade: None,
             show_in_picker: false,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        // Deprecated models.
+        ModelPreset {
+            id: "gemini-3-pro-preview".to_string(),
+            model: "gemini-3-pro-preview".to_string(),
+            display_name: "Gemini 3 Pro".to_string(),
+            description: "Google Gemini 3 Pro with deep reasoning and 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "gemini-3-flash-preview".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
+            display_name: "Gemini 3 Flash".to_string(),
+            description: "Google Gemini 3 Flash — fast and efficient with 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "gemini-3-pro-image-preview".to_string(),
+            model: "gemini-3-pro-image-preview".to_string(),
+            display_name: "Gemini 3 Pro Image".to_string(),
+            description: "Gemini 3 Pro for text, image understanding, and image generation."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description:
+                    "Default Gemini reasoning behaviour for image workflows.".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
             supported_in_api: true,
             input_modalities: default_input_modalities(),
         },
@@ -331,6 +381,27 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
         },
     ]
 });
+
+fn gpt_53_codex_upgrade() -> ModelUpgrade {
+    ModelUpgrade {
+        id: "gpt-5.3-codex".to_string(),
+        reasoning_effort_mapping: None,
+        migration_config_key: "gpt-5.3-codex".to_string(),
+        model_link: None,
+        upgrade_copy: Some(
+            "Codex is now powered by gpt-5.3-codex, the latest frontier agentic coding model with enhanced reasoning."
+                .to_string(),
+        ),
+        migration_markdown: Some(
+            indoc! {r#"
+                **Codex just got an upgrade. Introducing {model_to}.**
+
+                Codex is now powered by gpt-5.3-codex with enhanced reasoning capabilities. You can continue using {model_from} if you prefer.
+            "#}
+            .to_string(),
+        ),
+    }
+}
 
 fn gpt_52_codex_upgrade() -> ModelUpgrade {
     ModelUpgrade {

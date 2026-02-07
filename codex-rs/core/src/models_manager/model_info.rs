@@ -23,9 +23,11 @@ const BASE_INSTRUCTIONS_WITH_APPLY_PATCH: &str =
 const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md");
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
-const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
-
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
+
+const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
+
+pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_048_576;
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
     include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
 
@@ -205,6 +207,27 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
         )
+    } else if slug.starts_with("gpt-5.3-codex") {
+        model_info!(
+            slug,
+            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: true,
+            support_verbosity: false,
+            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            context_window: Some(CONTEXT_WINDOW_272K),
+            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
+            model_messages: Some(ModelMessages {
+                instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
+                instructions_variables: Some(ModelInstructionsVariables {
+                    personality_default: Some("".to_string()),
+                    personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
+                    personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
+                }),
+            }),
+        )
     } else if slug.starts_with("gpt-5.2-codex") || slug.starts_with("bengalfox") {
         model_info!(
             slug,
@@ -227,24 +250,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 }),
             }),
         )
-    } else if slug.starts_with("gpt-5.1-codex-max") {
-        model_info!(
-            slug,
-            base_instructions: GPT_5_1_CODEX_MAX_INSTRUCTIONS.to_string(),
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: false,
-            supports_reasoning_summaries: true,
-            support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
-            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
-        )
-    } else if (slug.starts_with("gpt-5-codex")
-        || slug.starts_with("gpt-5.1-codex")
-        || slug.starts_with("codex-"))
-        && !slug.contains("-mini")
-    {
+    } else if slug.starts_with("gpt-5-codex") || slug.starts_with("codex-") {
         model_info!(
             slug,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
@@ -256,21 +262,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
-        )
-    } else if slug.starts_with("gpt-5-codex")
-        || slug.starts_with("gpt-5.1-codex")
-        || slug.starts_with("codex-")
-    {
-        model_info!(
-            slug,
-            base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: false,
-            supports_reasoning_summaries: true,
-            support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
         )
     } else if slug.starts_with("gpt-5.2") || slug.starts_with("boomslang") {
         model_info!(
@@ -311,6 +302,23 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: true,
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
+        )
+    } else if slug.starts_with("gemini-") {
+        model_info!(
+            slug,
+            base_instructions: GEMINI_INSTRUCTIONS.to_string(),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: false,
+            support_verbosity: false,
+            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            context_window: Some(CONTEXT_WINDOW_1M),
+            default_reasoning_level: Some(ReasoningEffort::High),
+            experimental_supported_tools: vec![
+                "grep_files".to_string(),
+                "list_dir".to_string(),
+                "read_file".to_string(),
+            ],
         )
     } else {
         warn!("Unknown model {slug} is used. This will degrade the performance of Codex.");

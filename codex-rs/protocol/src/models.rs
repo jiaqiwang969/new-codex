@@ -97,6 +97,13 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         phase: Option<MessagePhase>,
+        /// Gemini thought signature for this message (preserved for round-tripping).
+        /// Never serialized on the protocol wire — only used internally so
+        /// Gemini integrations can preserve and replay thoughtSignature fields
+        /// between turns.
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
+        thought_signature: Option<String>,
     },
     Reasoning {
         #[serde(default, skip_serializing)]
@@ -128,6 +135,10 @@ pub enum ResponseItem {
         // Session::handle_function_call parse it into a Value.
         arguments: String,
         call_id: String,
+        /// Gemini thought signature for this function call (preserved for round-tripping).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        thought_signature: Option<String>,
     },
     // NOTE: The `output` field for `function_call_output` uses a dedicated payload type with
     // custom serialization. On the wire it is either:
@@ -457,6 +468,7 @@ impl From<DeveloperInstructions> for ResponseItem {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 }
@@ -615,6 +627,7 @@ impl From<ResponseInputItem> for ResponseItem {
                 id: None,
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
                 Self::FunctionCallOutput { call_id, output }

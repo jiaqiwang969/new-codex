@@ -968,6 +968,13 @@ async fn make_chatwidget_manual(
         status_line_branch_pending: false,
         status_line_branch_lookup_complete: false,
         external_editor_state: ExternalEditorState::Closed,
+        ralph_loop_state: None,
+        ralph_loop_turn_had_error: false,
+        ref_image_paths: Vec::new(),
+        batch_image_state: None,
+        pending_pdf_update: None,
+        next_generated_image_index: 0,
+        last_generated_image_path: None,
     };
     widget.set_model(&resolved_model);
     (widget, rx, op_rx)

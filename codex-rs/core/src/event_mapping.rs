@@ -178,6 +178,7 @@ mod tests {
             ],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
 
         let turn_item = parse_turn_item(&item).expect("expected user message turn item");
@@ -221,6 +222,7 @@ mod tests {
             ],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
 
         let turn_item = parse_turn_item(&item).expect("expected user message turn item");
@@ -263,6 +265,7 @@ mod tests {
             ],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
 
         let turn_item = parse_turn_item(&item).expect("expected user message turn item");
@@ -293,6 +296,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -302,6 +306,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -311,6 +316,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -321,6 +327,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -330,6 +337,7 @@ mod tests {
                 }],
                 end_turn: None,
             phase: None,
+            thought_signature: None,
             },
         ];
 
@@ -349,6 +357,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
 
         let turn_item = parse_turn_item(&item).expect("expected agent message turn item");

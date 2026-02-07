@@ -40,6 +40,7 @@ impl From<UserInstructions> for ResponseItem {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 }
@@ -75,6 +76,7 @@ impl From<SkillInstructions> for ResponseItem {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 }

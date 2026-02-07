@@ -107,6 +107,25 @@ struct ModelClientState {
     disable_websockets: AtomicBool,
 }
 
+impl Clone for ModelClientState {
+    fn clone(&self) -> Self {
+        Self {
+            auth_manager: self.auth_manager.clone(),
+            conversation_id: self.conversation_id,
+            provider: self.provider.clone(),
+            session_source: self.session_source.clone(),
+            model_verbosity: self.model_verbosity.clone(),
+            enable_responses_websockets: self.enable_responses_websockets,
+            enable_request_compression: self.enable_request_compression,
+            include_timing_metrics: self.include_timing_metrics,
+            beta_features_header: self.beta_features_header.clone(),
+            disable_websockets: AtomicBool::new(
+                self.disable_websockets.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
+}
+
 /// A session-scoped client for model-provider API calls.
 ///
 /// This holds configuration and state that should be shared across turns within a Codex session
@@ -195,6 +214,23 @@ impl ModelClient {
     pub fn new_session(&self) -> ModelClientSession {
         ModelClientSession {
             client: self.clone(),
+            connection: None,
+            websocket_last_items: Vec::new(),
+            turn_state: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Creates a fresh turn-scoped streaming session with a provider override.
+    ///
+    /// Use this when the turn's provider differs from the session-level provider
+    /// (e.g. after a `/model` switch between GPT and Gemini families).
+    pub fn new_session_with_provider(&self, provider: ModelProviderInfo) -> ModelClientSession {
+        let mut state_copy = (*self.state).clone();
+        state_copy.provider = provider;
+        ModelClientSession {
+            client: ModelClient {
+                state: Arc::new(state_copy),
+            },
             connection: None,
             websocket_last_items: Vec::new(),
             turn_state: Arc::new(OnceLock::new()),
@@ -715,6 +751,9 @@ impl ModelClientSession {
                     .await
                 }
             }
+            WireApi::Gemini => {
+                self.stream_gemini(prompt, model_info, effort).await
+            }
         }
     }
 
@@ -739,13 +778,242 @@ impl ModelClientSession {
         }
         activated
     }
+
+    /// Streams a turn via the Google Gemini `:streamGenerateContent` endpoint.
+    async fn stream_gemini(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+    ) -> Result<ResponseStream> {
+        use crate::gemini_content::*;
+        use crate::gemini_streaming::*;
+        use crate::gemini_types::*;
+
+        let provider = &self.client.state.provider;
+        let base_url = provider.base_url.as_ref().ok_or_else(|| {
+            CodexErr::UnsupportedOperation(
+                "Gemini providers must define a base_url".to_string(),
+            )
+        })?;
+        let base_url = normalize_gemini_base_url(base_url);
+
+        let api_model = strip_model_suffix(&model_info.slug);
+
+        let url = format!(
+            "{}/models/{api_model}:streamGenerateContent?alt=sse",
+            base_url.as_ref().trim_end_matches('/'),
+        );
+
+        let instructions = prompt.base_instructions.text.clone();
+        let formatted_input = prompt.get_formatted_input();
+        let contents =
+            build_gemini_contents(&formatted_input, &prompt.reference_images, api_model);
+        if contents.is_empty() {
+            return Err(CodexErr::UnsupportedOperation(
+                "Gemini requests require at least one message".to_string(),
+            ));
+        }
+
+        let system_instruction =
+            (!instructions.trim().is_empty()).then(|| GeminiContentRequest {
+                role: None,
+                parts: vec![GeminiPartRequest {
+                    text: Some(instructions),
+                    inline_data: None,
+                    function_call: None,
+                    function_response: None,
+                    thought_signature: None,
+                    compat_thought_signature: None,
+                }],
+            });
+
+        let tools = build_gemini_tools(&prompt.tools);
+        let tool_config = tools.as_ref().map(|_| GeminiToolConfig {
+            function_calling_config: build_gemini_tool_config(
+                &prompt.tools,
+                &formatted_input,
+                api_model,
+            ),
+        });
+
+        let contents = ensure_active_loop_has_thought_signatures(&contents);
+
+        let reasoning_effort =
+            effort.or(model_info.default_reasoning_level);
+        let thinking_config =
+            build_gemini_thinking_config(api_model, reasoning_effort);
+
+        let generation_config = Some(GeminiGenerationConfig {
+            temperature: Some(1.0),
+            top_k: Some(64),
+            top_p: Some(0.95),
+            max_output_tokens: None,
+            thinking_config,
+            media_resolution: None,
+            response_modalities: if api_model.contains("image") {
+                Some(vec![
+                    GeminiResponseModality::Text,
+                    GeminiResponseModality::Image,
+                ])
+            } else {
+                None
+            },
+            image_config: if api_model.contains("image") {
+                Some(GeminiImageConfig {
+                    image_size: prompt.image_size,
+                    aspect_ratio: prompt.aspect_ratio,
+                })
+            } else {
+                None
+            },
+        });
+
+        let safety_settings = Some(default_safety_settings());
+
+        let request = GeminiRequest {
+            system_instruction,
+            contents,
+            tools,
+            tool_config,
+            generation_config,
+            safety_settings,
+        };
+
+        if std::env::var("CODEX_DEBUG_GEMINI_REQUEST").is_ok() {
+            if let Ok(json) = serde_json::to_string_pretty(&request) {
+                tracing::debug!("DEBUG GEMINI REQUEST:\n{json}");
+            }
+        }
+
+        let client = crate::default_client::build_reqwest_client();
+
+        let gemini_api_key = crate::auth::read_gemini_api_key_from_env().or_else(|| {
+            // Try to read from auth.json (~/.codex/auth.json) which may contain
+            // a GEMINI_API_KEY field.
+            if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
+                crate::auth::read_gemini_api_key_from_auth_json(
+                    &codex_home,
+                    crate::auth::AuthCredentialsStoreMode::File,
+                )
+            } else {
+                None
+            }
+        });
+
+        let make_request_builder = || {
+            let mut req_builder = client.post(&url);
+            req_builder = provider.apply_http_headers(req_builder);
+            if let Some(api_key) = gemini_api_key.as_deref() {
+                req_builder = req_builder.header("x-goog-api-key", api_key);
+            }
+            req_builder
+        };
+
+        const MAX_ATTEMPTS: u64 = 3;
+        const INITIAL_DELAY_MS: u64 = 5000;
+        const MAX_DELAY_MS: u64 = 30000;
+
+        let mut attempt: u64 = 0;
+        let mut current_delay = INITIAL_DELAY_MS;
+
+        let response = loop {
+            attempt += 1;
+            let result = make_request_builder().json(&request).send().await;
+
+            match result {
+                Ok(resp) => break resp,
+                Err(err) => {
+                    let should_retry = if let Some(status) = err.status() {
+                        status == StatusCode::TOO_MANY_REQUESTS
+                            || (status.as_u16() >= 500 && status.as_u16() < 600)
+                    } else {
+                        err.is_connect() || err.is_timeout()
+                    };
+
+                    if should_retry && attempt < MAX_ATTEMPTS {
+                        let jitter = (current_delay as f64
+                            * 0.3
+                            * (rand::random::<f64>() * 2.0 - 1.0))
+                            as u64;
+                        let delay_with_jitter = current_delay.saturating_add(jitter);
+                        tracing::debug!(
+                            "Gemini request attempt {} failed, retrying after {}ms: {}",
+                            attempt,
+                            delay_with_jitter,
+                            err
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_with_jitter)).await;
+                        current_delay = std::cmp::min(MAX_DELAY_MS, current_delay * 2);
+                        continue;
+                    }
+
+                    return Err(CodexErr::ResponseStreamFailed(
+                        crate::error::ResponseStreamFailed {
+                            source: err,
+                            request_id: None,
+                        },
+                    ));
+                }
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+
+            // Graceful degradation for thought_signature validation errors.
+            if (status == StatusCode::TOO_MANY_REQUESTS
+                || status == StatusCode::BAD_REQUEST)
+                && body.contains("missing a `thought_signature`")
+            {
+                let message = format!(
+                    "Gemini backend rejected this request due to a thought_signature \
+                     validation error.\n\nUpstream error:\n{}",
+                    body.chars().take(2000).collect::<String>()
+                );
+                let item = ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![codex_protocol::models::ContentItem::OutputText {
+                        text: message,
+                    }],
+                    end_turn: None,
+                    phase: None,
+                    thought_signature: None,
+                };
+                return Ok(spawn_gemini_response_stream(
+                    Some(item),
+                    "gemini-error-thought-signature".to_string(),
+                    None,
+                ));
+            }
+
+            return Err(CodexErr::UnexpectedStatus(
+                crate::error::UnexpectedResponseError {
+                    status,
+                    body,
+                    url: Some(url.clone()),
+                    cf_ray: None,
+                    request_id: None,
+                },
+            ));
+        }
+
+        let idle_timeout = provider.stream_idle_timeout();
+        let byte_stream = response.bytes_stream();
+        Ok(spawn_gemini_sse_stream(byte_stream, idle_timeout))
+    }
 }
 
 /// Adapts the core `Prompt` type into the `codex-api` payload shape.
 fn build_api_prompt(prompt: &Prompt, instructions: String, tools_json: Vec<Value>) -> ApiPrompt {
+    let input = crate::gemini_content::strip_thought_signatures_from_input(
+        &prompt.get_formatted_input(),
+    );
     ApiPrompt {
         instructions,
-        input: prompt.get_formatted_input(),
+        input,
         tools: tools_json,
         parallel_tool_calls: prompt.parallel_tool_calls,
         output_schema: prompt.output_schema.clone(),

@@ -223,6 +223,7 @@ mod tests {
                 content: Vec::new(),
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -230,6 +231,7 @@ mod tests {
                 content: Vec::new(),
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
 

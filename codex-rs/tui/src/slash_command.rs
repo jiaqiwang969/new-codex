@@ -30,6 +30,15 @@ pub enum SlashCommand {
     Collab,
     Agent,
     // Undo,
+    RalphLoop,
+    CancelRalph,
+    RefImage,
+    RefImageBatch,
+    ImageQuality,
+    AspectRatio,
+    ClearRef,
+    PdfUpdate,
+    OpenImage,
     Diff,
     Mention,
     Status,
@@ -73,6 +82,15 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (experimental)",
             SlashCommand::Agent => "switch the active agent thread",
+            SlashCommand::RalphLoop => "start a Ralph loop that repeats the same prompt until done",
+            SlashCommand::CancelRalph => "cancel the active Ralph loop",
+            SlashCommand::RefImage => "set reference images for image models",
+            SlashCommand::RefImageBatch => "batch process images in a folder with same prompt",
+            SlashCommand::ImageQuality => "set output image quality (1K, 2K, 4K)",
+            SlashCommand::AspectRatio => "set output aspect ratio (1:1, 16:9, 9:16, 4:3, 3:4)",
+            SlashCommand::ClearRef => "clear the active reference images",
+            SlashCommand::PdfUpdate => "process PDF: remove watermark + batch image processing",
+            SlashCommand::OpenImage => "open the most recently generated image",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
@@ -95,7 +113,15 @@ impl SlashCommand {
     pub fn supports_inline_args(self) -> bool {
         matches!(
             self,
-            SlashCommand::Review | SlashCommand::Rename | SlashCommand::Plan
+            SlashCommand::Review
+                | SlashCommand::Rename
+                | SlashCommand::Plan
+                | SlashCommand::RalphLoop
+                | SlashCommand::RefImage
+                | SlashCommand::RefImageBatch
+                | SlashCommand::PdfUpdate
+                | SlashCommand::ImageQuality
+                | SlashCommand::AspectRatio
         )
     }
 
@@ -116,6 +142,9 @@ impl SlashCommand {
             | SlashCommand::Experimental
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::RalphLoop
+            | SlashCommand::RefImageBatch
+            | SlashCommand::PdfUpdate
             | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Rename
@@ -126,6 +155,12 @@ impl SlashCommand {
             | SlashCommand::Ps
             | SlashCommand::Mcp
             | SlashCommand::Apps
+            | SlashCommand::CancelRalph
+            | SlashCommand::RefImage
+            | SlashCommand::ImageQuality
+            | SlashCommand::AspectRatio
+            | SlashCommand::ClearRef
+            | SlashCommand::OpenImage
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,

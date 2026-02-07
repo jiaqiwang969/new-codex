@@ -78,6 +78,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
@@ -201,6 +202,7 @@ async fn remote_compact_runs_automatically() -> Result<()> {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
@@ -602,6 +604,7 @@ async fn remote_manual_compact_emits_context_compaction_items() -> Result<()> {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
@@ -704,6 +707,7 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
@@ -716,6 +720,7 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
     ];
     let compact_mock = responses::mount_compact_json_once(

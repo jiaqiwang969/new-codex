@@ -42,6 +42,15 @@ pub struct Prompt {
 
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
+
+    /// Reference images (data URLs) to attach to this turn for image-capable models.
+    pub reference_images: Vec<String>,
+
+    /// Output image size for Gemini image generation (1K, 2K, 4K).
+    pub image_size: Option<crate::gemini_types::GeminiImageSize>,
+
+    /// Aspect ratio for Gemini image generation.
+    pub aspect_ratio: Option<crate::gemini_types::GeminiAspectRatio>,
 }
 
 impl Prompt {

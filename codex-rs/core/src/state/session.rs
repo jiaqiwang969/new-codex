@@ -6,6 +6,8 @@ use std::collections::HashSet;
 
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
+use crate::gemini_types::GeminiAspectRatio;
+use crate::gemini_types::GeminiImageSize;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
@@ -26,6 +28,12 @@ pub(crate) struct SessionState {
     pub(crate) initial_context_seeded: bool,
     /// Previous rollout model for one-shot model-switch handling on first turn after resume.
     pub(crate) pending_resume_previous_model: Option<String>,
+    /// Active reference images for this session (data URLs).
+    pub(crate) active_reference_images: Vec<String>,
+    /// Output image size for Gemini image generation (1K, 2K, 4K).
+    pub(crate) image_size: Option<GeminiImageSize>,
+    /// Aspect ratio for Gemini image generation.
+    pub(crate) aspect_ratio: Option<GeminiAspectRatio>,
 }
 
 impl SessionState {
@@ -41,6 +49,9 @@ impl SessionState {
             mcp_dependency_prompted: HashSet::new(),
             initial_context_seeded: false,
             pending_resume_previous_model: None,
+            active_reference_images: Vec::new(),
+            image_size: None,
+            aspect_ratio: None,
         }
     }
 
@@ -127,6 +138,38 @@ impl SessionState {
 
     pub(crate) fn dependency_env(&self) -> HashMap<String, String> {
         self.dependency_env.clone()
+    }
+
+    // Reference image helpers
+
+    pub(crate) fn set_reference_images(&mut self, images: Vec<String>) {
+        self.active_reference_images = images;
+    }
+
+    pub(crate) fn clear_reference_images(&mut self) {
+        self.active_reference_images.clear();
+    }
+
+    pub(crate) fn reference_images(&self) -> &[String] {
+        &self.active_reference_images
+    }
+
+    // Image generation config helpers
+
+    pub(crate) fn set_image_size(&mut self, size: Option<GeminiImageSize>) {
+        self.image_size = size;
+    }
+
+    pub(crate) fn image_size(&self) -> Option<GeminiImageSize> {
+        self.image_size
+    }
+
+    pub(crate) fn set_aspect_ratio(&mut self, ratio: Option<GeminiAspectRatio>) {
+        self.aspect_ratio = ratio;
+    }
+
+    pub(crate) fn aspect_ratio(&self) -> Option<GeminiAspectRatio> {
+        self.aspect_ratio
     }
 }
 

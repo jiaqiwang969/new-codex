@@ -82,6 +82,7 @@ impl From<EnvironmentContext> for ResponseItem {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 }

@@ -138,6 +138,8 @@ use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
 const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
@@ -299,7 +301,7 @@ fn is_standard_tool_call(parsed_cmd: &[ParsedCommand]) -> bool {
 }
 
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
-const NUDGE_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
+const NUDGE_MODEL_SLUG: &str = "gpt-5.2-codex";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 
 #[derive(Default)]
@@ -609,6 +611,19 @@ pub(crate) struct ChatWidget {
     // True once we've attempted a branch lookup for the current CWD.
     status_line_branch_lookup_complete: bool,
     external_editor_state: ExternalEditorState,
+    // Ralph Loop state
+    ralph_loop_state: Option<crate::ralph_loop::RalphLoopState>,
+    ralph_loop_turn_had_error: bool,
+    // Reference image paths for /ref-image
+    ref_image_paths: Vec<std::path::PathBuf>,
+    // Batch image processing state for /ref-image-batch and /pdf-update
+    batch_image_state: Option<crate::batch_image::BatchImageState>,
+    // Pending PDF update state for /pdf-update async processing
+    pending_pdf_update: Option<crate::batch_image::PendingPdfUpdate>,
+    // Monotonic counter for generated images in this session.
+    next_generated_image_index: u64,
+    // Last generated image path for quick reopening via /open-image.
+    last_generated_image_path: Option<PathBuf>,
 }
 
 /// Snapshot of active-cell state that affects transcript overlay rendering.
@@ -1257,6 +1272,7 @@ impl ChatWidget {
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
+        self.ralph_loop_turn_had_error = false;
         self.request_redraw();
     }
 
@@ -1302,6 +1318,12 @@ impl ChatWidget {
         self.unified_exec_wait_streak = None;
         self.clear_unified_exec_processes();
         self.request_redraw();
+
+        // Ralph Loop: check if we should re-inject the prompt
+        if !from_replay {
+            self.on_task_complete_for_ralph_loop(&last_agent_message);
+            self.on_turn_complete_for_batch();
+        }
 
         if !from_replay && self.queued_user_messages.is_empty() {
             self.maybe_prompt_plan_implementation();
@@ -1548,6 +1570,7 @@ impl ChatWidget {
     }
 
     fn on_error(&mut self, message: String) {
+        self.ralph_loop_turn_had_error = true;
         self.finalize_turn();
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();
@@ -2582,6 +2605,13 @@ impl ChatWidget {
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
             external_editor_state: ExternalEditorState::Closed,
+            ralph_loop_state: None,
+            ralph_loop_turn_had_error: false,
+            ref_image_paths: Vec::new(),
+            batch_image_state: None,
+            pending_pdf_update: None,
+            next_generated_image_index: 0,
+            last_generated_image_path: None,
         };
 
         widget.prefetch_rate_limits();
@@ -2744,6 +2774,13 @@ impl ChatWidget {
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
             external_editor_state: ExternalEditorState::Closed,
+            ralph_loop_state: None,
+            ralph_loop_turn_had_error: false,
+            ref_image_paths: Vec::new(),
+            batch_image_state: None,
+            pending_pdf_update: None,
+            next_generated_image_index: 0,
+            last_generated_image_path: None,
         };
 
         widget.prefetch_rate_limits();
@@ -2895,6 +2932,13 @@ impl ChatWidget {
             status_line_branch_pending: false,
             status_line_branch_lookup_complete: false,
             external_editor_state: ExternalEditorState::Closed,
+            ralph_loop_state: None,
+            ralph_loop_turn_had_error: false,
+            ref_image_paths: Vec::new(),
+            batch_image_state: None,
+            pending_pdf_update: None,
+            next_generated_image_index: 0,
+            last_generated_image_path: None,
         };
 
         widget.prefetch_rate_limits();
@@ -3361,6 +3405,34 @@ impl ChatWidget {
                     }),
                 }));
             }
+            SlashCommand::RalphLoop => {
+                // No-args invocation: use defaults
+                self.handle_ralph_loop_command(crate::ralph_loop::RalphLoopCommand::default());
+            }
+            SlashCommand::CancelRalph => {
+                self.handle_cancel_ralph_command();
+            }
+            SlashCommand::RefImage => {
+                self.handle_ref_image_command(None);
+            }
+            SlashCommand::RefImageBatch => {
+                self.handle_ref_image_batch_command(None);
+            }
+            SlashCommand::ImageQuality => {
+                self.handle_image_quality_command(None);
+            }
+            SlashCommand::AspectRatio => {
+                self.handle_aspect_ratio_command(None);
+            }
+            SlashCommand::ClearRef => {
+                self.handle_clear_ref_command();
+            }
+            SlashCommand::PdfUpdate => {
+                self.handle_pdf_update_command(None);
+            }
+            SlashCommand::OpenImage => {
+                self.open_last_generated_image();
+            }
         }
     }
 
@@ -3447,8 +3519,998 @@ impl ChatWidget {
                 });
                 self.bottom_pane.drain_pending_submission_state();
             }
+            SlashCommand::RalphLoop if !trimmed.is_empty() => {
+                match crate::ralph_loop::parse_ralph_loop_args(trimmed) {
+                    Ok(cmd) => {
+                        self.handle_ralph_loop_command(cmd);
+                    }
+                    Err(err) => {
+                        self.add_to_history(history_cell::new_error_event(format!(
+                            "Ralph Loop parse error: {err}"
+                        )));
+                        self.request_redraw();
+                    }
+                }
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::RefImage if !trimmed.is_empty() => {
+                self.handle_ref_image_command(Some(trimmed.to_string()));
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::RefImageBatch if !trimmed.is_empty() => {
+                self.handle_ref_image_batch_command(Some(trimmed.to_string()));
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::ImageQuality if !trimmed.is_empty() => {
+                self.handle_image_quality_command(Some(trimmed.to_string()));
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::AspectRatio if !trimmed.is_empty() => {
+                self.handle_aspect_ratio_command(Some(trimmed.to_string()));
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::PdfUpdate if !trimmed.is_empty() => {
+                self.handle_pdf_update_command(Some(trimmed.to_string()));
+                self.bottom_pane.drain_pending_submission_state();
+            }
             _ => self.dispatch_command(cmd),
         }
+    }
+
+    // ── Ralph Loop handlers ──────────────────────────────────────────────
+
+    fn handle_ralph_loop_command(&mut self, cmd: crate::ralph_loop::RalphLoopCommand) {
+        if self.ralph_loop_state.is_some() {
+            self.add_to_history(history_cell::new_error_event(
+                "A Ralph Loop is already active. Use /cancel-ralph to stop it first.".to_string(),
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        let prompt = cmd.prompt.unwrap_or_else(|| {
+            "Continue working on the task. Review your previous output and files. If everything is complete, output <promise>COMPLETE</promise>.".to_string()
+        });
+
+        let state = crate::ralph_loop::RalphLoopState::new(
+            cmd.max_iterations,
+            cmd.completion_promise.clone(),
+            prompt.clone(),
+            cmd.delay_seconds,
+        );
+
+        // Save state file
+        if let Some(cwd) = &self.current_cwd {
+            crate::ralph_loop::save_ralph_state_file(cwd, &state);
+        }
+
+        let max_display = if cmd.max_iterations == 0 {
+            "unlimited".to_string()
+        } else {
+            cmd.max_iterations.to_string()
+        };
+
+        self.add_info_message(
+            format!(
+                "Ralph Loop activated: max={max_display}, promise=\"{}\", delay={}s",
+                cmd.completion_promise, cmd.delay_seconds
+            ),
+            Some("The prompt will be re-submitted after each turn until the promise is detected.".to_string()),
+        );
+
+        self.ralph_loop_state = Some(state);
+
+        // Submit the prompt as a user message to start the first iteration
+        self.submit_user_message(prompt.into());
+    }
+
+    fn handle_cancel_ralph_command(&mut self) {
+        if self.ralph_loop_state.is_none() {
+            self.add_to_history(history_cell::new_error_event(
+                "No active Ralph Loop to cancel.".to_string(),
+            ));
+            self.request_redraw();
+            return;
+        }
+
+        let iteration = self
+            .ralph_loop_state
+            .as_ref()
+            .map(|s| s.iteration)
+            .unwrap_or(0);
+
+        self.ralph_loop_state = None;
+        self.ralph_loop_turn_had_error = false;
+
+        if let Some(cwd) = &self.current_cwd {
+            crate::ralph_loop::cleanup_ralph_state_file(cwd);
+        }
+
+        self.add_info_message(
+            format!("Ralph Loop cancelled after {iteration} iteration(s)."),
+            None,
+        );
+        self.request_redraw();
+    }
+
+    /// Called from `on_task_complete` to check whether the ralph loop should continue.
+    fn on_task_complete_for_ralph_loop(&mut self, last_agent_message: &Option<String>) {
+        let state = match &self.ralph_loop_state {
+            Some(s) if s.enabled => s,
+            _ => return,
+        };
+
+        // Check if the completion promise was detected
+        if let Some(output) = last_agent_message {
+            if crate::ralph_loop::check_completion_promise(output, &state.completion_promise) {
+                let iteration = state.iteration;
+                self.ralph_loop_state = None;
+                self.ralph_loop_turn_had_error = false;
+                if let Some(cwd) = &self.current_cwd {
+                    crate::ralph_loop::cleanup_ralph_state_file(cwd);
+                }
+                self.add_info_message(
+                    format!(
+                        "Ralph Loop complete: promise detected after {iteration} iteration(s)."
+                    ),
+                    None,
+                );
+                return;
+            }
+        }
+
+        // Check if max iterations reached
+        if !state.should_continue() {
+            let iteration = state.iteration;
+            let max = state.max_iterations;
+            self.ralph_loop_state = None;
+            self.ralph_loop_turn_had_error = false;
+            if let Some(cwd) = &self.current_cwd {
+                crate::ralph_loop::cleanup_ralph_state_file(cwd);
+            }
+            self.add_info_message(
+                format!(
+                    "Ralph Loop stopped: reached max iterations ({iteration}/{max})."
+                ),
+                None,
+            );
+            return;
+        }
+
+        // Continue: advance iteration
+        let prompt = state.original_prompt.clone();
+        let delay = state.delay_seconds;
+        let had_error = self.ralph_loop_turn_had_error;
+
+        if let Some(ref mut s) = self.ralph_loop_state {
+            s.next_iteration();
+            if let Some(cwd) = &self.current_cwd {
+                crate::ralph_loop::save_ralph_state_file(cwd, s);
+            }
+            let iteration = s.iteration;
+            let max = s.max_iterations;
+            let max_display = if max == 0 {
+                "∞".to_string()
+            } else {
+                max.to_string()
+            };
+            self.add_info_message(
+                format!("Ralph Loop: starting iteration {iteration}/{max_display}"),
+                None,
+            );
+        }
+
+        self.ralph_loop_turn_had_error = false;
+
+        // If there was an error and delay > 0, schedule a delayed re-injection
+        if had_error && delay > 0 {
+            let tx = self.app_event_tx.clone();
+            let delay_secs = delay;
+            self.add_info_message(
+                format!("Ralph Loop: error detected, waiting {delay_secs}s before retry..."),
+                None,
+            );
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                tx.send(AppEvent::RalphLoopDelayedContinue);
+            });
+        } else {
+            // Re-inject the prompt immediately
+            self.queue_user_message(prompt.into());
+        }
+    }
+
+    /// Handle the delayed ralph loop continuation after the timer fires.
+    pub(crate) fn handle_ralph_loop_delayed_continue(&mut self) {
+        if let Some(ref state) = self.ralph_loop_state {
+            if state.enabled {
+                let prompt = state.original_prompt.clone();
+                self.queue_user_message(prompt.into());
+            }
+        }
+    }
+
+    // ── Reference Image / Batch / PDF / Image Quality handlers ──────────
+
+    fn handle_ref_image_command(&mut self, args: Option<String>) {
+        let raw = args.unwrap_or_default();
+        let trimmed = raw.trim();
+
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("help") {
+            let mut message = "Usage: /ref-image <path1> <path2> ... [-- <prompt>]\n\
+                           • `/ref-image ls` — show current reference images\n\
+                           • `/ref-image clear` — clear the active reference images"
+                .to_string();
+            if !self.ref_image_paths.is_empty() {
+                let display: Vec<String> = self
+                    .ref_image_paths
+                    .iter()
+                    .map(|p| display_path_for(p, &self.config.cwd))
+                    .collect();
+                message.push_str(&format!("\n\nActive reference images: {}", display.join(", ")));
+            }
+            self.add_info_message(message, None);
+            return;
+        }
+
+        if trimmed.eq_ignore_ascii_case("ls") {
+            if self.ref_image_paths.is_empty() {
+                self.add_info_message(
+                    "No active reference images. The model will infer references from recent images."
+                        .to_string(),
+                    None,
+                );
+            } else {
+                let display: Vec<String> = self
+                    .ref_image_paths
+                    .iter()
+                    .map(|p| display_path_for(p, &self.config.cwd))
+                    .collect();
+                self.add_info_message(
+                    format!("Active reference images: {}", display.join(", ")),
+                    None,
+                );
+            }
+            return;
+        }
+
+        if trimmed.eq_ignore_ascii_case("clear") {
+            self.ref_image_paths.clear();
+            self.submit_op(Op::ClearReferenceImages);
+            self.add_info_message("Reference images cleared.".to_string(), None);
+            return;
+        }
+
+        // Parse: <path1> <path2> ... [-- <prompt>]
+        let (paths_raw, prompt_raw) = if let Some((before, after)) = trimmed.split_once("--") {
+            (before.trim_end(), Some(after.trim_start().to_string()))
+        } else {
+            (trimmed, None)
+        };
+
+        // Use Shlex for shell-like argument parsing (handles quoted paths with spaces).
+        let path_tokens: Vec<String> = shlex::Shlex::new(paths_raw)
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let prompt = prompt_raw.and_then(|p| {
+            let t = p.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        });
+
+        let cwd = &self.config.cwd;
+        let codex_home = &self.config.codex_home;
+        let session_id = self.thread_id.map(|id| id.to_string());
+
+        let resolved_paths: Vec<PathBuf> = path_tokens
+            .iter()
+            .map(|raw_path| {
+                Self::resolve_ref_image_path(raw_path, cwd, codex_home, session_id.as_deref())
+            })
+            .collect();
+
+        // If the user pasted or attached images in the composer and then
+        // invoked `/ref-image`, prefer those attached image paths over
+        // any literal placeholders that may appear in the command text.
+        let attached: Vec<PathBuf> = self
+            .bottom_pane
+            .take_recent_submission_images_with_placeholders()
+            .into_iter()
+            .map(|a| a.path)
+            .collect();
+        let final_paths = if attached.is_empty() {
+            resolved_paths
+        } else {
+            attached
+        };
+
+        if final_paths.is_empty() && prompt.is_none() {
+            self.add_info_message("No paths provided.".to_string(), None);
+            return;
+        }
+
+        if !final_paths.is_empty() {
+            self.ref_image_paths = final_paths.clone();
+            self.submit_op(Op::SetReferenceImages {
+                paths: final_paths,
+            });
+
+            let display: Vec<String> = self
+                .ref_image_paths
+                .iter()
+                .map(|p| display_path_for(p, &self.config.cwd))
+                .collect();
+            self.add_info_message(
+                format!("Reference images set: {}", display.join(", ")),
+                None,
+            );
+        }
+
+        if let Some(prompt_text) = prompt {
+            self.queue_user_message(prompt_text.into());
+        }
+    }
+
+    /// Resolve a user-provided image path with smart fallbacks:
+    /// 1. `~/` → expand to home directory
+    /// 2. Absolute paths → use as-is
+    /// 3. Multi-component relative paths → resolve against cwd
+    /// 4. Single-segment names (e.g. `000000.png`) → prefer `~/.codex/images/{session}/` if it exists
+    fn resolve_ref_image_path(
+        raw: &str,
+        cwd: &Path,
+        codex_home: &Path,
+        session_id: Option<&str>,
+    ) -> PathBuf {
+        // Expand ~/ prefix.
+        let expanded = if let Some(stripped) = raw.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(stripped)
+            } else {
+                PathBuf::from(raw)
+            }
+        } else {
+            PathBuf::from(raw)
+        };
+
+        if expanded.is_absolute() {
+            return expanded;
+        }
+
+        // Multi-component relative path → resolve against cwd.
+        let mut components = expanded.components();
+        if components.next().is_some() && components.next().is_some() {
+            return cwd.join(expanded);
+        }
+
+        // Single-segment path (e.g. "000000.png"): prefer the session's
+        // images directory when available so users can omit the full ~/.codex path.
+        if let Some(sid) = session_id {
+            let candidate = codex_home.join("images").join(sid).join(&expanded);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+
+        cwd.join(expanded)
+    }
+
+    fn handle_clear_ref_command(&mut self) {
+        self.ref_image_paths.clear();
+        self.submit_op(Op::ClearReferenceImages);
+        self.add_info_message("Reference images cleared.".to_string(), None);
+    }
+
+    fn handle_image_quality_command(&mut self, args: Option<String>) {
+        let valid_options = "1K, 2K, 4K";
+
+        let size_arg = args.as_deref().map(|s| s.trim().to_uppercase());
+        match size_arg {
+            None => {
+                let message = format!(
+                    "Usage: /image-quality <size>\n\
+                     • `1K` — 1024x1024 (default, fastest)\n\
+                     • `2K` — 2048x2048 (balanced)\n\
+                     • `4K` — 4096x4096 (highest quality, slower)\n\n\
+                     Valid options: {valid_options}"
+                );
+                self.add_info_message(message, None);
+            }
+            Some(ref size) if size.is_empty() => {
+                let message = format!(
+                    "Usage: /image-quality <size>\n\
+                     • `1K` — 1024x1024 (default, fastest)\n\
+                     • `2K` — 2048x2048 (balanced)\n\
+                     • `4K` — 4096x4096 (highest quality, slower)\n\n\
+                     Valid options: {valid_options}"
+                );
+                self.add_info_message(message, None);
+            }
+            Some(size) => {
+                if matches!(size.as_str(), "1K" | "2K" | "4K") {
+                    self.submit_op(Op::SetImageQuality { size: size.clone() });
+                    self.add_info_message(format!("Image quality set to {size}"), None);
+                } else {
+                    self.add_info_message(
+                        format!("Invalid image quality '{size}'. Valid options: {valid_options}"),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_aspect_ratio_command(&mut self, args: Option<String>) {
+        let valid_options = "1:1, 16:9, 9:16, 4:3, 3:4";
+
+        let ratio_arg = args.as_deref().map(|s| s.trim().to_string());
+        match ratio_arg {
+            None => {
+                let message = format!(
+                    "Usage: /aspect-ratio <ratio>\n\
+                     • `1:1`  — Square (default)\n\
+                     • `16:9` — Landscape\n\
+                     • `9:16` — Portrait\n\
+                     • `4:3`  — Standard\n\
+                     • `3:4`  — Standard Portrait\n\n\
+                     Valid options: {valid_options}"
+                );
+                self.add_info_message(message, None);
+            }
+            Some(ref ratio) if ratio.is_empty() => {
+                let message = format!(
+                    "Usage: /aspect-ratio <ratio>\n\
+                     • `1:1`  — Square (default)\n\
+                     • `16:9` — Landscape\n\
+                     • `9:16` — Portrait\n\
+                     • `4:3`  — Standard\n\
+                     • `3:4`  — Standard Portrait\n\n\
+                     Valid options: {valid_options}"
+                );
+                self.add_info_message(message, None);
+            }
+            Some(ratio) => {
+                if matches!(ratio.as_str(), "1:1" | "16:9" | "9:16" | "4:3" | "3:4") {
+                    self.submit_op(Op::SetAspectRatio {
+                        ratio: ratio.clone(),
+                    });
+                    self.add_info_message(format!("Aspect ratio set to {ratio}"), None);
+                } else {
+                    self.add_info_message(
+                        format!(
+                            "Invalid aspect ratio '{ratio}'. Valid options: {valid_options}"
+                        ),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_ref_image_batch_command(&mut self, args: Option<String>) {
+        let raw = args.unwrap_or_default();
+        let trimmed = raw.trim();
+
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("help") {
+            let help = "Usage: /ref-image-batch <folder_path> -- <prompt>\n\n\
+                        Batch process all images in a folder with the same prompt.\n\
+                        Images are processed one by one.\n\
+                        Supported formats: .png, .jpg, .jpeg, .webp, .gif\n\n\
+                        Example:\n\
+                        /ref-image-batch ./photos -- Convert to oil painting style";
+            self.add_info_message(help.to_string(), None);
+            return;
+        }
+
+        let Some((path_raw, prompt_raw)) = trimmed.split_once("--") else {
+            self.add_info_message(
+                "Error: Missing prompt. Use: /ref-image-batch <folder> -- <prompt>".to_string(),
+                None,
+            );
+            return;
+        };
+
+        let path_str = path_raw.trim();
+        let prompt = prompt_raw.trim().to_string();
+
+        if prompt.is_empty() {
+            self.add_info_message("Error: Prompt cannot be empty.".to_string(), None);
+            return;
+        }
+
+        let source_dir = crate::batch_image::resolve_user_path(path_str, &self.config.cwd);
+
+        if !source_dir.exists() || !source_dir.is_dir() {
+            self.add_info_message(
+                format!("Error: Path is not a directory: {}", source_dir.display()),
+                None,
+            );
+            return;
+        }
+
+        let mut images = crate::batch_image::scan_image_files(&source_dir);
+        if images.is_empty() {
+            self.add_info_message(
+                format!("No images found in: {}", source_dir.display()),
+                None,
+            );
+            return;
+        }
+        images.sort();
+
+        let total = images.len();
+        self.add_info_message(
+            format!(
+                "[Batch] Starting batch processing of {} images in {}\nPrompt: {}",
+                total,
+                source_dir.display(),
+                prompt
+            ),
+            None,
+        );
+
+        self.batch_image_state =
+            Some(crate::batch_image::BatchImageState::new(source_dir, images, prompt));
+        self.process_next_batch_image();
+    }
+
+    fn handle_pdf_update_command(&mut self, args: Option<String>) {
+        let raw = args.unwrap_or_default();
+        let trimmed = raw.trim();
+
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("help") {
+            let help = "Usage: /pdf-update <pdf_path> -- <prompt>\n\n\
+                        Process PDF: remove watermarks and apply image transformations.\n\n\
+                        Setup required:\n\
+                        1. pip install pdf2image opencv-python-headless numpy Pillow python-pptx\n\
+                        2. brew install poppler (macOS) or apt install poppler-utils (Linux)\n\n\
+                        Example:\n\
+                        /pdf-update ~/Documents/report.pdf -- Convert to oil painting style";
+            self.add_info_message(help.to_string(), None);
+            return;
+        }
+
+        let Some((path_raw, prompt_raw)) = trimmed.split_once("--") else {
+            self.add_info_message(
+                "Error: Missing prompt. Use: /pdf-update <pdf_path> -- <prompt>".to_string(),
+                None,
+            );
+            return;
+        };
+
+        let path_str = path_raw.trim();
+        let prompt = prompt_raw.trim().to_string();
+
+        if prompt.is_empty() {
+            self.add_info_message("Error: Prompt cannot be empty.".to_string(), None);
+            return;
+        }
+
+        let pdf_path = crate::batch_image::resolve_user_path(path_str, &self.config.cwd);
+
+        if !pdf_path.exists() || !pdf_path.is_file() {
+            self.add_info_message(
+                format!("Error: PDF file does not exist: {}", pdf_path.display()),
+                None,
+            );
+            return;
+        }
+
+        let extension = pdf_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase);
+        if extension.as_deref() != Some("pdf") {
+            self.add_info_message(
+                format!("Error: File does not appear to be a PDF: {}", pdf_path.display()),
+                None,
+            );
+            return;
+        }
+
+        let pdf_stem = pdf_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pdf");
+        let session_id = self
+            .thread_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let images_output_dir = self
+            .config
+            .codex_home
+            .join("images")
+            .join(&session_id)
+            .join(format!("{pdf_stem}_images"));
+
+        self.add_info_message(
+            format!(
+                "[PDF Update] Starting PDF processing...\n\
+                 Input: {}\n\
+                 Output: {}\n\
+                 Prompt: {}\n\n\
+                 Step 1: Removing watermarks...",
+                pdf_path.display(),
+                images_output_dir.display(),
+                prompt
+            ),
+            None,
+        );
+
+        self.pending_pdf_update = Some(crate::batch_image::PendingPdfUpdate {
+            pdf_path,
+            images_output_dir,
+            prompt,
+        });
+
+        self.start_pdf_watermark_removal();
+    }
+
+    fn start_pdf_watermark_removal(&mut self) {
+        let Some(pending) = self.pending_pdf_update.as_ref() else {
+            return;
+        };
+
+        let pdf_path = pending.pdf_path.clone();
+        let images_output_dir = pending.images_output_dir.clone();
+
+        if let Err(e) = std::fs::create_dir_all(&images_output_dir) {
+            self.add_info_message(format!("Error creating output directory: {e}"), None);
+            self.pending_pdf_update = None;
+            return;
+        }
+
+        let script_path = std::env::temp_dir().join("codex_pdf_process.py");
+        if let Err(e) = std::fs::write(&script_path, crate::batch_image::PDF_PROCESS_SCRIPT) {
+            self.add_info_message(format!("Error writing temp script: {e}"), None);
+            self.pending_pdf_update = None;
+            return;
+        }
+
+        let output = std::process::Command::new("python3")
+            .arg(&script_path)
+            .arg(pdf_path.to_string_lossy().to_string())
+            .arg(images_output_dir.to_string_lossy().to_string())
+            .arg("200")
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    self.add_info_message(
+                        format!("[PDF Update] Step 1 Complete!\n{stdout}"),
+                        None,
+                    );
+                    self.start_batch_after_pdf_processing();
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    self.add_info_message(format!("Error processing PDF: {stderr}"), None);
+                    self.pending_pdf_update = None;
+                }
+            }
+            Err(e) => {
+                self.add_info_message(format!("Error running Python script: {e}"), None);
+                self.pending_pdf_update = None;
+            }
+        }
+    }
+
+    fn start_batch_after_pdf_processing(&mut self) {
+        let Some(pending) = self.pending_pdf_update.take() else {
+            return;
+        };
+
+        let source_dir = pending.images_output_dir;
+        let prompt = pending.prompt;
+        let pdf_path = pending.pdf_path;
+
+        let mut images = crate::batch_image::scan_image_files(&source_dir);
+        if images.is_empty() {
+            self.add_info_message(
+                format!("No images found after PDF processing in: {}", source_dir.display()),
+                None,
+            );
+            return;
+        }
+        images.sort();
+
+        let total = images.len();
+        self.add_info_message(
+            format!(
+                "[PDF Update] Step 2: Starting batch processing of {} images\n\
+                 Directory: {}\n\
+                 Prompt: {}",
+                total,
+                source_dir.display(),
+                prompt
+            ),
+            None,
+        );
+
+        self.batch_image_state = Some(crate::batch_image::BatchImageState::new_for_pdf(
+            source_dir, images, prompt, pdf_path,
+        ));
+        self.process_next_batch_image();
+    }
+
+    fn process_next_batch_image(&mut self) {
+        let (image_path, progress_msg, prompt, batch_complete_info) = {
+            let Some(batch_state) = self.batch_image_state.as_mut() else {
+                return;
+            };
+
+            if let Some(image_path) = batch_state.next_image() {
+                let progress = batch_state.progress_message();
+                let prompt = batch_state.prompt.clone();
+                (Some(image_path), Some(progress), Some(prompt), None)
+            } else {
+                let completion_msg = batch_state.completion_message();
+                let pdf_info = batch_state
+                    .original_pdf_path
+                    .as_ref()
+                    .map(|pdf_path| (batch_state.source_dir.clone(), pdf_path.clone()));
+                (None, None, None, Some((completion_msg, pdf_info)))
+            }
+        };
+
+        if let Some((completion_msg, pdf_info)) = batch_complete_info {
+            self.batch_image_state = None;
+            self.add_info_message(completion_msg, None);
+
+            if let Some((source_dir, original_pdf_path)) = pdf_info {
+                self.merge_processed_images_to_pdf(source_dir, original_pdf_path);
+            }
+            return;
+        }
+
+        if let (Some(image_path), Some(progress_msg), Some(prompt)) =
+            (image_path, progress_msg, prompt)
+        {
+            self.add_info_message(progress_msg, None);
+            self.ref_image_paths = vec![image_path.clone()];
+            self.submit_op(Op::SetReferenceImages {
+                paths: vec![image_path],
+            });
+            self.queue_user_message(prompt.into());
+        }
+    }
+
+    pub(crate) fn on_turn_complete_for_batch(&mut self) {
+        if self.batch_image_state.is_some() {
+            if let Some(batch_state) = self.batch_image_state.as_mut() {
+                batch_state.mark_current_processed();
+            }
+            self.process_next_batch_image();
+        }
+    }
+
+    fn merge_processed_images_to_pdf(
+        &mut self,
+        source_dir: std::path::PathBuf,
+        original_pdf_path: std::path::PathBuf,
+    ) {
+        self.add_info_message(
+            "[PDF Update] Step 3: Creating PPTX from processed images...".to_string(),
+            None,
+        );
+
+        let script_path = std::env::temp_dir().join("codex_merge_pptx.py");
+        if let Err(e) = std::fs::write(&script_path, crate::batch_image::MERGE_PPTX_SCRIPT) {
+            self.add_info_message(format!("Error writing merge script: {e}"), None);
+            return;
+        }
+
+        let pdf_stem = original_pdf_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        let output_pptx = source_dir
+            .parent()
+            .unwrap_or(&source_dir)
+            .join(format!("{pdf_stem}_processed.pptx"));
+
+        let output = std::process::Command::new("python3")
+            .arg(&script_path)
+            .arg(source_dir.to_string_lossy().to_string())
+            .arg(output_pptx.to_string_lossy().to_string())
+            .output();
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    self.add_info_message(
+                        format!(
+                            "[PDF Update] Complete!\n{stdout}\nOutput: {}",
+                            output_pptx.display()
+                        ),
+                        None,
+                    );
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    self.add_info_message(
+                        format!("[PDF Update] PPTX merge failed: {stderr}"),
+                        None,
+                    );
+                }
+            }
+            Err(e) => {
+                self.add_info_message(
+                    format!("[PDF Update] Error running merge script: {e}"),
+                    None,
+                );
+            }
+        }
+    }
+
+    // ── Generated image saving & /open-image ────────────────────────────
+
+    fn on_raw_response_item(&mut self, event: codex_core::protocol::RawResponseItemEvent) {
+        use codex_protocol::models::ContentItem;
+        use codex_protocol::models::ResponseItem;
+
+        let ResponseItem::Message { role, content, .. } = event.item else {
+            return;
+        };
+
+        if role != "assistant" {
+            return;
+        }
+
+        let Some(thread_id) = self.thread_id else {
+            return;
+        };
+
+        let mut saved_any = false;
+        let mut last_saved_path: Option<PathBuf> = None;
+
+        for content_item in content {
+            if let ContentItem::InputImage { image_url } = content_item {
+                if let Some(path) = self.save_generated_image(&thread_id.to_string(), &image_url) {
+                    saved_any = true;
+                    last_saved_path = Some(path);
+                }
+            }
+        }
+
+        if let (true, Some(path)) = (saved_any, last_saved_path) {
+            let display = display_path_for(&path, &self.config.cwd);
+            let hint = format!("{display} \u{00b7} run /open-image to open it");
+            self.add_info_message(
+                "Generated image saved".to_string(),
+                Some(hint),
+            );
+            self.last_generated_image_path = Some(path);
+        }
+    }
+
+    fn save_generated_image(
+        &mut self,
+        session_id: &str,
+        image_url: &str,
+    ) -> Option<PathBuf> {
+        // Only handle data URLs of the form data:<mime>;base64,<data>.
+        let without_prefix = image_url.strip_prefix("data:")?;
+        let (meta, data_base64) = without_prefix.split_once(',')?;
+        let (mime, encoding) = meta.split_once(';')?;
+        if !encoding.eq_ignore_ascii_case("base64") {
+            return None;
+        }
+
+        let bytes = match BASE64_STANDARD.decode(data_base64) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!("failed to decode generated image data: {err}");
+                return None;
+            }
+        };
+
+        let ext = match mime {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            other => {
+                tracing::warn!("saving generated image with unrecognized mime type `{other}`");
+                "bin"
+            }
+        };
+
+        // If batch processing is active, save to source directory with _processed suffix.
+        if let Some(batch_state) = &self.batch_image_state {
+            if let Some(current_image) = &batch_state.current_image {
+                let source_dir = &batch_state.source_dir;
+                let original_stem: &str = current_image
+                    .file_stem()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str())
+                    .unwrap_or("output");
+                let processed_filename = format!("{original_stem}_processed.{ext}");
+                let path = source_dir.join(processed_filename);
+                if let Err(err) = std::fs::write(&path, &bytes) {
+                    tracing::warn!(
+                        "failed to write batch processed image to {}: {err}",
+                        path.display()
+                    );
+                    return None;
+                }
+                return Some(path);
+            }
+        }
+
+        // Default behavior: save to ~/.codex/images/{session_id}/
+        let dir = self
+            .config
+            .codex_home
+            .join("images")
+            .join(session_id);
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            tracing::warn!("failed to create images directory {}: {err}", dir.display());
+            return None;
+        }
+
+        let index = self.next_generated_image_index;
+        self.next_generated_image_index = self.next_generated_image_index.saturating_add(1);
+        let filename = format!("{index:06}.{ext}");
+        let path = dir.join(filename);
+        if let Err(err) = std::fs::write(&path, &bytes) {
+            tracing::warn!(
+                "failed to write generated image to {}: {err}",
+                path.display()
+            );
+            return None;
+        }
+
+        Some(path)
+    }
+
+    fn open_last_generated_image(&mut self) {
+        let Some(path) = self.last_generated_image_path.clone() else {
+            self.add_info_message(
+                "No generated image is available to open yet.".to_string(),
+                None,
+            );
+            return;
+        };
+
+        let display = display_path_for(&path, &self.config.cwd);
+
+        match Self::open_image_in_viewer(&path) {
+            Ok(()) => {
+                self.add_info_message(
+                    "Opening generated image".to_string(),
+                    Some(display),
+                );
+            }
+            Err(error) => {
+                self.add_error_message(format!(
+                    "Failed to open generated image: {error}"
+                ));
+            }
+        }
+    }
+
+    fn open_image_in_viewer(path: &Path) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        let cmd_result = std::process::Command::new("open").arg(path).spawn();
+
+        #[cfg(target_os = "linux")]
+        let cmd_result = std::process::Command::new("xdg-open").arg(path).spawn();
+
+        #[cfg(target_os = "windows")]
+        let cmd_result = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn();
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        let cmd_result = Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "opening images is not supported on this platform",
+        ));
+
+        cmd_result
+            .map(|_| ())
+            .map_err(|error| format!("failed to spawn image viewer: {error}"))
     }
 
     fn show_rename_prompt(&mut self) {
@@ -3891,8 +4953,8 @@ impl ChatWidget {
             EventMsg::CollabCloseBegin(_) => {}
             EventMsg::CollabCloseEnd(ev) => self.on_collab_event(collab::close_end(ev)),
             EventMsg::ThreadRolledBack(_) => {}
-            EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
+            EventMsg::RawResponseItem(ev) => self.on_raw_response_item(ev),
+            EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)

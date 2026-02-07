@@ -1453,6 +1453,7 @@ async fn auto_compact_runs_after_resume_when_token_usage_is_over_limit() {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
@@ -2277,6 +2278,7 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
@@ -2398,6 +2400,7 @@ async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         codex_protocol::models::ResponseItem::Compaction {
             encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
