@@ -1,6 +1,7 @@
 //! Gemini API request/response types.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 
 use codex_protocol::protocol::TokenUsage;

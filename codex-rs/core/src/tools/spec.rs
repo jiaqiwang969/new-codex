@@ -3,6 +3,8 @@ use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::model_compat::model_supports_web_search_external_web_access;
+use crate::model_compat::model_supports_web_search_tool;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
@@ -29,6 +31,8 @@ pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_mode: Option<WebSearchMode>,
+    pub web_search_supported: bool,
+    pub web_search_supports_external_web_access: bool,
     pub collab_tools: bool,
     pub collaboration_modes_tools: bool,
     pub memory_tools: bool,
@@ -54,6 +58,9 @@ impl ToolsConfig {
         let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
         let include_memory_tools = features.enabled(Feature::MemoryTool);
         let request_rule_enabled = features.enabled(Feature::RequestRule);
+        let web_search_supported = model_supports_web_search_tool(model_info.slug.as_str());
+        let web_search_supports_external_web_access =
+            model_supports_web_search_external_web_access(model_info.slug.as_str());
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -84,6 +91,8 @@ impl ToolsConfig {
             shell_type,
             apply_patch_tool_type,
             web_search_mode: *web_search_mode,
+            web_search_supported,
+            web_search_supports_external_web_access,
             collab_tools: include_collab_tools,
             collaboration_modes_tools: include_collaboration_modes_tools,
             memory_tools: include_memory_tools,
@@ -1412,18 +1421,24 @@ pub(crate) fn build_specs(
         builder.register_handler("test_sync_tool", test_sync_handler);
     }
 
-    match config.web_search_mode {
-        Some(WebSearchMode::Cached) => {
-            builder.push_spec(ToolSpec::WebSearch {
-                external_web_access: Some(false),
-            });
+    if config.web_search_supported {
+        match config.web_search_mode {
+            Some(WebSearchMode::Cached) => {
+                builder.push_spec(ToolSpec::WebSearch {
+                    external_web_access: config
+                        .web_search_supports_external_web_access
+                        .then_some(false),
+                });
+            }
+            Some(WebSearchMode::Live) => {
+                builder.push_spec(ToolSpec::WebSearch {
+                    external_web_access: config
+                        .web_search_supports_external_web_access
+                        .then_some(true),
+                });
+            }
+            Some(WebSearchMode::Disabled) | None => {}
         }
-        Some(WebSearchMode::Live) => {
-            builder.push_spec(ToolSpec::WebSearch {
-                external_web_access: Some(true),
-            });
-        }
-        Some(WebSearchMode::Disabled) | None => {}
     }
 
     builder.push_spec_with_parallel_support(create_view_image_tool(), true);
@@ -1835,6 +1850,88 @@ mod tests {
                 external_web_access: Some(true),
             }
         );
+    }
+
+    #[test]
+    fn grok_web_search_omits_external_web_access() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("grok-4-latest", &config);
+        let features = Features::with_defaults();
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Live),
+        });
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+
+        let tool = find_tool(&tools, "web_search");
+        assert_eq!(
+            tool.spec,
+            ToolSpec::WebSearch {
+                external_web_access: None,
+            }
+        );
+    }
+
+    #[test]
+    fn xai_prefixed_grok_web_search_omits_external_web_access() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("xai/grok-4-latest", &config);
+        let features = Features::with_defaults();
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Live),
+        });
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+
+        let tool = find_tool(&tools, "web_search");
+        assert_eq!(
+            tool.spec,
+            ToolSpec::WebSearch {
+                external_web_access: None,
+            }
+        );
+    }
+
+    #[test]
+    fn grok_3_web_search_is_disabled() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("grok-3", &config);
+        let features = Features::with_defaults();
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Live),
+        });
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+
+        assert!(
+            !tools.iter().any(|tool| tool.spec.name() == "web_search"),
+            "grok-3 currently rejects the web_search tool in the xAI Responses API"
+        );
+    }
+
+    #[test]
+    fn grok_models_use_json_apply_patch_tool() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("grok-4-latest", &config);
+        let features = Features::with_defaults();
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+        });
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+
+        let tool = find_tool(&tools, "apply_patch");
+        let ToolSpec::Function(ResponsesApiTool { .. }) = &tool.spec else {
+            panic!("grok apply_patch tool should be JSON function");
+        };
     }
 
     #[test]

@@ -36,11 +36,13 @@
 //! expectations/tests accordingly.
 
 use std::path::PathBuf;
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use crate::api_bridge::CoreAuthProvider;
 use crate::api_bridge::auth_provider_from_auth;
@@ -75,6 +77,8 @@ use codex_otel::OtelManager;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -87,7 +91,6 @@ use http::HeaderValue;
 use http::StatusCode as HttpStatusCode;
 use reqwest::StatusCode;
 use serde_json::Value;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
@@ -107,6 +110,11 @@ use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
+use crate::model_compat::model_supports_data_url_input_images;
+use crate::model_compat::model_supports_input_images;
+use crate::model_compat::model_supports_memory_trace_summarize;
+use crate::model_compat::model_supports_reasoning_effort;
+use crate::model_compat::normalized_grok_model_slug;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::tools::spec::create_tools_json_for_responses_api;
@@ -210,13 +218,14 @@ impl Clone for ModelClientState {
             conversation_id: self.conversation_id,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
-            model_verbosity: self.model_verbosity.clone(),
+            model_verbosity: self.model_verbosity,
             enable_responses_websockets: self.enable_responses_websockets,
             enable_request_compression: self.enable_request_compression,
             include_timing_metrics: self.include_timing_metrics,
             beta_features_header: self.beta_features_header.clone(),
             disable_websockets: AtomicBool::new(
-                self.disable_websockets.load(std::sync::atomic::Ordering::Relaxed),
+                self.disable_websockets
+                    .load(std::sync::atomic::Ordering::Relaxed),
             ),
         }
     }
@@ -444,8 +453,9 @@ impl ModelClient {
                 .with_telemetry(Some(request_telemetry));
 
         let instructions = prompt.base_instructions.text.clone();
+        let model_slug = canonical_model_slug_for_provider(&self.state.provider, &model_info.slug);
         let payload = ApiCompactionInput {
-            model: &model_info.slug,
+            model: model_slug.as_ref(),
             input: &prompt.input,
             instructions: &instructions,
         };
@@ -473,13 +483,22 @@ impl ModelClient {
         if traces.is_empty() {
             return Ok(Vec::new());
         }
+        if !supports_memory_trace_summarize(&self.state.provider, &model_info.slug) {
+            return Err(CodexErr::UnsupportedOperation(
+                "Memory trace summarization is not supported by the Grok provider.".to_string(),
+            ));
+        }
 
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(otel_manager);
-        let client =
-            ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
+        let client = ApiMemoriesClient::new(
+            transport,
+            client_setup.api_provider,
+            client_setup.api_auth,
+        )
+            .with_telemetry(Some(request_telemetry));
+        let effort = sanitize_reasoning_effort_for_model(effort, &model_info.slug);
 
         let payload = ApiMemoryTraceSummarizeInput {
             model: model_info.slug.clone(),
@@ -776,18 +795,12 @@ impl ModelClientSession {
         let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header);
 
         let default_reasoning_effort = model_info.default_reasoning_level;
-        let reasoning = if model_info.supports_reasoning_summaries {
-            Some(Reasoning {
-                effort: effort.or(default_reasoning_effort),
-                summary: if summary == ReasoningSummaryConfig::None {
-                    None
-                } else {
-                    Some(summary)
-                },
-            })
-        } else {
-            None
-        };
+        let effort = sanitize_reasoning_effort_for_model(
+            effort.or(default_reasoning_effort),
+            &model_info.slug,
+        );
+        let reasoning =
+            build_reasoning_payload(model_info.supports_reasoning_summaries, effort, summary);
 
         let include = if reasoning.is_some() {
             vec!["reasoning.encrypted_content".to_string()]
@@ -1064,6 +1077,8 @@ impl ModelClientSession {
             return Ok(map_response_stream(stream, otel_manager.clone()));
         }
 
+        validate_image_input_compat(prompt, &model_info.slug)?;
+
         let auth_manager = self.client.state.auth_manager.clone();
         let api_prompt = Self::build_responses_request(prompt)?;
 
@@ -1091,9 +1106,11 @@ impl ModelClientSession {
                 turn_metadata_header,
                 compression,
             );
+            let model_slug =
+                canonical_model_slug_for_provider(&self.client.state.provider, &model_info.slug);
 
             let stream_result = client
-                .stream_prompt(&model_info.slug, &api_prompt, options)
+                .stream_prompt(model_slug.as_ref(), &api_prompt, options)
                 .await;
 
             match stream_result {
@@ -1122,6 +1139,8 @@ impl ModelClientSession {
         summary: ReasoningSummaryConfig,
         turn_metadata_header: Option<&str>,
     ) -> Result<ResponseStream> {
+        validate_image_input_compat(prompt, &model_info.slug)?;
+
         let auth_manager = self.client.state.auth_manager.clone();
         let api_prompt = Self::build_responses_request(prompt)?;
 
@@ -1140,6 +1159,10 @@ impl ModelClientSession {
                 turn_metadata_header,
                 compression,
             );
+            let model_slug =
+                canonical_model_slug_for_provider(&self.client.state.provider, &model_info.slug);
+            let request =
+                self.prepare_websocket_request(model_slug.as_ref(), &api_prompt, &options);
 
             match self
                 .websocket_connection(
@@ -1160,8 +1183,6 @@ impl ModelClientSession {
                 }
                 Err(err) => return Err(map_api_error(err)),
             }
-
-            let request = self.prepare_websocket_request(&model_info.slug, &api_prompt, &options);
 
             let stream_result = self
                 .connection
@@ -1252,9 +1273,7 @@ impl ModelClientSession {
                     .await
                 }
             }
-            WireApi::Gemini => {
-                self.stream_gemini(prompt, model_info, effort).await
-            }
+            WireApi::Gemini => self.stream_gemini(prompt, model_info, effort).await,
         }
     }
 
@@ -1300,9 +1319,7 @@ impl ModelClientSession {
 
         let provider = &self.client.state.provider;
         let base_url = provider.base_url.as_ref().ok_or_else(|| {
-            CodexErr::UnsupportedOperation(
-                "Gemini providers must define a base_url".to_string(),
-            )
+            CodexErr::UnsupportedOperation("Gemini providers must define a base_url".to_string())
         })?;
         let base_url = normalize_gemini_base_url(base_url);
 
@@ -1315,28 +1332,26 @@ impl ModelClientSession {
 
         let instructions = prompt.base_instructions.text.clone();
         let formatted_input = prompt.get_formatted_input();
-        let contents =
-            build_gemini_contents(&formatted_input, &prompt.reference_images, api_model);
+        let contents = build_gemini_contents(&formatted_input, &prompt.reference_images, api_model);
         if contents.is_empty() {
             return Err(CodexErr::UnsupportedOperation(
                 "Gemini requests require at least one message".to_string(),
             ));
         }
 
-        let system_instruction =
-            (!instructions.trim().is_empty()).then(|| GeminiContentRequest {
-                role: None,
-                parts: vec![GeminiPartRequest {
-                    text: Some(instructions),
-                    inline_data: None,
-                    function_call: None,
-                    function_response: None,
-                    thought_signature: None,
-                    compat_thought_signature: None,
-                }],
-            });
+        let system_instruction = (!instructions.trim().is_empty()).then(|| GeminiContentRequest {
+            role: None,
+            parts: vec![GeminiPartRequest {
+                text: Some(instructions),
+                inline_data: None,
+                function_call: None,
+                function_response: None,
+                thought_signature: None,
+                compat_thought_signature: None,
+            }],
+        });
 
-        let tools = build_gemini_tools(&prompt.tools);
+        let tools = build_gemini_tools(&prompt.tools, api_model);
         let tool_config = tools.as_ref().map(|_| GeminiToolConfig {
             function_calling_config: build_gemini_tool_config(
                 &prompt.tools,
@@ -1347,10 +1362,8 @@ impl ModelClientSession {
 
         let contents = ensure_active_loop_has_thought_signatures(&contents);
 
-        let reasoning_effort =
-            effort.or(model_info.default_reasoning_level);
-        let thinking_config =
-            build_gemini_thinking_config(api_model, reasoning_effort);
+        let reasoning_effort = effort.or(model_info.default_reasoning_level);
+        let thinking_config = build_gemini_thinking_config(api_model, reasoning_effort);
 
         let generation_config = Some(GeminiGenerationConfig {
             temperature: Some(1.0),
@@ -1388,10 +1401,10 @@ impl ModelClientSession {
             safety_settings,
         };
 
-        if std::env::var("CODEX_DEBUG_GEMINI_REQUEST").is_ok() {
-            if let Ok(json) = serde_json::to_string_pretty(&request) {
-                tracing::debug!("DEBUG GEMINI REQUEST:\n{json}");
-            }
+        if std::env::var("CODEX_DEBUG_GEMINI_REQUEST").is_ok()
+            && let Ok(json) = serde_json::to_string_pretty(&request)
+        {
+            tracing::debug!("DEBUG GEMINI REQUEST:\n{json}");
         }
 
         let client = crate::default_client::build_reqwest_client();
@@ -1440,10 +1453,9 @@ impl ModelClientSession {
                     };
 
                     if should_retry && attempt < MAX_ATTEMPTS {
-                        let jitter = (current_delay as f64
-                            * 0.3
-                            * (rand::random::<f64>() * 2.0 - 1.0))
-                            as u64;
+                        let jitter =
+                            (current_delay as f64 * 0.3 * (rand::random::<f64>() * 2.0 - 1.0))
+                                as u64;
                         let delay_with_jitter = current_delay.saturating_add(jitter);
                         tracing::debug!(
                             "Gemini request attempt {} failed, retrying after {}ms: {}",
@@ -1471,8 +1483,7 @@ impl ModelClientSession {
             let body = response.text().await.unwrap_or_default();
 
             // Graceful degradation for thought_signature validation errors.
-            if (status == StatusCode::TOO_MANY_REQUESTS
-                || status == StatusCode::BAD_REQUEST)
+            if (status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::BAD_REQUEST)
                 && body.contains("missing a `thought_signature`")
             {
                 let message = format!(
@@ -1514,11 +1525,141 @@ impl ModelClientSession {
     }
 }
 
+fn validate_image_input_compat(prompt: &Prompt, model_slug: &str) -> Result<()> {
+    if !model_supports_input_images(model_slug) && prompt_contains_input_images(prompt) {
+        return Err(CodexErr::UnsupportedOperation(format!(
+            "Model {model_slug} does not support image inputs."
+        )));
+    }
+
+    if model_supports_data_url_input_images(model_slug) || !prompt_contains_data_url_images(prompt)
+    {
+        return Ok(());
+    }
+
+    Err(CodexErr::UnsupportedOperation(format!(
+        "Model {model_slug} does not support `data:` image inputs. Use a public HTTPS image URL instead."
+    )))
+}
+
+fn build_reasoning_payload(
+    supports_reasoning_summaries: bool,
+    effort: Option<ReasoningEffortConfig>,
+    summary: ReasoningSummaryConfig,
+) -> Option<Reasoning> {
+    if !supports_reasoning_summaries {
+        return None;
+    }
+
+    let summary = if summary == ReasoningSummaryConfig::None {
+        None
+    } else {
+        Some(summary)
+    };
+    if effort.is_none() && summary.is_none() {
+        return None;
+    }
+
+    Some(Reasoning { effort, summary })
+}
+
+fn sanitize_reasoning_effort_for_model(
+    effort: Option<ReasoningEffortConfig>,
+    model_slug: &str,
+) -> Option<ReasoningEffortConfig> {
+    if effort.is_none() || model_supports_reasoning_effort(model_slug) {
+        return effort;
+    }
+
+    warn!(
+        "model_reasoning_effort is set but ignored as the model does not support reasoning.effort: {model_slug}"
+    );
+    None
+}
+
+fn supports_memory_trace_summarize(provider: &ModelProviderInfo, model_slug: &str) -> bool {
+    !provider.is_grok() && model_supports_memory_trace_summarize(model_slug)
+}
+
+fn canonical_model_slug_for_provider<'a>(
+    provider: &ModelProviderInfo,
+    model_slug: &'a str,
+) -> Cow<'a, str> {
+    if !provider.is_grok() {
+        return Cow::Borrowed(model_slug);
+    }
+
+    let canonical = match normalized_grok_model_slug(model_slug) {
+        Some("grok-4.1") => "grok-4-latest",
+        Some(grok_slug) => grok_slug,
+        None => model_slug,
+    };
+    Cow::Borrowed(canonical)
+}
+
+fn prompt_contains_input_images(prompt: &Prompt) -> bool {
+    prompt.input.iter().any(response_item_contains_input_image)
+}
+
+fn response_item_contains_input_image(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { content, .. } => content.iter().any(content_item_is_input_image),
+        ResponseItem::FunctionCallOutput { output, .. } => output
+            .content_items()
+            .is_some_and(|items| items.iter().any(function_output_item_is_input_image)),
+        _ => false,
+    }
+}
+
+fn prompt_contains_data_url_images(prompt: &Prompt) -> bool {
+    prompt
+        .input
+        .iter()
+        .any(response_item_contains_data_url_image)
+}
+
+fn response_item_contains_data_url_image(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { content, .. } => content.iter().any(content_item_is_data_url_image),
+        ResponseItem::FunctionCallOutput { output, .. } => output
+            .content_items()
+            .is_some_and(|items| items.iter().any(function_output_item_is_data_url_image)),
+        _ => false,
+    }
+}
+
+fn content_item_is_input_image(item: &ContentItem) -> bool {
+    matches!(item, ContentItem::InputImage { .. })
+}
+
+fn content_item_is_data_url_image(item: &ContentItem) -> bool {
+    matches!(
+        item,
+        ContentItem::InputImage { image_url } if is_data_url_image(image_url)
+    )
+}
+
+fn function_output_item_is_input_image(item: &FunctionCallOutputContentItem) -> bool {
+    matches!(item, FunctionCallOutputContentItem::InputImage { .. })
+}
+
+fn function_output_item_is_data_url_image(item: &FunctionCallOutputContentItem) -> bool {
+    matches!(
+        item,
+        FunctionCallOutputContentItem::InputImage { image_url } if is_data_url_image(image_url)
+    )
+}
+
+fn is_data_url_image(url: &str) -> bool {
+    url.trim_start()
+        .get(..11)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/"))
+}
+
 /// Adapts the core `Prompt` type into the `codex-api` payload shape.
 fn build_api_prompt(prompt: &Prompt, instructions: String, tools_json: Vec<Value>) -> ApiPrompt {
-    let input = crate::gemini_content::strip_thought_signatures_from_input(
-        &prompt.get_formatted_input(),
-    );
+    let input =
+        crate::gemini_content::strip_thought_signatures_from_input(&prompt.get_formatted_input());
     ApiPrompt {
         instructions,
         input,
@@ -1702,5 +1843,379 @@ impl WebsocketTelemetry for ApiTelemetry {
         duration: Duration,
     ) {
         self.otel_manager.record_websocket_event(result, duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models_manager::model_info::find_model_info_for_slug;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    fn test_session(provider: ModelProviderInfo) -> ModelClientSession {
+        let client = ModelClient::new(
+            None,
+            ThreadId::new(),
+            provider,
+            SessionSource::Exec,
+            None,
+            false,
+            false,
+            false,
+            None,
+        );
+        client.new_session()
+    }
+
+    fn prompt_with_single_image(image_url: &str) -> Prompt {
+        Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputImage {
+                    image_url: image_url.to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+                thought_signature: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn grok_3_images_are_rejected_with_clear_error() {
+        let prompt = prompt_with_single_image("https://example.com/cat.png");
+
+        let err = validate_image_input_compat(&prompt, "grok-3")
+            .expect_err("grok-3 should reject image inputs");
+        let message = err.to_string();
+        assert!(
+            message.contains("does not support image inputs"),
+            "error should explain the compatibility issue, got: {message}"
+        );
+    }
+
+    #[test]
+    fn grok_data_url_images_remain_allowed() {
+        let prompt = prompt_with_single_image("data:image/png;base64,AAAA");
+
+        validate_image_input_compat(&prompt, "grok-4-0709")
+            .expect("grok-4 should keep existing data URL image behavior");
+    }
+
+    #[test]
+    fn grok_4_https_images_remain_allowed() {
+        let prompt = prompt_with_single_image("https://example.com/cat.png");
+
+        validate_image_input_compat(&prompt, "grok-4-latest")
+            .expect("grok-4 should keep existing HTTPS image behavior");
+    }
+
+    #[test]
+    fn non_grok_data_url_images_remain_allowed() {
+        let prompt = prompt_with_single_image("data:image/png;base64,AAAA");
+
+        validate_image_input_compat(&prompt, "gpt-5-codex")
+            .expect("non-grok models should keep existing data URL behavior");
+    }
+
+    #[test]
+    fn canonical_model_slug_maps_grok_aliases_for_grok_provider() {
+        let provider = ModelProviderInfo::create_grok_provider();
+
+        assert_eq!(
+            canonical_model_slug_for_provider(&provider, "grok-4.1"),
+            "grok-4-latest"
+        );
+        assert_eq!(
+            canonical_model_slug_for_provider(&provider, "xai/grok-4-latest"),
+            "grok-4-latest"
+        );
+        assert_eq!(
+            canonical_model_slug_for_provider(&provider, "grok-3-mini"),
+            "grok-3-mini"
+        );
+    }
+
+    #[test]
+    fn canonical_model_slug_keeps_original_for_non_grok_provider() {
+        let provider = ModelProviderInfo::create_openai_provider();
+
+        assert_eq!(
+            canonical_model_slug_for_provider(&provider, "xai/grok-4-latest"),
+            "xai/grok-4-latest"
+        );
+        assert_eq!(
+            canonical_model_slug_for_provider(&provider, "grok-4.1"),
+            "grok-4.1"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_is_filtered_for_grok_4_models() {
+        assert_eq!(
+            sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::Low), "grok-4-latest"),
+            None
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_is_kept_for_grok_3_mini_models() {
+        assert_eq!(
+            sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::Low), "grok-3-mini"),
+            Some(ReasoningEffortConfig::Low)
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_is_kept_for_non_grok_models() {
+        assert_eq!(
+            sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::Low), "gpt-5-codex"),
+            Some(ReasoningEffortConfig::Low)
+        );
+    }
+
+    #[test]
+    fn reasoning_payload_omits_when_disabled_without_effort() {
+        let reasoning = build_reasoning_payload(true, None, ReasoningSummaryConfig::None);
+
+        assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn reasoning_payload_keeps_summary_when_requested() {
+        let reasoning = build_reasoning_payload(true, None, ReasoningSummaryConfig::Auto);
+
+        assert_eq!(
+            serde_json::to_value(reasoning).unwrap(),
+            json!({"summary": "auto"})
+        );
+    }
+
+    #[test]
+    fn reasoning_payload_keeps_effort_when_present() {
+        let reasoning = build_reasoning_payload(
+            true,
+            Some(ReasoningEffortConfig::Low),
+            ReasoningSummaryConfig::None,
+        );
+
+        assert_eq!(
+            serde_json::to_value(reasoning).unwrap(),
+            json!({"effort": "low"})
+        );
+    }
+
+    #[test]
+    fn reasoning_payload_is_omitted_when_model_does_not_support_summaries() {
+        let reasoning = build_reasoning_payload(
+            false,
+            Some(ReasoningEffortConfig::Low),
+            ReasoningSummaryConfig::Auto,
+        );
+
+        assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn responses_options_omit_reasoning_when_grok_effort_is_filtered_and_summary_is_disabled() {
+        let session = test_session(ModelProviderInfo::create_grok_provider());
+        let prompt = Prompt::default();
+        let model_info = find_model_info_for_slug("grok-4-latest");
+        let options = session.build_responses_options(
+            &prompt,
+            &model_info,
+            Some(ReasoningEffortConfig::Low),
+            ReasoningSummaryConfig::None,
+            None,
+            Compression::None,
+        );
+
+        assert!(options.reasoning.is_none());
+        assert!(options.include.is_empty());
+    }
+
+    #[test]
+    fn responses_options_keep_reasoning_summary_for_grok_models() {
+        let session = test_session(ModelProviderInfo::create_grok_provider());
+        let prompt = Prompt::default();
+        let model_info = find_model_info_for_slug("grok-4-latest");
+        let options = session.build_responses_options(
+            &prompt,
+            &model_info,
+            Some(ReasoningEffortConfig::Low),
+            ReasoningSummaryConfig::Auto,
+            None,
+            Compression::None,
+        );
+
+        assert_eq!(
+            serde_json::to_value(options.reasoning).unwrap(),
+            json!({"summary": "auto"})
+        );
+        assert_eq!(
+            options.include,
+            vec!["reasoning.encrypted_content".to_string()]
+        );
+    }
+
+    #[test]
+    fn responses_options_keep_reasoning_effort_for_non_grok_models() {
+        let session = test_session(ModelProviderInfo::create_openai_provider());
+        let prompt = Prompt::default();
+        let model_info = find_model_info_for_slug("gpt-5-codex");
+        let options = session.build_responses_options(
+            &prompt,
+            &model_info,
+            Some(ReasoningEffortConfig::Low),
+            ReasoningSummaryConfig::None,
+            None,
+            Compression::None,
+        );
+
+        assert_eq!(
+            serde_json::to_value(options.reasoning).unwrap(),
+            json!({"effort": "low"})
+        );
+        assert_eq!(
+            options.include,
+            vec!["reasoning.encrypted_content".to_string()]
+        );
+    }
+
+    #[test]
+    fn responses_options_omit_reasoning_for_models_without_reasoning_summaries() {
+        let session = test_session(ModelProviderInfo::create_gemini_provider());
+        let prompt = Prompt::default();
+        let model_info = find_model_info_for_slug("gemini-2.5-pro");
+        let options = session.build_responses_options(
+            &prompt,
+            &model_info,
+            Some(ReasoningEffortConfig::Low),
+            ReasoningSummaryConfig::Auto,
+            None,
+            Compression::None,
+        );
+
+        assert!(options.reasoning.is_none());
+        assert!(options.include.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summarize_memory_traces_fails_fast_for_grok_models() {
+        let client = ModelClient::new(
+            None,
+            ThreadId::new(),
+            ModelProviderInfo::create_grok_provider(),
+            SessionSource::Exec,
+            None,
+            false,
+            false,
+            false,
+            None,
+        );
+        let model_info = find_model_info_for_slug("grok-4-latest");
+        let otel_manager = OtelManager::new(
+            ThreadId::new(),
+            "grok-4-latest",
+            "grok-4-latest",
+            None,
+            None,
+            None,
+            false,
+            "test".to_string(),
+            SessionSource::Exec,
+        );
+        let traces = vec![ApiMemoryTrace {
+            id: "trace-1".to_string(),
+            metadata: codex_api::MemoryTraceMetadata {
+                source_path: "trace.jsonl".to_string(),
+            },
+            items: vec![json!({"role": "user", "content": "hello"})],
+        }];
+
+        let err = client
+            .summarize_memory_traces(
+                traces,
+                &model_info,
+                Some(ReasoningEffortConfig::Low),
+                &otel_manager,
+            )
+            .await
+            .expect_err("grok should fail fast before making memory trace requests");
+
+        assert!(
+            err.to_string().contains("Memory trace summarization"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn summarize_memory_traces_fails_fast_when_provider_is_grok() {
+        let client = ModelClient::new(
+            None,
+            ThreadId::new(),
+            ModelProviderInfo::create_grok_provider(),
+            SessionSource::Exec,
+            None,
+            false,
+            false,
+            false,
+            None,
+        );
+        let model_info = find_model_info_for_slug("gpt-5-codex");
+        let otel_manager = OtelManager::new(
+            ThreadId::new(),
+            "gpt-5-codex",
+            "gpt-5-codex",
+            None,
+            None,
+            None,
+            false,
+            "test".to_string(),
+            SessionSource::Exec,
+        );
+        let traces = vec![ApiMemoryTrace {
+            id: "trace-1".to_string(),
+            metadata: codex_api::MemoryTraceMetadata {
+                source_path: "trace.jsonl".to_string(),
+            },
+            items: vec![json!({"role": "user", "content": "hello"})],
+        }];
+
+        let err = client
+            .summarize_memory_traces(
+                traces,
+                &model_info,
+                Some(ReasoningEffortConfig::Low),
+                &otel_manager,
+            )
+            .await
+            .expect_err("grok provider should fail fast before making memory trace requests");
+
+        assert!(
+            err.to_string().contains("Memory trace summarization"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn memory_trace_summarization_is_disabled_for_grok_models() {
+        assert!(!model_supports_memory_trace_summarize("grok-4-latest"));
+        assert!(!model_supports_memory_trace_summarize("xai/grok-4-latest"));
+    }
+
+    #[test]
+    fn memory_trace_summarization_stays_enabled_for_non_grok_models() {
+        assert!(model_supports_memory_trace_summarize("gpt-5-codex"));
+    }
+
+    #[test]
+    fn memory_trace_summarization_is_disabled_when_provider_is_grok() {
+        let provider = ModelProviderInfo::create_grok_provider();
+
+        assert!(!supports_memory_trace_summarize(&provider, "gpt-5-codex"));
     }
 }

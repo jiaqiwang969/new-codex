@@ -34,12 +34,16 @@ use crate::features::FeatureOverrides;
 use crate::features::Features;
 use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
+use crate::model_compat::is_gemma_model_slug;
+use crate::model_compat::is_grok_model_slug;
+use crate::model_provider_info::GEMINI_PROVIDER_ID;
+use crate::model_provider_info::GEMMA_PROVIDER_ID;
+use crate::model_provider_info::GROK_PROVIDER_ID;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
-use crate::model_provider_info::GEMINI_PROVIDER_ID;
 use crate::model_provider_info::built_in_model_providers;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
@@ -1372,6 +1376,31 @@ pub(crate) fn resolve_web_search_mode_for_turn(
     WebSearchMode::Disabled
 }
 
+fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
+    if is_gemma_model_slug(model_slug) {
+        Some(GEMMA_PROVIDER_ID)
+    } else if model_slug.starts_with("gemini-") {
+        Some(GEMINI_PROVIDER_ID)
+    } else if is_grok_model_slug(model_slug) {
+        Some(GROK_PROVIDER_ID)
+    } else {
+        None
+    }
+}
+
+fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &str) -> bool {
+    match provider_id {
+        GEMINI_PROVIDER_ID => provider.wire_api == crate::model_provider_info::WireApi::Gemini,
+        GEMMA_PROVIDER_ID => {
+            provider.is_gemma()
+                || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
+                    && !provider.is_gemini())
+        }
+        GROK_PROVIDER_ID => provider.is_grok(),
+        _ => false,
+    }
+}
+
 impl Config {
     #[cfg(test)]
     fn load_from_base_config_with_overrides(
@@ -1600,17 +1629,16 @@ impl Config {
         // Save the user's explicitly configured provider before any auto-switching.
         let user_configured_provider = model_provider.clone();
 
-        // Auto-switch to the built-in Gemini provider when the selected model
-        // is a Gemini model but the current provider is not already Gemini.
-        if let Some(ref m) = model {
-            if m.starts_with("gemini-")
-                && model_provider_id != GEMINI_PROVIDER_ID
-            {
-                if let Some(gemini) = model_providers.get(GEMINI_PROVIDER_ID) {
-                    model_provider_id = GEMINI_PROVIDER_ID.to_string();
-                    model_provider = gemini.clone();
-                }
-            }
+        // Auto-switch to a built-in provider when the selected model belongs
+        // to a known provider family but the current provider is not already
+        // set to that provider.
+        if let Some(ref m) = model
+            && let Some(target_provider_id) = provider_id_for_model_family(m)
+            && !provider_matches_builtin_family(&model_provider, target_provider_id)
+            && let Some(target_provider) = model_providers.get(target_provider_id)
+        {
+            model_provider_id = target_provider_id.to_string();
+            model_provider = target_provider.clone();
         }
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
@@ -4550,6 +4578,281 @@ trust_level = "trusted"
 trust_level = "trusted"
 "#;
         assert_eq!(contents, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn grok_model_auto_switches_to_grok_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("grok-4-latest".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GROK_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Grok");
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("XAI_API_KEY")
+        );
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemini_model_auto_switches_to_gemini_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gemini-2.5-pro".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMINI_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemini");
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("GEMINI_API_KEY")
+        );
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_model_auto_switches_to_gemma_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gemma-3n".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMMA_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemma");
+        assert_eq!(config.model_provider.env_key, None);
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_model_overrides_builtin_gemini_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gemma-3n".to_string()),
+            model_provider: Some(GEMINI_PROVIDER_ID.to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMMA_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemma");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_model_does_not_override_custom_gemini_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "gemini-proxy".to_string();
+        let custom_gemini_provider = ModelProviderInfo {
+            name: "Gemini Proxy".to_string(),
+            base_url: Some("http://localhost:5001/v1beta".to_string()),
+            env_key: None,
+            wire_api: crate::WireApi::Gemini,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(custom_provider_id.clone(), custom_gemini_provider.clone());
+
+        let cfg = ConfigToml {
+            model: Some("gemma-3n".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_gemini_provider);
+        assert_eq!(config.user_configured_provider, custom_gemini_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemini_model_does_not_override_custom_gemini_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "gemini-proxy".to_string();
+        let custom_gemini_provider = ModelProviderInfo {
+            name: "Gemini Proxy".to_string(),
+            base_url: Some("https://example.com/gemini".to_string()),
+            env_key: Some("GEMINI_API_KEY".to_string()),
+            wire_api: crate::WireApi::Gemini,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(custom_provider_id.clone(), custom_gemini_provider.clone());
+
+        let cfg = ConfigToml {
+            model: Some("gemini-2.5-pro".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_gemini_provider);
+        assert_eq!(config.user_configured_provider, custom_gemini_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn grok_model_does_not_override_custom_grok_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "grok-proxy".to_string();
+        let custom_grok_provider = ModelProviderInfo {
+            name: "Grok".to_string(),
+            base_url: Some("https://example.com/grok".to_string()),
+            env_key: Some("XAI_API_KEY".to_string()),
+            wire_api: crate::WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(custom_provider_id.clone(), custom_grok_provider.clone());
+
+        let cfg = ConfigToml {
+            model: Some("grok-4-latest".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_grok_provider);
+        assert_eq!(config.user_configured_provider, custom_grok_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn namespaced_grok_model_auto_switches_to_grok_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("xai/grok-4-latest".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GROK_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Grok");
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn namespaced_gemma_model_auto_switches_to_gemma_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("google/gemma-3n".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMMA_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemma");
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
 
         Ok(())
     }

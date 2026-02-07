@@ -13,6 +13,8 @@ use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
 use crate::features::Feature;
+use crate::model_compat::is_gemma_model_slug;
+use crate::model_compat::is_grok_model_slug;
 use crate::truncate::approx_bytes_for_tokens;
 use tracing::warn;
 
@@ -303,7 +305,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if slug.starts_with("gemini-") {
+    } else if slug.starts_with("gemini-") || is_gemma_model_slug(slug) {
         model_info!(
             slug,
             base_instructions: GEMINI_INSTRUCTIONS.to_string(),
@@ -313,12 +315,33 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: false,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
             context_window: Some(CONTEXT_WINDOW_1M),
-            default_reasoning_level: Some(ReasoningEffort::High),
+            default_reasoning_level: if is_gemma_model_slug(slug) {
+                Some(ReasoningEffort::Medium)
+            } else {
+                Some(ReasoningEffort::High)
+            },
             experimental_supported_tools: vec![
                 "grep_files".to_string(),
                 "list_dir".to_string(),
                 "read_file".to_string(),
             ],
+        )
+    } else if is_grok_model_slug(slug) {
+        // Grok speaks an OpenAI-compatible Responses API, but tool support differs from OpenAI:
+        // - `custom` (freeform) tools are rejected by xAI (so use JSON apply_patch if enabled)
+        // - `web_search` does not accept `external_web_access` toggles (cached/live)
+        // - `reasoning.effort` support is model-dependent (see model_compat.rs)
+        model_info!(
+            slug,
+            apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: true,
+            support_verbosity: true,
+            default_verbosity: Some(Verbosity::Low),
+            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            context_window: Some(CONTEXT_WINDOW_272K),
+            supported_reasoning_levels: Vec::new(),
         )
     } else {
         warn!("Unknown model {slug} is used. This will degrade the performance of Codex.");
@@ -405,4 +428,47 @@ fn supported_reasoning_level_low_medium_high_xhigh_non_codex() -> Vec<ReasoningE
             description: "Extra high reasoning for complex problems".to_string(),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_model_info_for_slug;
+    use codex_protocol::openai_models::ApplyPatchToolType;
+    use codex_protocol::openai_models::ConfigShellToolType;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn grok_models_use_function_apply_patch() {
+        let model = find_model_info_for_slug("grok-4-latest");
+
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
+        assert!(model.supports_parallel_tool_calls);
+        assert!(model.supports_reasoning_summaries);
+        assert!(model.support_verbosity);
+        assert!(model.supported_reasoning_levels.is_empty());
+    }
+
+    #[test]
+    fn gemma_models_use_gemini_defaults_with_medium_reasoning() {
+        let model = find_model_info_for_slug("gemma-3n");
+
+        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
+        assert!(model.supports_parallel_tool_calls);
+        assert!(!model.supports_reasoning_summaries);
+        assert!(!model.support_verbosity);
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+        assert_eq!(
+            model.experimental_supported_tools,
+            vec![
+                "grep_files".to_string(),
+                "list_dir".to_string(),
+                "read_file".to_string()
+            ]
+        );
+    }
 }

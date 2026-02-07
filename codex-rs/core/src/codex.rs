@@ -27,6 +27,8 @@ use crate::features::maybe_push_unstable_features_warning;
 use crate::hooks::HookEvent;
 use crate::hooks::HookEventAfterAgent;
 use crate::hooks::Hooks;
+use crate::model_compat::is_gemma_model_slug;
+use crate::model_compat::is_grok_model_slug;
 use crate::models_manager::manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
@@ -682,29 +684,60 @@ impl SessionConfiguration {
         }
 
         // Auto-switch provider when the model family changes between
-        // Gemini and non-Gemini.  This ensures that `/model` switches
-        // at runtime route requests to the correct API endpoint.
+        // known provider families and default OpenAI-compatible models.
+        // This ensures that `/model` switches at runtime route requests
+        // to the correct API endpoint.
         let new_model = next_configuration.collaboration_mode.model();
-        let is_gemini_model = new_model.starts_with("gemini-");
-        let is_gemini_provider =
-            next_configuration.provider.wire_api == crate::model_provider_info::WireApi::Gemini;
+        let target_provider_id = provider_id_for_model_family(new_model);
+        let current_provider_is_family_auto_switched = next_configuration.provider.wire_api
+            == crate::model_provider_info::WireApi::Gemini
+            || next_configuration.provider.is_grok();
 
-        if is_gemini_model && !is_gemini_provider {
-            // Switching TO a Gemini model: use the built-in Gemini provider.
-            let providers = crate::model_provider_info::built_in_model_providers();
-            if let Some(gemini) =
-                providers.get(crate::model_provider_info::GEMINI_PROVIDER_ID)
-            {
-                next_configuration.provider = gemini.clone();
+        if let Some(target_provider_id) = target_provider_id {
+            if !provider_matches_builtin_family(&next_configuration.provider, target_provider_id) {
+                let providers = crate::model_provider_info::built_in_model_providers();
+                if let Some(provider) = providers.get(target_provider_id) {
+                    next_configuration.provider = provider.clone();
+                }
             }
-        } else if !is_gemini_model && is_gemini_provider {
-            // Switching FROM a Gemini model back to a non-Gemini model:
-            // restore the user's explicitly configured provider (before auto-switching).
-            next_configuration.provider =
-                next_configuration.original_config_do_not_use.user_configured_provider.clone();
+        } else if current_provider_is_family_auto_switched {
+            // Switching FROM a family-specific provider back to a default
+            // model family: restore the user's explicitly configured provider
+            // (before auto-switching).
+            next_configuration.provider = next_configuration
+                .original_config_do_not_use
+                .user_configured_provider
+                .clone();
         }
 
         Ok(next_configuration)
+    }
+}
+
+fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
+    if is_gemma_model_slug(model_slug) {
+        Some(crate::model_provider_info::GEMMA_PROVIDER_ID)
+    } else if model_slug.starts_with("gemini-") {
+        Some(crate::model_provider_info::GEMINI_PROVIDER_ID)
+    } else if is_grok_model_slug(model_slug) {
+        Some(crate::model_provider_info::GROK_PROVIDER_ID)
+    } else {
+        None
+    }
+}
+
+fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &str) -> bool {
+    match provider_id {
+        crate::model_provider_info::GEMINI_PROVIDER_ID => {
+            provider.wire_api == crate::model_provider_info::WireApi::Gemini
+        }
+        crate::model_provider_info::GEMMA_PROVIDER_ID => {
+            provider.is_gemma()
+                || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
+                    && !provider.is_gemini())
+        }
+        crate::model_provider_info::GROK_PROVIDER_ID => provider.is_grok(),
+        _ => false,
     }
 }
 
@@ -3557,10 +3590,10 @@ mod handlers {
             let item = ResponseInputItem::from(vec![input]);
             if let ResponseInputItem::Message { content, .. } = item {
                 for entry in content {
-                    if let ContentItem::InputImage { image_url } = entry {
-                        if !image_url.trim().is_empty() {
-                            images.push(image_url);
-                        }
+                    if let ContentItem::InputImage { image_url } = entry
+                        && !image_url.trim().is_empty()
+                    {
+                        images.push(image_url);
                     }
                 }
             }
@@ -5064,19 +5097,19 @@ fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
         .iter()
         .rposition(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"));
 
-    if let Some(index) = last_user_index {
-        if let ResponseItem::Message { content, .. } = &input[index] {
-            let mut urls: Vec<String> = Vec::new();
-            for entry in content {
-                if let ContentItem::InputImage { image_url } = entry {
-                    if !image_url.trim().is_empty() {
-                        urls.push(image_url.clone());
-                    }
-                }
+    if let Some(index) = last_user_index
+        && let ResponseItem::Message { content, .. } = &input[index]
+    {
+        let mut urls: Vec<String> = Vec::new();
+        for entry in content {
+            if let ContentItem::InputImage { image_url } = entry
+                && !image_url.trim().is_empty()
+            {
+                urls.push(image_url.clone());
             }
-            if !urls.is_empty() {
-                return urls;
-            }
+        }
+        if !urls.is_empty() {
+            return urls;
         }
     }
 
@@ -5087,10 +5120,10 @@ fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
                 continue;
             }
             for entry in content.iter().rev() {
-                if let ContentItem::InputImage { image_url } = entry {
-                    if !image_url.trim().is_empty() {
-                        return vec![image_url.clone()];
-                    }
+                if let ContentItem::InputImage { image_url } = entry
+                    && !image_url.trim().is_empty()
+                {
+                    return vec![image_url.clone()];
                 }
             }
         }
@@ -5186,6 +5219,254 @@ mod tests {
             install_url: None,
             is_accessible: true,
         }
+    }
+
+    fn collaboration_mode_for_model(model: &str) -> CollaborationMode {
+        CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: model.to_string(),
+                reasoning_effort: None,
+                developer_instructions: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_switches_to_grok_provider_for_namespaced_grok_model() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        assert!(session_configuration.provider.is_openai());
+
+        let next = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("xai/grok-4-latest")),
+                ..Default::default()
+            })
+            .expect("model switch to grok should be valid");
+
+        assert!(next.provider.is_grok());
+        assert_eq!(next.provider.env_key.as_deref(), Some("XAI_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn apply_switches_to_gemma_provider_for_namespaced_gemma_model() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        assert!(session_configuration.provider.is_openai());
+
+        let next = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("google/gemma-3n")),
+                ..Default::default()
+            })
+            .expect("model switch to gemma should be valid");
+
+        assert!(next.provider.is_gemma());
+    }
+
+    #[tokio::test]
+    async fn apply_switches_from_gemini_provider_to_grok_provider() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let gemini = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemini-2.5-pro")),
+                ..Default::default()
+            })
+            .expect("model switch to gemini should be valid");
+        assert!(gemini.provider.is_gemini());
+
+        let grok = gemini
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("grok-4-latest")),
+                ..Default::default()
+            })
+            .expect("model switch from gemini to grok should be valid");
+
+        assert!(grok.provider.is_grok());
+    }
+
+    #[tokio::test]
+    async fn apply_switches_to_gemma_provider_for_gemma_model() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        assert!(session_configuration.provider.is_openai());
+
+        let next = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
+                ..Default::default()
+            })
+            .expect("model switch to gemma should be valid");
+
+        assert!(next.provider.is_gemma());
+        let expected_base_url = std::env::var("GEMMA_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "http://localhost:5001/v1beta".to_string());
+        assert_eq!(
+            next.provider.base_url.as_deref(),
+            Some(expected_base_url.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_switches_from_gemini_provider_to_gemma_provider() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let gemini = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemini-2.5-pro")),
+                ..Default::default()
+            })
+            .expect("model switch to gemini should be valid");
+        assert!(gemini.provider.is_gemini());
+
+        let gemma = gemini
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
+                ..Default::default()
+            })
+            .expect("model switch from gemini to gemma should be valid");
+
+        assert!(gemma.provider.is_gemma());
+    }
+
+    #[tokio::test]
+    async fn apply_keeps_custom_gemini_provider_for_gemini_models() {
+        let (session, _) = make_session_and_context().await;
+        let mut session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let mut custom_gemini_provider = session_configuration.provider.clone();
+        custom_gemini_provider.name = "Gemini Proxy".to_string();
+        custom_gemini_provider.base_url = Some("https://example.com/gemini".to_string());
+        custom_gemini_provider.env_key = Some("GEMINI_API_KEY".to_string());
+        custom_gemini_provider.wire_api = crate::model_provider_info::WireApi::Gemini;
+        custom_gemini_provider.requires_openai_auth = false;
+        custom_gemini_provider.supports_websockets = false;
+        session_configuration.provider = custom_gemini_provider.clone();
+
+        let next = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemini-2.5-pro")),
+                ..Default::default()
+            })
+            .expect("model switch to gemini should be valid");
+
+        assert_eq!(next.provider, custom_gemini_provider);
+    }
+
+    #[tokio::test]
+    async fn apply_keeps_custom_gemini_provider_for_gemma_models() {
+        let (session, _) = make_session_and_context().await;
+        let mut session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let mut custom_gemini_provider = session_configuration.provider.clone();
+        custom_gemini_provider.name = "Gemini Proxy".to_string();
+        custom_gemini_provider.base_url = Some("http://localhost:5001/v1beta".to_string());
+        custom_gemini_provider.env_key = None;
+        custom_gemini_provider.wire_api = crate::model_provider_info::WireApi::Gemini;
+        custom_gemini_provider.requires_openai_auth = false;
+        custom_gemini_provider.supports_websockets = false;
+        session_configuration.provider = custom_gemini_provider.clone();
+
+        let next = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
+                ..Default::default()
+            })
+            .expect("model switch to gemma should be valid");
+
+        assert_eq!(next.provider, custom_gemini_provider);
+    }
+
+    #[tokio::test]
+    async fn apply_restores_user_provider_when_switching_away_from_grok() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let expected_user_provider = session_configuration
+            .original_config_do_not_use
+            .user_configured_provider
+            .clone();
+
+        let grok = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("grok-4-latest")),
+                ..Default::default()
+            })
+            .expect("model switch to grok should be valid");
+        assert!(grok.provider.is_grok());
+
+        let restored = grok
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gpt-5-codex")),
+                ..Default::default()
+            })
+            .expect("model switch back to default family should be valid");
+
+        assert_eq!(restored.provider, expected_user_provider);
+    }
+
+    #[tokio::test]
+    async fn apply_restores_user_provider_when_switching_away_from_gemma() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let expected_user_provider = session_configuration
+            .original_config_do_not_use
+            .user_configured_provider
+            .clone();
+
+        let gemma = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
+                ..Default::default()
+            })
+            .expect("model switch to gemma should be valid");
+        assert!(gemma.provider.is_gemma());
+
+        let restored = gemma
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gpt-5-codex")),
+                ..Default::default()
+            })
+            .expect("model switch back to default family should be valid");
+
+        assert_eq!(restored.provider, expected_user_provider);
     }
 
     #[tokio::test]

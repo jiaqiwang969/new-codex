@@ -29,10 +29,14 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const GEMINI_PROVIDER_NAME: &str = "Gemini";
+const GEMMA_PROVIDER_NAME: &str = "Gemma";
+const GROK_PROVIDER_NAME: &str = "Grok";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const GEMINI_PROVIDER_ID: &str = "gemini";
+pub const GEMMA_PROVIDER_ID: &str = "gemma";
+pub const GROK_PROVIDER_ID: &str = "grok";
 
 /// Wire protocol that the provider speaks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
@@ -276,10 +280,21 @@ impl ModelProviderInfo {
         self.name == GEMINI_PROVIDER_NAME
     }
 
+    pub fn is_gemma(&self) -> bool {
+        self.name == GEMMA_PROVIDER_NAME
+    }
+
+    pub fn is_grok(&self) -> bool {
+        self.name == GROK_PROVIDER_NAME
+    }
+
     /// Apply this provider's HTTP headers (both static and env-based) to a
     /// `reqwest::RequestBuilder`. This is used by the Gemini streaming path
     /// which builds its own requests outside of the `codex-api` layer.
-    pub fn apply_http_headers(&self, mut builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    pub fn apply_http_headers(
+        &self,
+        mut builder: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
         if let Some(extra) = &self.http_headers {
             for (k, v) in extra {
                 builder = builder.header(k.as_str(), v.as_str());
@@ -287,10 +302,10 @@ impl ModelProviderInfo {
         }
         if let Some(env_headers) = &self.env_http_headers {
             for (header, env_var) in env_headers {
-                if let Ok(val) = std::env::var(env_var) {
-                    if !val.trim().is_empty() {
-                        builder = builder.header(header.as_str(), val.as_str());
-                    }
+                if let Ok(val) = std::env::var(env_var)
+                    && !val.trim().is_empty()
+                {
+                    builder = builder.header(header.as_str(), val.as_str());
                 }
             }
         }
@@ -333,6 +348,56 @@ impl ModelProviderInfo {
             supports_websockets: false,
         }
     }
+
+    pub fn create_grok_provider() -> ModelProviderInfo {
+        let base_url = std::env::var("XAI_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "https://api.x.ai/v1".to_string());
+
+        ModelProviderInfo {
+            name: GROK_PROVIDER_NAME.into(),
+            base_url: Some(base_url),
+            env_key: Some("XAI_API_KEY".into()),
+            env_key_instructions: Some(
+                "Get an xAI API key at https://console.x.ai and set XAI_API_KEY.".into(),
+            ),
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_gemma_provider() -> ModelProviderInfo {
+        let base_url = std::env::var("GEMMA_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "http://localhost:5001/v1beta".to_string());
+
+        ModelProviderInfo {
+            name: GEMMA_PROVIDER_NAME.into(),
+            base_url: Some(base_url),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Gemini,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(3),
+            stream_max_retries: Some(3),
+            stream_idle_timeout_ms: Some(300_000),
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
 }
 
 pub const DEFAULT_LMSTUDIO_PORT: u16 = 1234;
@@ -345,16 +410,13 @@ pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
 
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
+    // Keep the built-in set intentionally small. Users can add or override
+    // providers at runtime via `model_providers` in config.toml.
     [
         ("openai", P::create_openai_provider()),
-        (
-            GEMINI_PROVIDER_ID,
-            P::create_gemini_provider(),
-        ),
+        (GEMINI_PROVIDER_ID, P::create_gemini_provider()),
+        (GEMMA_PROVIDER_ID, P::create_gemma_provider()),
+        (GROK_PROVIDER_ID, P::create_grok_provider()),
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
@@ -516,5 +578,43 @@ wire_api = "chat"
 
         let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
         assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+    }
+
+    #[test]
+    fn built_in_model_providers_include_grok() {
+        let providers = built_in_model_providers();
+        let grok = providers
+            .get(GROK_PROVIDER_ID)
+            .expect("built-in providers should include grok");
+        let expected_base_url = std::env::var("XAI_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "https://api.x.ai/v1".to_string());
+
+        assert_eq!(grok.name, GROK_PROVIDER_NAME);
+        assert_eq!(grok.env_key.as_deref(), Some("XAI_API_KEY"));
+        assert_eq!(grok.base_url.as_deref(), Some(expected_base_url.as_str()));
+        assert_eq!(grok.wire_api, WireApi::Responses);
+        assert!(!grok.requires_openai_auth);
+        assert!(!grok.supports_websockets);
+    }
+
+    #[test]
+    fn built_in_model_providers_include_gemma() {
+        let providers = built_in_model_providers();
+        let gemma = providers
+            .get(GEMMA_PROVIDER_ID)
+            .expect("built-in providers should include gemma");
+        let expected_base_url = std::env::var("GEMMA_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "http://localhost:5001/v1beta".to_string());
+
+        assert_eq!(gemma.name, GEMMA_PROVIDER_NAME);
+        assert_eq!(gemma.base_url.as_deref(), Some(expected_base_url.as_str()));
+        assert_eq!(gemma.wire_api, WireApi::Gemini);
+        assert_eq!(gemma.env_key, None);
+        assert!(!gemma.requires_openai_auth);
+        assert!(!gemma.supports_websockets);
     }
 }

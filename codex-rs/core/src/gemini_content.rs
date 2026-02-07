@@ -8,13 +8,16 @@ use std::collections::HashMap;
 use serde_json::Value;
 use tracing::debug;
 
-use codex_protocol::models::{
-    ContentItem, FunctionCallOutputContentItem, FunctionCallOutputPayload, ResponseItem,
-};
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 
-use crate::client_common::tools::{ResponsesApiTool, ToolSpec};
+use crate::client_common::tools::ResponsesApiTool;
+use crate::client_common::tools::ToolSpec;
 use crate::gemini_types::*;
+use crate::model_compat::is_gemma_model_slug;
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -33,6 +36,17 @@ const GEMINI_READ_ONLY_TOOL_NAMES: [&str; 9] = [
     "shell_command",
 ];
 
+const GEMMA_STABLE_TOOL_NAMES: [&str; 8] = [
+    "shell_command",
+    "exec_command",
+    "write_stdin",
+    "grep_files",
+    "list_dir",
+    "read_file",
+    "update_plan",
+    "view_image",
+];
+
 // ── URL helpers ──────────────────────────────────────────────────────
 
 pub(crate) fn normalize_gemini_base_url(base_url: &str) -> Cow<'_, str> {
@@ -47,6 +61,10 @@ pub(crate) fn normalize_gemini_base_url(base_url: &str) -> Cow<'_, str> {
 // ── Model helpers ────────────────────────────────────────────────────
 
 pub(crate) fn is_gemini_3_model(api_model: &str) -> bool {
+    api_model.starts_with("gemini-3") || api_model.starts_with("gemma-3")
+}
+
+fn supports_multiple_inline_images(api_model: &str) -> bool {
     api_model.starts_with("gemini-3")
 }
 
@@ -55,7 +73,8 @@ pub(crate) fn is_gemini_3_model(api_model: &str) -> bool {
 pub(crate) fn strip_model_suffix(model: &str) -> &str {
     let m = model.strip_suffix("-codex").unwrap_or(model);
     let m = m.strip_suffix("-germini").unwrap_or(m);
-    m.strip_suffix("-gemini").unwrap_or(m)
+    let m = m.strip_suffix("-gemini").unwrap_or(m);
+    m.strip_prefix("google/").unwrap_or(m)
 }
 
 // ── Thinking config ──────────────────────────────────────────────────
@@ -111,6 +130,7 @@ pub(crate) fn build_gemini_tool_config(
     formatted_input: &[ResponseItem],
     api_model: &str,
 ) -> GeminiFunctionCallingConfig {
+    let is_gemma_model = is_gemma_model_slug(api_model);
     let force_read_first = std::env::var("CODEX_GEMINI_FORCE_READ_TOOLS_FIRST_TURN")
         .ok()
         .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
@@ -132,19 +152,28 @@ pub(crate) fn build_gemini_tool_config(
 
     let should_force = force_read_first.unwrap_or(is_first_turn_with_user_text);
 
-    let stream_fn_args = if is_gemini_3_model(api_model) {
+    let stream_fn_args = if is_gemini_3_model(api_model) && !is_gemma_model {
         Some(true)
     } else {
         None
     };
 
+    if is_gemma_model {
+        // Local Gemma servers frequently emit "tool intent" text without a real
+        // functionCall payload. Keep function-calling in AUTO mode to avoid
+        // hard-forcing tool paths that cannot be executed reliably.
+        return GeminiFunctionCallingConfig {
+            mode: GeminiFunctionCallingMode::Auto,
+            allowed_function_names: None,
+            stream_function_call_arguments: None,
+        };
+    }
+
     if should_force {
         let allowed: Vec<String> = tools
             .iter()
             .filter_map(|t| match t {
-                ToolSpec::Function(f)
-                    if GEMINI_READ_ONLY_TOOL_NAMES.contains(&f.name.as_str()) =>
-                {
+                ToolSpec::Function(f) if GEMINI_READ_ONLY_TOOL_NAMES.contains(&f.name.as_str()) => {
                     Some(f.name.clone())
                 }
                 _ => None,
@@ -186,8 +215,10 @@ fn strip_additional_properties(value: &mut Value) {
     }
 }
 
-pub(crate) fn build_gemini_tools(tools: &[ToolSpec]) -> Option<Vec<GeminiTool>> {
+pub(crate) fn build_gemini_tools(tools: &[ToolSpec], api_model: &str) -> Option<Vec<GeminiTool>> {
+    let filter_for_gemma = is_gemma_model_slug(api_model);
     let mut functions = Vec::new();
+    let mut filtered_out = 0usize;
     for tool in tools {
         if let ToolSpec::Function(ResponsesApiTool {
             name,
@@ -196,6 +227,10 @@ pub(crate) fn build_gemini_tools(tools: &[ToolSpec]) -> Option<Vec<GeminiTool>> 
             ..
         }) = tool
         {
+            if filter_for_gemma && !GEMMA_STABLE_TOOL_NAMES.contains(&name.as_str()) {
+                filtered_out += 1;
+                continue;
+            }
             let params = serde_json::to_value(parameters).ok().map(|mut v| {
                 strip_additional_properties(&mut v);
                 v
@@ -206,6 +241,10 @@ pub(crate) fn build_gemini_tools(tools: &[ToolSpec]) -> Option<Vec<GeminiTool>> 
                 parameters: params,
             });
         }
+    }
+    if filter_for_gemma && filtered_out > 0 {
+        let kept = functions.len();
+        debug!("Gemma: filtered {filtered_out} function tools, keeping {kept}");
     }
     if functions.is_empty() {
         None
@@ -253,27 +292,26 @@ pub(crate) fn build_gemini_contents(
             } => {
                 function_calls_by_id
                     .insert(call_id.clone(), (name.clone(), thought_signature.clone()));
-                let args: Value = serde_json::from_str(arguments)
-                    .unwrap_or(Value::Object(Default::default()));
+                let args: Value =
+                    serde_json::from_str(arguments).unwrap_or(Value::Object(Default::default()));
 
                 // Merge parallel function calls into the same model content block.
-                if let Some(last) = contents.last_mut() {
-                    if last.role.as_deref() == Some("model")
-                        && last.parts.iter().all(|p| p.function_call.is_some())
-                    {
-                        last.parts.push(GeminiPartRequest {
-                            text: None,
-                            inline_data: None,
-                            function_call: Some(GeminiFunctionCallPart {
-                                name: name.clone(),
-                                args,
-                            }),
-                            function_response: None,
-                            thought_signature: None,
-                            compat_thought_signature: None,
-                        });
-                        continue;
-                    }
+                if let Some(last) = contents.last_mut()
+                    && last.role.as_deref() == Some("model")
+                    && last.parts.iter().all(|p| p.function_call.is_some())
+                {
+                    last.parts.push(GeminiPartRequest {
+                        text: None,
+                        inline_data: None,
+                        function_call: Some(GeminiFunctionCallPart {
+                            name: name.clone(),
+                            args,
+                        }),
+                        function_response: None,
+                        thought_signature: None,
+                        compat_thought_signature: None,
+                    });
+                    continue;
                 }
 
                 let part_sig = thought_signature.clone();
@@ -305,7 +343,7 @@ pub(crate) fn build_gemini_contents(
                     "output": output_text,
                     "success": output.success.unwrap_or(true)
                 });
-                let supports_multimodal = is_gemini_3_model(api_model);
+                let supports_multimodal = supports_multiple_inline_images(api_model);
                 let nested_parts = if supports_multimodal && !inline_parts.is_empty() {
                     Some(std::mem::take(&mut inline_parts))
                 } else {
@@ -327,18 +365,18 @@ pub(crate) fn build_gemini_contents(
                 };
 
                 // Merge parallel function responses into the same user content block.
-                if let Some(last) = contents.last_mut() {
-                    if last.role.as_deref() == Some("user")
-                        && last.parts.iter().all(|p| {
-                            p.function_response.is_some() || p.inline_data.is_some()
-                        })
-                    {
-                        last.parts.push(response_part);
-                        if !supports_multimodal {
-                            last.parts.append(&mut inline_parts);
-                        }
-                        continue;
+                if let Some(last) = contents.last_mut()
+                    && last.role.as_deref() == Some("user")
+                    && last
+                        .parts
+                        .iter()
+                        .all(|p| p.function_response.is_some() || p.inline_data.is_some())
+                {
+                    last.parts.push(response_part);
+                    if !supports_multimodal {
+                        last.parts.append(&mut inline_parts);
                     }
+                    continue;
                 }
 
                 let mut parts = vec![response_part];
@@ -357,7 +395,8 @@ pub(crate) fn build_gemini_contents(
         }
     }
 
-    append_reference_images_to_contents(&mut contents, reference_images);
+    limit_inline_images_for_model(&mut contents, api_model);
+    append_reference_images_to_contents(&mut contents, reference_images, api_model);
 
     if tracing::enabled!(tracing::Level::DEBUG) {
         let (fc, fr) = contents.iter().fold((0, 0), |(fc, fr), c| {
@@ -402,21 +441,21 @@ fn content_to_gemini_parts(
                 });
             }
             ContentItem::InputImage { image_url } => {
-                if let Some((mime, data)) = parse_data_url(image_url) {
-                    if !mime.is_empty() && !data.trim().is_empty() {
-                        parts.push(gemini_inline_data_part(mime, data));
-                    }
+                if let Some((mime, data)) = parse_data_url(image_url)
+                    && !mime.is_empty()
+                    && !data.trim().is_empty()
+                {
+                    parts.push(gemini_inline_data_part(mime, data));
                 }
             }
         }
     }
-    if let Some(sig) = message_thought_signature {
-        if let Some(last) = parts.last_mut() {
-            if last.thought_signature.is_none() {
-                last.thought_signature = Some(sig.to_string());
-                last.compat_thought_signature = Some(sig.to_string());
-            }
-        }
+    if let Some(sig) = message_thought_signature
+        && let Some(last) = parts.last_mut()
+        && last.thought_signature.is_none()
+    {
+        last.thought_signature = Some(sig.to_string());
+        last.compat_thought_signature = Some(sig.to_string());
     }
     parts
 }
@@ -467,19 +506,17 @@ fn split_function_output_content(
 fn build_gemini_function_response_payload(
     output: &FunctionCallOutputPayload,
 ) -> (String, Vec<GeminiPartRequest>) {
-    let (text_parts, inline_parts) = if let Some(items) = output
-        .content_items()
-        .filter(|items| !items.is_empty())
-    {
-        split_function_output_content(items)
-    } else {
-        let mut tp = Vec::new();
-        let text = output.to_string();
-        if !text.trim().is_empty() {
-            tp.push(text);
-        }
-        (tp, Vec::new())
-    };
+    let (text_parts, inline_parts) =
+        if let Some(items) = output.content_items().filter(|items| !items.is_empty()) {
+            split_function_output_content(items)
+        } else {
+            let mut tp = Vec::new();
+            let text = output.to_string();
+            if !text.trim().is_empty() {
+                tp.push(text);
+            }
+            (tp, Vec::new())
+        };
 
     let mut output_text = if text_parts.is_empty() {
         String::new()
@@ -580,12 +617,17 @@ pub(crate) fn ensure_active_loop_has_thought_signatures(
 fn append_reference_images_to_contents(
     contents: &mut Vec<GeminiContentRequest>,
     reference_images: &[String],
+    api_model: &str,
 ) {
     if reference_images.is_empty() {
         return;
     }
-    const MAX_INLINE_IMAGES: usize = 14;
-    let limit = reference_images.len().min(MAX_INLINE_IMAGES);
+    let max_inline_images = if supports_multiple_inline_images(api_model) {
+        14
+    } else {
+        1
+    };
+    let limit = reference_images.len().min(max_inline_images);
 
     let user_index = contents.iter().rposition(|c| {
         c.role
@@ -624,6 +666,33 @@ fn append_reference_images_to_contents(
     }
 }
 
+fn limit_inline_images_for_model(contents: &mut [GeminiContentRequest], api_model: &str) {
+    if supports_multiple_inline_images(api_model) {
+        return;
+    }
+
+    let mut seen_inline_image = false;
+    let mut dropped_images = 0usize;
+
+    for content in contents {
+        content.parts.retain(|part| {
+            if part.inline_data.is_none() {
+                return true;
+            }
+            if seen_inline_image {
+                dropped_images += 1;
+                return false;
+            }
+            seen_inline_image = true;
+            true
+        });
+    }
+
+    if dropped_images > 0 {
+        debug!("Gemma: dropped {dropped_images} extra inline image part(s)");
+    }
+}
+
 // ── Thought signature stripping for non-Gemini providers ─────────────
 
 pub(crate) fn strip_thought_signatures_from_input(input: &[ResponseItem]) -> Vec<ResponseItem> {
@@ -647,4 +716,229 @@ pub(crate) fn strip_thought_signatures_from_input(input: &[ResponseItem]) -> Vec
             item
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client_common::tools::ResponsesApiTool;
+    use crate::tools::spec::JsonSchema;
+    use pretty_assertions::assert_eq;
+
+    fn function_tool(name: &str) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: name.to_string(),
+            description: format!("tool {name}"),
+            parameters: JsonSchema::Object {
+                properties: Default::default(),
+                required: None,
+                additional_properties: None,
+            },
+            strict: false,
+        })
+    }
+
+    fn first_turn_input() -> Vec<ResponseItem> {
+        vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hi".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+            thought_signature: None,
+        }]
+    }
+
+    #[test]
+    fn gemini_3_detection_includes_gemma_3() {
+        assert!(is_gemini_3_model("gemini-3-pro-preview"));
+        assert!(is_gemini_3_model("gemma-3n"));
+        assert!(!is_gemini_3_model("gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn gemma_reference_images_are_limited_to_one() {
+        let images = vec![
+            "data:image/png;base64,AAAA".to_string(),
+            "data:image/png;base64,BBBB".to_string(),
+        ];
+        let contents = build_gemini_contents(&[], &images, "gemma-3n");
+
+        assert_eq!(contents.len(), 1);
+        let inline_count = contents[0]
+            .parts
+            .iter()
+            .filter(|part| part.inline_data.is_some())
+            .count();
+        assert_eq!(inline_count, 1);
+    }
+
+    #[test]
+    fn gemini_3_reference_images_keep_multiple_items() {
+        let images = vec![
+            "data:image/png;base64,AAAA".to_string(),
+            "data:image/png;base64,BBBB".to_string(),
+        ];
+        let contents = build_gemini_contents(&[], &images, "gemini-3-pro-preview");
+
+        assert_eq!(contents.len(), 1);
+        let inline_count = contents[0]
+            .parts
+            .iter()
+            .filter(|part| part.inline_data.is_some())
+            .count();
+        assert_eq!(inline_count, 2);
+    }
+
+    #[test]
+    fn gemma_current_turn_images_are_limited_to_one() {
+        let items = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "compare".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAAA".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "data:image/png;base64,BBBB".to_string(),
+                },
+            ],
+            end_turn: None,
+            phase: None,
+            thought_signature: None,
+        }];
+
+        let contents = build_gemini_contents(&items, &[], "gemma-3n");
+        let inline_count: usize = contents
+            .iter()
+            .map(|content| {
+                content
+                    .parts
+                    .iter()
+                    .filter(|part| part.inline_data.is_some())
+                    .count()
+            })
+            .sum();
+
+        assert_eq!(inline_count, 1);
+    }
+
+    #[test]
+    fn gemini_3_current_turn_images_keep_multiple_items() {
+        let items = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "compare".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAAA".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "data:image/png;base64,BBBB".to_string(),
+                },
+            ],
+            end_turn: None,
+            phase: None,
+            thought_signature: None,
+        }];
+
+        let contents = build_gemini_contents(&items, &[], "gemini-3-pro-preview");
+        let inline_count: usize = contents
+            .iter()
+            .map(|content| {
+                content
+                    .parts
+                    .iter()
+                    .filter(|part| part.inline_data.is_some())
+                    .count()
+            })
+            .sum();
+
+        assert_eq!(inline_count, 2);
+    }
+
+    #[test]
+    fn gemma_tools_filter_to_stable_subset() {
+        let tools = vec![
+            function_tool("shell_command"),
+            function_tool("read_file"),
+            function_tool("apply_patch"),
+            function_tool("list_mcp_resources"),
+        ];
+
+        let gemini_tools = build_gemini_tools(&tools, "gemma-3n")
+            .expect("gemma should keep at least the stable function tools");
+        let names: Vec<String> = gemini_tools[0]
+            .function_declarations
+            .as_ref()
+            .expect("function declarations should be present")
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["shell_command".to_string(), "read_file".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_gemma_tools_keep_full_declaration_set() {
+        let tools = vec![
+            function_tool("shell_command"),
+            function_tool("read_file"),
+            function_tool("apply_patch"),
+            function_tool("list_mcp_resources"),
+        ];
+
+        let gemini_tools = build_gemini_tools(&tools, "gemini-2.5-pro")
+            .expect("gemini should include all function tools");
+        let names: Vec<String> = gemini_tools[0]
+            .function_declarations
+            .as_ref()
+            .expect("function declarations should be present")
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "shell_command".to_string(),
+                "read_file".to_string(),
+                "apply_patch".to_string(),
+                "list_mcp_resources".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn gemma_tool_config_does_not_force_any_mode() {
+        let tools = vec![function_tool("shell_command"), function_tool("read_file")];
+        let config = build_gemini_tool_config(&tools, &first_turn_input(), "gemma-3n");
+
+        assert_eq!(config.mode, GeminiFunctionCallingMode::Auto);
+        assert_eq!(config.allowed_function_names, None);
+        assert_eq!(config.stream_function_call_arguments, None);
+    }
+
+    #[test]
+    fn gemini_3_tool_config_can_force_read_first_turn() {
+        let tools = vec![function_tool("shell_command"), function_tool("read_file")];
+        let config = build_gemini_tool_config(&tools, &first_turn_input(), "gemini-3-pro-preview");
+
+        assert_eq!(config.mode, GeminiFunctionCallingMode::Any);
+        assert_eq!(
+            config.allowed_function_names,
+            Some(vec!["shell_command".to_string(), "read_file".to_string()])
+        );
+        assert_eq!(config.stream_function_call_arguments, Some(true));
+    }
 }
