@@ -53,7 +53,8 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             model: "gpt-5.3-codex".to_string(),
             upgrade: None,
             display_name: "gpt-5.3-codex".to_string(),
-            description: "Latest frontier agentic coding model with enhanced reasoning.".to_string(),
+            description: "Latest frontier agentic coding model with enhanced reasoning."
+                .to_string(),
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -203,13 +204,10 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             display_name: "Gemini 3 Pro Image".to_string(),
             description: "Gemini 3 Pro for text, image understanding, and image generation."
                 .to_string(),
-            supported_reasoning_efforts: vec![
-                ReasoningEffortOption {
-                    reasoning_effort: ReasoningEffort::Medium,
-                    description:
-                        "Default Gemini reasoning behaviour for image workflows.".to_string(),
-                },
-            ],
+            supported_reasoning_efforts: vec![ReasoningEffortOption {
+                reasoning_effort: ReasoningEffort::Medium,
+                description: "Default Gemini reasoning behaviour for image workflows.".to_string(),
+            }],
             default_reasoning_effort: ReasoningEffort::Medium,
             input_modalities: vec![InputModality::Text, InputModality::Image],
             supports_personality: false,
