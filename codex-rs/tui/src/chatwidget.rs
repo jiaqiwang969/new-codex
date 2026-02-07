@@ -43,6 +43,8 @@ use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
 use crate::text_formatting::proper_join;
 use crate::version::CODEX_CLI_VERSION;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
@@ -145,8 +147,6 @@ use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tracing::debug;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
 const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
@@ -3665,7 +3665,10 @@ impl ChatWidget {
                 "Ralph Loop activated: max={max_display}, promise=\"{}\", delay={}s",
                 cmd.completion_promise, cmd.delay_seconds
             ),
-            Some("The prompt will be re-submitted after each turn until the promise is detected.".to_string()),
+            Some(
+                "The prompt will be re-submitted after each turn until the promise is detected."
+                    .to_string(),
+            ),
         );
 
         self.ralph_loop_state = Some(state);
@@ -3739,9 +3742,7 @@ impl ChatWidget {
                 crate::ralph_loop::cleanup_ralph_state_file(cwd);
             }
             self.add_info_message(
-                format!(
-                    "Ralph Loop stopped: reached max iterations ({iteration}/{max})."
-                ),
+                format!("Ralph Loop stopped: reached max iterations ({iteration}/{max})."),
                 None,
             );
             return;
@@ -3817,7 +3818,10 @@ impl ChatWidget {
                     .iter()
                     .map(|p| display_path_for(p, &self.config.cwd))
                     .collect();
-                message.push_str(&format!("\n\nActive reference images: {}", display.join(", ")));
+                message.push_str(&format!(
+                    "\n\nActive reference images: {}",
+                    display.join(", ")
+                ));
             }
             self.add_info_message(message, None);
             return;
@@ -3865,7 +3869,11 @@ impl ChatWidget {
 
         let prompt = prompt_raw.and_then(|p| {
             let t = p.trim();
-            if t.is_empty() { None } else { Some(t.to_string()) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
         });
 
         let cwd = &self.config.cwd;
@@ -3901,9 +3909,7 @@ impl ChatWidget {
 
         if !final_paths.is_empty() {
             self.ref_image_paths = final_paths.clone();
-            self.submit_op(Op::SetReferenceImages {
-                paths: final_paths,
-            });
+            self.submit_op(Op::SetReferenceImages { paths: final_paths });
 
             let display: Vec<String> = self
                 .ref_image_paths
@@ -4047,9 +4053,7 @@ impl ChatWidget {
                     self.add_info_message(format!("Aspect ratio set to {ratio}"), None);
                 } else {
                     self.add_info_message(
-                        format!(
-                            "Invalid aspect ratio '{ratio}'. Valid options: {valid_options}"
-                        ),
+                        format!("Invalid aspect ratio '{ratio}'. Valid options: {valid_options}"),
                         None,
                     );
                 }
@@ -4119,8 +4123,9 @@ impl ChatWidget {
             None,
         );
 
-        self.batch_image_state =
-            Some(crate::batch_image::BatchImageState::new(source_dir, images, prompt));
+        self.batch_image_state = Some(crate::batch_image::BatchImageState::new(
+            source_dir, images, prompt,
+        ));
         self.process_next_batch_image();
     }
 
@@ -4172,7 +4177,10 @@ impl ChatWidget {
             .map(str::to_lowercase);
         if extension.as_deref() != Some("pdf") {
             self.add_info_message(
-                format!("Error: File does not appear to be a PDF: {}", pdf_path.display()),
+                format!(
+                    "Error: File does not appear to be a PDF: {}",
+                    pdf_path.display()
+                ),
                 None,
             );
             return;
@@ -4248,10 +4256,7 @@ impl ChatWidget {
             Ok(output) => {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    self.add_info_message(
-                        format!("[PDF Update] Step 1 Complete!\n{stdout}"),
-                        None,
-                    );
+                    self.add_info_message(format!("[PDF Update] Step 1 Complete!\n{stdout}"), None);
                     self.start_batch_after_pdf_processing();
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -4278,7 +4283,10 @@ impl ChatWidget {
         let mut images = crate::batch_image::scan_image_files(&source_dir);
         if images.is_empty() {
             self.add_info_message(
-                format!("No images found after PDF processing in: {}", source_dir.display()),
+                format!(
+                    "No images found after PDF processing in: {}",
+                    source_dir.display()
+                ),
                 None,
             );
             return;
@@ -4447,19 +4455,12 @@ impl ChatWidget {
         if let (true, Some(path)) = (saved_any, last_saved_path) {
             let display = display_path_for(&path, &self.config.cwd);
             let hint = format!("{display} \u{00b7} run /open-image to open it");
-            self.add_info_message(
-                "Generated image saved".to_string(),
-                Some(hint),
-            );
+            self.add_info_message("Generated image saved".to_string(), Some(hint));
             self.last_generated_image_path = Some(path);
         }
     }
 
-    fn save_generated_image(
-        &mut self,
-        session_id: &str,
-        image_url: &str,
-    ) -> Option<PathBuf> {
+    fn save_generated_image(&mut self, session_id: &str, image_url: &str) -> Option<PathBuf> {
         // Only handle data URLs of the form data:<mime>;base64,<data>.
         let without_prefix = image_url.strip_prefix("data:")?;
         let (meta, data_base64) = without_prefix.split_once(',')?;
@@ -4509,11 +4510,7 @@ impl ChatWidget {
         }
 
         // Default behavior: save to ~/.codex/images/{session_id}/
-        let dir = self
-            .config
-            .codex_home
-            .join("images")
-            .join(session_id);
+        let dir = self.config.codex_home.join("images").join(session_id);
         if let Err(err) = std::fs::create_dir_all(&dir) {
             tracing::warn!("failed to create images directory {}: {err}", dir.display());
             return None;
@@ -4547,15 +4544,10 @@ impl ChatWidget {
 
         match Self::open_image_in_viewer(&path) {
             Ok(()) => {
-                self.add_info_message(
-                    "Opening generated image".to_string(),
-                    Some(display),
-                );
+                self.add_info_message("Opening generated image".to_string(), Some(display));
             }
             Err(error) => {
-                self.add_error_message(format!(
-                    "Failed to open generated image: {error}"
-                ));
+                self.add_error_message(format!("Failed to open generated image: {error}"));
             }
         }
     }

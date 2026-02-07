@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 /// State for batch image processing via `/ref-image-batch` and `/pdf-update`.
 pub(crate) struct BatchImageState {

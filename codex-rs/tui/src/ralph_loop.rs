@@ -1,7 +1,8 @@
 //! Ralph Loop: an iterative self-correction loop that re-injects the same prompt
 //! until a completion promise is detected or the maximum iteration count is reached.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 /// State for an active Ralph Loop session.
 #[derive(Debug, Clone)]
