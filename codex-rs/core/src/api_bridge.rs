@@ -124,6 +124,8 @@ const CF_RAY_HEADER: &str = "cf-ray";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::CodexErr;
+    use codex_api::AuthProvider as _;
     use codex_api::TransportError;
     use http::HeaderMap;
     use http::StatusCode;
@@ -151,6 +153,46 @@ mod tests {
         };
         assert_eq!(model_cap.model, "boomslang");
         assert_eq!(model_cap.reset_after_seconds, Some(120));
+    }
+
+    #[test]
+    fn auth_provider_uses_auth_api_key_when_provider_env_key_is_missing() {
+        const TEST_ENV_KEY: &str = "CODEX_TEST_PROVIDER_KEY_DO_NOT_SET";
+        // SAFETY: tests in this module run in-process and this key is unique to this test.
+        unsafe {
+            std::env::remove_var(TEST_ENV_KEY);
+        }
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.env_key = Some(TEST_ENV_KEY.to_string());
+        provider.env_key_instructions = Some("set the test key".to_string());
+
+        let auth = Some(CodexAuth::from_api_key("xai-auth-key-from-auth-json"));
+        let auth_provider = auth_provider_from_auth(auth, &provider)
+            .expect("auth api key fallback should work when env key is missing");
+
+        assert_eq!(
+            auth_provider.bearer_token().as_deref(),
+            Some("xai-auth-key-from-auth-json")
+        );
+    }
+
+    #[test]
+    fn auth_provider_keeps_env_key_error_without_auth_fallback() {
+        const TEST_ENV_KEY: &str = "CODEX_TEST_PROVIDER_KEY_DO_NOT_SET";
+        // SAFETY: tests in this module run in-process and this key is unique to this test.
+        unsafe {
+            std::env::remove_var(TEST_ENV_KEY);
+        }
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.env_key = Some(TEST_ENV_KEY.to_string());
+        provider.env_key_instructions = Some("set the test key".to_string());
+
+        let err =
+            auth_provider_from_auth(None, &provider).expect_err("missing env key should fail");
+        let CodexErr::EnvVar(env_err) = err else {
+            panic!("expected env var error when auth fallback is unavailable");
+        };
+        assert_eq!(env_err.var, TEST_ENV_KEY);
     }
 }
 

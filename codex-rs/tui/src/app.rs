@@ -2666,7 +2666,12 @@ impl App {
                 if self.panel_focus == PanelFocus::Chat {
                     self.panel_focus = PanelFocus::Sessions;
                     self.session_bar.set_focus(true);
-                    self.session_bar.reset_selection_for_focus(self.active_thread_id.as_ref().map(|t| t.to_string()).as_deref());
+                    self.session_bar.reset_selection_for_focus(
+                        self.active_thread_id
+                            .as_ref()
+                            .map(|t| t.to_string())
+                            .as_deref(),
+                    );
                     self.session_bar.refresh_sessions();
                 } else {
                     self.panel_focus = PanelFocus::Chat;
