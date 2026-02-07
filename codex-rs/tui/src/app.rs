@@ -29,6 +29,7 @@ use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
+use crate::session_bar::SessionBar;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -509,6 +510,12 @@ async fn handle_model_migration_prompt_if_needed(
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PanelFocus {
+    Chat,
+    Sessions,
+}
+
 pub(crate) struct App {
     pub(crate) server: Arc<ThreadManager>,
     pub(crate) otel_manager: OtelManager,
@@ -563,6 +570,9 @@ pub(crate) struct App {
     primary_thread_id: Option<ThreadId>,
     primary_session_configured: Option<SessionConfiguredEvent>,
     pending_primary_events: VecDeque<Event>,
+
+    pub(crate) session_bar: SessionBar,
+    pub(crate) panel_focus: PanelFocus,
 }
 
 #[derive(Default)]
@@ -1095,6 +1105,9 @@ impl App {
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
+        let session_bar_cwd = config.cwd.clone();
+        let session_bar_home = config.codex_home.clone();
+
         let mut app = Self {
             server: thread_manager.clone(),
             otel_manager: otel_manager.clone(),
@@ -1128,6 +1141,8 @@ impl App {
             primary_thread_id: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            session_bar: SessionBar::new(session_bar_cwd, session_bar_home),
+            panel_focus: PanelFocus::Chat,
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -1255,7 +1270,11 @@ impl App {
         } else {
             match event {
                 TuiEvent::Key(key_event) => {
-                    self.handle_key_event(tui, key_event).await;
+                    if self.panel_focus == PanelFocus::Sessions {
+                        self.handle_session_bar_key(tui, key_event).await;
+                    } else {
+                        self.handle_key_event(tui, key_event).await;
+                    }
                 }
                 TuiEvent::Paste(pasted) => {
                     // Many terminals convert newlines to \r when pasting (e.g., iTerm2),
@@ -1277,12 +1296,48 @@ impl App {
                     {
                         return Ok(AppRunControl::Continue);
                     }
+
+                    // Update session bar with current thread ID
+                    if let Some(ref tid) = self.active_thread_id {
+                        self.session_bar.set_current_session(Some(tid.to_string()));
+                    }
+
+                    // Session bar height (4 lines when visible)
+                    let session_bar_height = if self.panel_focus == PanelFocus::Sessions {
+                        4u16
+                    } else {
+                        0u16
+                    };
+
                     tui.draw(
                         self.chat_widget.desired_height(tui.terminal.size()?.width),
                         |frame| {
-                            self.chat_widget.render(frame.area(), frame.buffer);
-                            if let Some((x, y)) = self.chat_widget.cursor_pos(frame.area()) {
+                            let full_area = frame.area();
+                            let chat_height = full_area.height.saturating_sub(session_bar_height);
+                            let chat_area = ratatui::layout::Rect::new(
+                                full_area.x,
+                                full_area.y,
+                                full_area.width,
+                                chat_height,
+                            );
+                            let session_area = ratatui::layout::Rect::new(
+                                full_area.x,
+                                full_area.y + chat_height,
+                                full_area.width,
+                                session_bar_height,
+                            );
+
+                            self.chat_widget.render(chat_area, frame.buffer);
+                            if let Some((x, y)) = self.chat_widget.cursor_pos(chat_area) {
                                 frame.set_cursor_position((x, y));
+                            }
+
+                            if session_bar_height > 0 {
+                                ratatui::widgets::WidgetRef::render_ref(
+                                    &&self.session_bar,
+                                    session_area,
+                                    frame.buffer,
+                                );
                             }
                         },
                     )?;
@@ -2474,6 +2529,90 @@ impl App {
         tui.frame_requester().schedule_frame();
     }
 
+    async fn handle_session_bar_key(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
+        use crossterm::event::KeyEventKind;
+        match key_event {
+            // Ctrl+P or Esc exits session bar focus
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Esc,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.panel_focus = PanelFocus::Chat;
+                self.session_bar.set_focus(false);
+                tui.frame_requester().schedule_frame();
+            }
+            // Left arrow: select previous session
+            KeyEvent {
+                code: KeyCode::Left,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.session_bar.select_previous();
+                tui.frame_requester().schedule_frame();
+            }
+            // Right arrow: select next session
+            KeyEvent {
+                code: KeyCode::Right,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.session_bar.select_next();
+                tui.frame_requester().schedule_frame();
+            }
+            // Enter: open selected session (or new session)
+            KeyEvent {
+                code: KeyCode::Enter,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.panel_focus = PanelFocus::Chat;
+                self.session_bar.set_focus(false);
+                self.app_event_tx.send(AppEvent::NewSession);
+                tui.frame_requester().schedule_frame();
+            }
+            // 'n': new session
+            KeyEvent {
+                code: KeyCode::Char('n'),
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                self.panel_focus = PanelFocus::Chat;
+                self.session_bar.set_focus(false);
+                self.app_event_tx.send(AppEvent::NewSession);
+                tui.frame_requester().schedule_frame();
+            }
+            // 'x': delete selected session file
+            KeyEvent {
+                code: KeyCode::Char('x'),
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                if let Some(session) = self.session_bar.selected_session() {
+                    let _ = std::fs::remove_file(&session.path);
+                    self.session_bar.refresh_sessions();
+                    tui.frame_requester().schedule_frame();
+                }
+            }
+            // 'r': rename (set alias) for selected session
+            KeyEvent {
+                code: KeyCode::Char('r'),
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                // Rename is a no-op for now; alias editing requires text input
+                tui.frame_requester().schedule_frame();
+            }
+            _ => {}
+        }
+    }
+
     async fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
         match key_event {
             KeyEvent {
@@ -2493,14 +2632,47 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                // Only launch the external editor if there is no overlay and the bottom pane is not in use.
-                // Note that it can be launched while a task is running to enable editing while the previous turn is ongoing.
-                if self.overlay.is_none()
-                    && self.chat_widget.can_launch_external_editor()
-                    && self.chat_widget.external_editor_state() == ExternalEditorState::Closed
-                {
-                    self.request_external_editor_launch(tui);
+                // Open git graph overlay (Ctrl+G)
+                if self.overlay.is_none() {
+                    match crate::git_graph_widget::create_git_graph_overlay(".") {
+                        Ok(overlay) => {
+                            let _ = tui.enter_alt_screen();
+                            self.overlay = Some(overlay);
+                            tui.frame_requester().schedule_frame();
+                        }
+                        Err(err) => {
+                            let error_lines = vec![
+                                Line::from(format!("Failed to generate git graph: {err}")),
+                                Line::from(""),
+                                Line::from("Make sure you are in a git repository."),
+                            ];
+                            let _ = tui.enter_alt_screen();
+                            self.overlay = Some(Overlay::new_static_with_lines(
+                                error_lines,
+                                "GIT GRAPH ERROR".to_string(),
+                            ));
+                            tui.frame_requester().schedule_frame();
+                        }
+                    }
                 }
+            }
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: crossterm::event::KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            } => {
+                // Toggle session bar (Ctrl+P)
+                if self.panel_focus == PanelFocus::Chat {
+                    self.panel_focus = PanelFocus::Sessions;
+                    self.session_bar.set_focus(true);
+                    self.session_bar.reset_selection_for_focus(self.active_thread_id.as_ref().map(|t| t.to_string()).as_deref());
+                    self.session_bar.refresh_sessions();
+                } else {
+                    self.panel_focus = PanelFocus::Chat;
+                    self.session_bar.set_focus(false);
+                }
+                tui.frame_requester().schedule_frame();
             }
             // Esc primes/advances backtracking only in normal (not working) mode
             // with the composer focused and empty. In any other state, forward
@@ -2691,6 +2863,9 @@ mod tests {
         let model = ModelsManager::get_model_offline(config.model.as_deref());
         let otel_manager = test_otel_manager(&config, model.as_str());
 
+        let sb_cwd = config.cwd.clone();
+        let sb_home = config.codex_home.clone();
+
         App {
             server,
             otel_manager,
@@ -2724,6 +2899,8 @@ mod tests {
             primary_thread_id: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            session_bar: SessionBar::new(sb_cwd, sb_home),
+            panel_focus: PanelFocus::Chat,
         }
     }
 
@@ -2743,6 +2920,9 @@ mod tests {
         let file_search = FileSearchManager::new(config.cwd.clone(), app_event_tx.clone());
         let model = ModelsManager::get_model_offline(config.model.as_deref());
         let otel_manager = test_otel_manager(&config, model.as_str());
+
+        let sb_cwd2 = config.cwd.clone();
+        let sb_home2 = config.codex_home.clone();
 
         (
             App {
@@ -2778,6 +2958,8 @@ mod tests {
                 primary_thread_id: None,
                 primary_session_configured: None,
                 pending_primary_events: VecDeque::new(),
+                session_bar: SessionBar::new(sb_cwd2, sb_home2),
+                panel_focus: PanelFocus::Chat,
             },
             rx,
             op_rx,

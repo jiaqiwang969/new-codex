@@ -66,6 +66,18 @@ impl Overlay {
         Self::Static(StaticOverlay::with_renderables(renderables, title))
     }
 
+    pub(crate) fn new_static_with_title_no_wrap_refresh(
+        lines: Vec<Line<'static>>,
+        title: String,
+        refresh_callback: Box<dyn Fn() -> std::result::Result<Vec<Line<'static>>, String>>,
+    ) -> Self {
+        Self::Static(StaticOverlay::with_title_no_wrap_refresh(
+            lines,
+            title,
+            refresh_callback,
+        ))
+    }
+
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
         match self {
             Overlay::Transcript(o) => o.handle_event(tui, event),
@@ -102,6 +114,7 @@ const KEY_ESC: KeyBinding = key_hint::plain(KeyCode::Esc);
 const KEY_ENTER: KeyBinding = key_hint::plain(KeyCode::Enter);
 const KEY_CTRL_T: KeyBinding = key_hint::ctrl(KeyCode::Char('t'));
 const KEY_CTRL_C: KeyBinding = key_hint::ctrl(KeyCode::Char('c'));
+const KEY_R: KeyBinding = key_hint::plain(KeyCode::Char('r'));
 
 // Common pager navigation hints rendered on the first line
 const PAGER_KEY_HINTS: &[(&[KeyBinding], &str)] = &[
@@ -685,18 +698,49 @@ impl TranscriptOverlay {
 pub(crate) struct StaticOverlay {
     view: PagerView,
     is_done: bool,
+    refresh_callback: Option<Box<dyn Fn() -> std::result::Result<Vec<Line<'static>>, String>>>,
+    title: String,
 }
 
 impl StaticOverlay {
     pub(crate) fn with_title(lines: Vec<Line<'static>>, title: String) -> Self {
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-        Self::with_renderables(vec![Box::new(CachedRenderable::new(paragraph))], title)
+        Self {
+            view: PagerView::new(
+                vec![Box::new(CachedRenderable::new(paragraph))],
+                title.clone(),
+                0,
+            ),
+            is_done: false,
+            refresh_callback: None,
+            title,
+        }
     }
 
     pub(crate) fn with_renderables(renderables: Vec<Box<dyn Renderable>>, title: String) -> Self {
         Self {
-            view: PagerView::new(renderables, title, 0),
+            view: PagerView::new(renderables, title.clone(), 0),
             is_done: false,
+            refresh_callback: None,
+            title,
+        }
+    }
+
+    pub(crate) fn with_title_no_wrap_refresh(
+        lines: Vec<Line<'static>>,
+        title: String,
+        refresh_callback: Box<dyn Fn() -> std::result::Result<Vec<Line<'static>>, String>>,
+    ) -> Self {
+        let paragraph = Paragraph::new(Text::from(lines));
+        Self {
+            view: PagerView::new(
+                vec![Box::new(CachedRenderable::new(paragraph))],
+                title.clone(),
+                0,
+            ),
+            is_done: false,
+            refresh_callback: Some(refresh_callback),
+            title,
         }
     }
 
@@ -723,6 +767,20 @@ impl StaticOverlay {
             TuiEvent::Key(key_event) => match key_event {
                 e if KEY_Q.is_press(e) || KEY_CTRL_C.is_press(e) => {
                     self.is_done = true;
+                    Ok(())
+                }
+                e if KEY_R.is_press(e) => {
+                    if let Some(ref cb) = self.refresh_callback {
+                        if let Ok(new_lines) = cb() {
+                            let paragraph = Paragraph::new(Text::from(new_lines));
+                            self.view = PagerView::new(
+                                vec![Box::new(CachedRenderable::new(paragraph))],
+                                self.title.clone(),
+                                0,
+                            );
+                            tui.frame_requester().schedule_frame();
+                        }
+                    }
                     Ok(())
                 }
                 other => self.view.handle_key_event(tui, other),
