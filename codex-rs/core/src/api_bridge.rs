@@ -125,7 +125,6 @@ const CF_RAY_HEADER: &str = "cf-ray";
 mod tests {
     use super::*;
     use crate::error::CodexErr;
-    use codex_api::AuthProvider as _;
     use codex_api::TransportError;
     use http::HeaderMap;
     use http::StatusCode;
@@ -171,7 +170,7 @@ mod tests {
             .expect("auth api key fallback should work when env key is missing");
 
         assert_eq!(
-            auth_provider.bearer_token().as_deref(),
+            auth_provider.token.as_deref(),
             Some("xai-auth-key-from-auth-json")
         );
     }
@@ -187,8 +186,10 @@ mod tests {
         provider.env_key = Some(TEST_ENV_KEY.to_string());
         provider.env_key_instructions = Some("set the test key".to_string());
 
-        let err =
-            auth_provider_from_auth(None, &provider).expect_err("missing env key should fail");
+        let err = match auth_provider_from_auth(None, &provider) {
+            Ok(_) => panic!("missing env key should fail"),
+            Err(err) => err,
+        };
         let CodexErr::EnvVar(env_err) = err else {
             panic!("expected env var error when auth fallback is unavailable");
         };
