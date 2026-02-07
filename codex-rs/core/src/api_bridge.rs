@@ -175,11 +175,25 @@ pub(crate) fn auth_provider_from_auth(
     auth: Option<CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> crate::error::Result<CoreAuthProvider> {
-    if let Some(api_key) = provider.api_key()? {
-        return Ok(CoreAuthProvider {
-            token: Some(api_key),
-            account_id: None,
-        });
+    match provider.api_key() {
+        Ok(Some(api_key)) => {
+            return Ok(CoreAuthProvider {
+                token: Some(api_key),
+                account_id: None,
+            });
+        }
+        Ok(None) => {}
+        Err(env_err) => {
+            if let Some(api_key) = auth.as_ref().and_then(|auth| auth.api_key()) {
+                // Allow auth.json API key fallback when provider env keys are
+                // unset, so custom providers can be configured via auth+config.
+                return Ok(CoreAuthProvider {
+                    token: Some(api_key.to_string()),
+                    account_id: None,
+                });
+            }
+            return Err(env_err);
+        }
     }
 
     if let Some(token) = provider.experimental_bearer_token.clone() {

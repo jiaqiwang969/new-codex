@@ -242,6 +242,51 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_in_api: true,
             input_modalities: default_input_modalities(),
         },
+        ModelPreset {
+            id: "gemma-3n".to_string(),
+            model: "gemma-3n".to_string(),
+            display_name: "Gemma 3n (Local)".to_string(),
+            description: "Local Gemma 3n served via Gemini-compatible API.".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks"
+                        .to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "grok-4-latest".to_string(),
+            model: "grok-4-latest".to_string(),
+            display_name: "Grok 4 Latest".to_string(),
+            description: "xAI Grok 4 via OpenAI-compatible Responses API.".to_string(),
+            default_reasoning_effort: ReasoningEffort::None,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::None,
+                description: "Reasoning effort is not configurable on this model.".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
         // Deprecated models.
         ModelPreset {
             id: "gpt-5-codex".to_string(),
@@ -438,10 +483,28 @@ pub fn all_model_presets() -> &'static Vec<ModelPreset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn only_one_default_model_is_configured() {
         let default_models = PRESETS.iter().filter(|preset| preset.is_default).count();
         assert!(default_models == 1);
+    }
+
+    #[test]
+    fn gemma_and_grok_are_visible_in_picker() {
+        let gemma = PRESETS
+            .iter()
+            .find(|preset| preset.model == "gemma-3n")
+            .expect("gemma preset should exist");
+        let grok = PRESETS
+            .iter()
+            .find(|preset| preset.model == "grok-4-latest")
+            .expect("grok preset should exist");
+
+        assert!(gemma.show_in_picker);
+        assert_eq!(gemma.default_reasoning_effort, ReasoningEffort::Medium);
+        assert!(grok.show_in_picker);
+        assert_eq!(grok.default_reasoning_effort, ReasoningEffort::None);
     }
 }

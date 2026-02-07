@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests.rs
-assertion_line: 3369
 expression: popup
 ---
   Select Model and Effort
@@ -17,5 +16,7 @@ expression: popup
                               1M context.
   6. Gemini 3 Pro Image       Gemini 3 Pro for text, image understanding, and
                               image generation.
+  7. Gemma 3n (Local)         Local Gemma 3n served via Gemini-compatible API.
+  8. Grok 4 Latest            xAI Grok 4 via OpenAI-compatible Responses API.
 
   Press enter to select reasoning effort, or esc to dismiss.

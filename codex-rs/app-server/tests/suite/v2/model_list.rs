@@ -213,6 +213,47 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             supports_personality: false,
             is_default: false,
         },
+        Model {
+            id: "gemma-3n".to_string(),
+            model: "gemma-3n".to_string(),
+            upgrade: None,
+            display_name: "Gemma 3n (Local)".to_string(),
+            description: "Local Gemma 3n served via Gemini-compatible API.".to_string(),
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks"
+                        .to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Medium,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
+            id: "grok-4-latest".to_string(),
+            model: "grok-4-latest".to_string(),
+            upgrade: None,
+            display_name: "Grok 4 Latest".to_string(),
+            description: "xAI Grok 4 via OpenAI-compatible Responses API.".to_string(),
+            supported_reasoning_efforts: vec![ReasoningEffortOption {
+                reasoning_effort: ReasoningEffort::None,
+                description: "Reasoning effort is not configurable on this model.".to_string(),
+            }],
+            default_reasoning_effort: ReasoningEffort::None,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
     ];
 
     assert_eq!(items, expected_models);
@@ -358,7 +399,51 @@ async fn list_models_pagination_works() -> Result<()> {
 
     assert_eq!(sixth_items.len(), 1);
     assert_eq!(sixth_items[0].id, "gemini-3-pro-image-preview");
-    assert!(sixth_cursor.is_none());
+    let seventh_cursor = sixth_cursor.ok_or_else(|| anyhow!("cursor for seventh page"))?;
+
+    let seventh_request = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(1),
+            cursor: Some(seventh_cursor.clone()),
+        })
+        .await?;
+
+    let seventh_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(seventh_request)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: seventh_items,
+        next_cursor: seventh_cursor,
+    } = to_response::<ModelListResponse>(seventh_response)?;
+
+    assert_eq!(seventh_items.len(), 1);
+    assert_eq!(seventh_items[0].id, "gemma-3n");
+    let eighth_cursor = seventh_cursor.ok_or_else(|| anyhow!("cursor for eighth page"))?;
+
+    let eighth_request = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(1),
+            cursor: Some(eighth_cursor.clone()),
+        })
+        .await?;
+
+    let eighth_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(eighth_request)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: eighth_items,
+        next_cursor: eighth_cursor,
+    } = to_response::<ModelListResponse>(eighth_response)?;
+
+    assert_eq!(eighth_items.len(), 1);
+    assert_eq!(eighth_items[0].id, "grok-4-latest");
+    assert!(eighth_cursor.is_none());
     Ok(())
 }
 
