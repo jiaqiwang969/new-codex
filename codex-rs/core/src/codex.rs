@@ -5940,6 +5940,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         let replacement_history = vec![
             summary_item.clone(),
@@ -5951,6 +5952,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         let rollout_items = vec![RolloutItem::Compacted(CompactedItem {

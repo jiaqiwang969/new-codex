@@ -35,8 +35,8 @@
 //! attempt accounting from connection acquisition into the turn retry loop and updating fallback
 //! expectations/tests accordingly.
 
-use std::path::PathBuf;
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -220,6 +220,7 @@ impl Clone for ModelClientState {
             session_source: self.session_source.clone(),
             model_verbosity: self.model_verbosity,
             enable_responses_websockets: self.enable_responses_websockets,
+            enable_responses_websockets_v2: self.enable_responses_websockets_v2,
             enable_request_compression: self.enable_request_compression,
             include_timing_metrics: self.include_timing_metrics,
             beta_features_header: self.beta_features_header.clone(),
@@ -227,6 +228,7 @@ impl Clone for ModelClientState {
                 self.disable_websockets
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
+            preconnect: Mutex::new(PreconnectState::Idle),
         }
     }
 }
@@ -492,12 +494,9 @@ impl ModelClient {
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(otel_manager);
-        let client = ApiMemoriesClient::new(
-            transport,
-            client_setup.api_provider,
-            client_setup.api_auth,
-        )
-            .with_telemetry(Some(request_telemetry));
+        let client =
+            ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+                .with_telemetry(Some(request_telemetry));
         let effort = sanitize_reasoning_effort_for_model(effort, &model_info.slug);
 
         let payload = ApiMemoryTraceSummarizeInput {
@@ -1863,6 +1862,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             None,
         );
         client.new_session()
@@ -2114,6 +2114,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             None,
         );
         let model_info = find_model_info_for_slug("grok-4-latest");
@@ -2124,6 +2125,7 @@ mod tests {
             None,
             None,
             None,
+            "test_originator".to_string(),
             false,
             "test".to_string(),
             SessionSource::Exec,
@@ -2163,6 +2165,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             None,
         );
         let model_info = find_model_info_for_slug("gpt-5-codex");
@@ -2173,6 +2176,7 @@ mod tests {
             None,
             None,
             None,
+            "test_originator".to_string(),
             false,
             "test".to_string(),
             SessionSource::Exec,

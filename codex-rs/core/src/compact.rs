@@ -612,6 +612,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -621,6 +622,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         let initial_context = vec![
@@ -632,6 +634,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -641,6 +644,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -664,6 +668,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -673,6 +678,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -682,6 +688,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -691,6 +698,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         assert_eq!(refreshed, expected);
@@ -706,6 +714,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }];
         let initial_context = vec![
             ResponseItem::Message {
@@ -716,6 +725,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -725,6 +735,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -734,6 +745,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -743,6 +755,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
 
@@ -756,6 +769,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -765,6 +779,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -774,6 +789,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -784,6 +800,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -793,6 +810,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         assert_eq!(refreshed, expected);
@@ -809,6 +827,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -818,6 +837,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -827,6 +847,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -836,6 +857,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -845,6 +867,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         let initial_context = vec![ResponseItem::Message {
@@ -855,6 +878,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }];
 
         let refreshed = process_compacted_history(compacted_history, &initial_context);
@@ -867,6 +891,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -876,6 +901,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         assert_eq!(refreshed, expected);
@@ -892,6 +918,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -901,6 +928,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -910,6 +938,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         let initial_context = vec![ResponseItem::Message {
@@ -920,6 +949,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }];
 
         let refreshed = process_compacted_history(compacted_history, &initial_context);
@@ -932,6 +962,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -941,6 +972,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -950,6 +982,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -959,6 +992,7 @@ mod tests {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             },
         ];
         assert_eq!(refreshed, expected);
