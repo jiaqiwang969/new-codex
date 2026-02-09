@@ -196,6 +196,37 @@ fn push_markup_text(text: &str, mode: MarkupMode, reasoning: &mut String, answer
     }
 }
 
+fn gemini_stream_error_message(error: &GeminiErrorResponse) -> Option<String> {
+    let message = error
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "request failed".to_string());
+    let mut details = Vec::new();
+    if let Some(status) = error.status.as_deref()
+        && !status.trim().is_empty()
+    {
+        details.push(format!("status={status}"));
+    }
+    if let Some(code) = error.code.as_ref()
+        && !code.is_null()
+    {
+        if let Some(code_str) = code.as_str() {
+            details.push(format!("code={code_str}"));
+        } else {
+            details.push(format!("code={code}"));
+        }
+    }
+
+    if details.is_empty() {
+        Some(message)
+    } else {
+        Some(format!("{message} ({})", details.join(", ")))
+    }
+}
+
 // ── Stream constructors ──────────────────────────────────────────────
 
 /// Creates a `ResponseStream` from a single pre-built item (used for error
@@ -308,6 +339,40 @@ async fn process_gemini_sse<S>(
                 continue;
             }
         };
+
+        if let Some(error_message) = chunk.error.as_ref().and_then(gemini_stream_error_message) {
+            if !assistant_item_sent {
+                let item = ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![],
+                    end_turn: None,
+                    phase: None,
+                    thought_signature: None,
+                };
+                if tx_event
+                    .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                assistant_item_sent = true;
+            }
+            let separator = (!accumulated_text.is_empty())
+                .then_some("\n\n")
+                .unwrap_or("");
+            let notice = format!("{separator}[Gemini stream interrupted: {error_message}]");
+            if tx_event
+                .send(Ok(ResponseEvent::OutputTextDelta(notice.clone())))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            accumulated_text.push_str(&notice);
+            break;
+        }
 
         if let Some(id) = chunk.response_id {
             last_response_id = id;
@@ -519,6 +584,7 @@ async fn process_gemini_sse<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -578,5 +644,54 @@ mod tests {
         }
 
         assert_eq!(answer, "Hello world");
+    }
+
+    #[test]
+    fn gemini_stream_error_message_includes_status_and_code() {
+        let error = GeminiErrorResponse {
+            message: Some("backend timeout".to_string()),
+            code: Some(serde_json::json!(504)),
+            status: Some("DEADLINE_EXCEEDED".to_string()),
+        };
+
+        assert_eq!(
+            gemini_stream_error_message(&error),
+            Some("backend timeout (status=DEADLINE_EXCEEDED, code=504)".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_error_event_appends_visible_notice() {
+        let payload = "data: {\"error\":{\"message\":\"backend timeout\"}}\n\n";
+        let bytes_stream =
+            futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(payload))]);
+        let mut response_stream = spawn_gemini_sse_stream(bytes_stream, Duration::from_secs(1));
+
+        let mut deltas = String::new();
+        let mut final_output = String::new();
+
+        while let Some(event) = response_stream.next().await {
+            match event.expect("stream event should be ok") {
+                ResponseEvent::OutputTextDelta(delta) => deltas.push_str(&delta),
+                ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
+                    for item in content {
+                        if let ContentItem::OutputText { text } = item {
+                            final_output.push_str(&text);
+                        }
+                    }
+                }
+                ResponseEvent::Completed { .. } => break,
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            deltas,
+            "[Gemini stream interrupted: backend timeout]".to_string()
+        );
+        assert_eq!(
+            final_output,
+            "[Gemini stream interrupted: backend timeout]".to_string()
+        );
     }
 }
