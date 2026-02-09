@@ -1,5 +1,10 @@
 use anyhow::Result;
 use codex_core::features::Feature;
+use codex_core::protocol::AskForApproval;
+use codex_core::protocol::Op;
+use codex_core::protocol::SandboxPolicy;
+use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::user_input::UserInput;
 use core_test_support::responses::WebSocketConnectionConfig;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -71,6 +76,76 @@ async fn websocket_test_codex_shell_chain() -> Result<()> {
     );
 
     server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn websocket_preconnect_debug_inspect() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_websocket_server(vec![vec![vec![
+        ev_response_created("resp-1"),
+        ev_completed("resp-1"),
+    ]]])
+    .await;
+
+    let mut builder = test_codex();
+    let test = builder.build_with_websocket_server(&server).await?;
+
+    assert!(
+        server.wait_for_handshakes(1, Duration::from_secs(2)).await,
+        "expected websocket preconnect handshake during session startup"
+    );
+
+    let session_model = test.session_configured.model.clone();
+    test.codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.cwd.path().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            model: session_model,
+            effort: None,
+            summary: ReasoningSummary::Auto,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let start = tokio::time::Instant::now();
+    let deadline = start + Duration::from_secs(12);
+    let mut step = 0u32;
+    while tokio::time::Instant::now() < deadline {
+        step += 1;
+        let requests = server.connections().first().map(Vec::len).unwrap_or(0);
+        if requests > 0 {
+            println!("observed {requests} websocket request(s)");
+            break;
+        }
+
+        if step % 5 == 0 {
+            let handshakes = server.handshakes().len();
+            println!(
+                "step={step} handshakes={handshakes} connections={} requests_in_connection0={requests}",
+                server.connections().len(),
+            );
+        }
+
+        match tokio::time::timeout(Duration::from_millis(200), test.codex.next_event()).await {
+            Ok(Ok(ev)) => println!("event: {:?}", ev.msg),
+            Ok(Err(err)) => {
+                println!("event error: {err:?}");
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+
     Ok(())
 }
 

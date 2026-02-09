@@ -3982,7 +3982,7 @@ pub(crate) async fn run_turn(
     let mut client_session = sess
         .services
         .model_client
-        .new_session_with_provider(turn_context.provider.clone());
+        .new_session_for_provider(&turn_context.provider);
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -4566,7 +4566,7 @@ async fn run_sampling_request(
             *client_session = sess
                 .services
                 .model_client
-                .new_session_with_provider(turn_context.provider.clone());
+                .new_session_for_provider(&turn_context.provider);
             retries = 0;
             continue;
         }

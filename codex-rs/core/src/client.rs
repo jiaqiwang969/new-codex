@@ -340,6 +340,18 @@ impl ModelClient {
         }
     }
 
+    /// Creates a fresh turn-scoped streaming session for the requested provider.
+    ///
+    /// When the provider matches the session-scoped provider, this preserves session-level state
+    /// such as websocket preconnect and sticky HTTP fallback across turns.
+    pub fn new_session_for_provider(&self, provider: &ModelProviderInfo) -> ModelClientSession {
+        if &self.state.provider == provider {
+            return self.new_session();
+        }
+
+        self.new_session_with_provider(provider.clone())
+    }
+
     /// Spawns a best-effort task that warms a websocket for the first turn.
     ///
     /// This call performs only connection setup; it never sends prompt payloads.
