@@ -244,6 +244,34 @@ pub(crate) struct GeminiErrorResponse {
 #[derive(Debug, Deserialize)]
 pub(crate) struct GeminiCandidate {
     pub content: Option<GeminiContentResponse>,
+    #[serde(rename = "groundingMetadata", default)]
+    pub grounding_metadata: Option<GeminiGroundingMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GeminiGroundingMetadata {
+    #[serde(default)]
+    pub web_search_queries: Option<Vec<String>>,
+    #[serde(default)]
+    pub grounding_chunks: Option<Vec<GeminiGroundingChunk>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GeminiGroundingChunk {
+    #[serde(default)]
+    pub web: Option<GeminiGroundingChunkWeb>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GeminiGroundingChunkWeb {
+    #[serde(default)]
+    pub uri: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

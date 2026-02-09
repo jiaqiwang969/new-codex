@@ -24,7 +24,7 @@ use crate::model_compat::is_gemma_model_slug;
 const SYNTHETIC_THOUGHT_SIGNATURE: &str = "context_engineering_is_the_way_to_go";
 const DEFAULT_GEMINI_THINKING_BUDGET: i32 = 8192;
 
-const GEMINI_READ_ONLY_TOOL_NAMES: [&str; 9] = [
+const GEMINI_READ_ONLY_TOOL_NAMES: [&str; 7] = [
     "grep_files",
     "list_dir",
     "read_file",
@@ -32,9 +32,12 @@ const GEMINI_READ_ONLY_TOOL_NAMES: [&str; 9] = [
     "list_mcp_resource_templates",
     "read_mcp_resource",
     "view_image",
-    "shell",
-    "shell_command",
 ];
+
+// If structured repo tools are unavailable, fall back to shell-style tools so
+// Gemini can still gather local context. These tools can access the network, so
+// they are intentionally excluded from `GEMINI_READ_ONLY_TOOL_NAMES`.
+const GEMINI_FALLBACK_READ_ONLY_TOOL_NAMES: [&str; 3] = ["exec_command", "shell", "shell_command"];
 
 const GEMMA_STABLE_TOOL_NAMES: [&str; 8] = [
     "shell_command",
@@ -179,7 +182,7 @@ pub(crate) fn build_gemini_tool_config(
     }
 
     if should_force {
-        let allowed: Vec<String> = tools
+        let mut allowed: Vec<String> = tools
             .iter()
             .filter_map(|t| match t {
                 ToolSpec::Function(f) if GEMINI_READ_ONLY_TOOL_NAMES.contains(&f.name.as_str()) => {
@@ -188,6 +191,20 @@ pub(crate) fn build_gemini_tool_config(
                 _ => None,
             })
             .collect();
+
+        if allowed.is_empty() {
+            allowed = tools
+                .iter()
+                .filter_map(|t| match t {
+                    ToolSpec::Function(f)
+                        if GEMINI_FALLBACK_READ_ONLY_TOOL_NAMES.contains(&f.name.as_str()) =>
+                    {
+                        Some(f.name.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
 
         if !allowed.is_empty() {
             return GeminiFunctionCallingConfig {
@@ -1067,7 +1084,7 @@ mod tests {
         assert_eq!(config.mode, GeminiFunctionCallingMode::Any);
         assert_eq!(
             config.allowed_function_names,
-            Some(vec!["shell_command".to_string(), "read_file".to_string()])
+            Some(vec!["read_file".to_string()])
         );
         assert_eq!(config.stream_function_call_arguments, Some(true));
     }

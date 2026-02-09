@@ -1,6 +1,7 @@
 //! Gemini SSE streaming: spawns tasks that process Gemini Server-Sent Events
 //! and convert them into the internal `ResponseEvent` / `ResponseStream` types.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -13,6 +14,7 @@ use tracing::debug;
 
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::TokenUsage;
 
 use crate::client_common::ResponseEvent;
@@ -227,6 +229,50 @@ fn gemini_stream_error_message(error: &GeminiErrorResponse) -> Option<String> {
     }
 }
 
+fn normalize_unique_non_empty(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+fn top_grounding_uris(meta: &GeminiGroundingMetadata, limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let Some(chunks) = meta.grounding_chunks.as_ref() else {
+        return out;
+    };
+
+    for chunk in chunks {
+        let Some(web) = chunk.web.as_ref() else {
+            continue;
+        };
+        let Some(uri) = web.uri.as_deref() else {
+            continue;
+        };
+        let trimmed = uri.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    out
+}
+
 // ── Stream constructors ──────────────────────────────────────────────
 
 /// Creates a `ResponseStream` from a single pre-built item (used for error
@@ -294,7 +340,6 @@ async fn process_gemini_sse<S>(
     }
 
     let mut stream = stream
-        .map_ok(|b| b)
         .map_err(|e| std::io::Error::other(e.to_string()))
         .eventsource();
 
@@ -302,12 +347,16 @@ async fn process_gemini_sse<S>(
     let mut text_stream_state = GeminiTextStreamState::default();
     let mut assistant_item_sent = false;
     let mut reasoning_item_sent = false;
+    let mut reasoning_item_done = false;
+    let mut reasoning_item_id: Option<String> = None;
     // (name, args, thought_signature, call_id)
     let mut function_calls: Vec<(String, String, Option<String>, String)> = Vec::new();
     let mut last_response_id = "gemini-stream".to_string();
     let mut last_token_usage: Option<TokenUsage> = None;
     let mut last_thought_signature: Option<String> = None;
     let mut last_inline_image: Option<(String, String)> = None;
+    let mut emitted_web_search_calls: HashSet<String> = HashSet::new();
+    let mut web_search_items: Vec<ResponseItem> = Vec::new();
 
     loop {
         let response = timeout(idle_timeout, stream.next()).await;
@@ -383,6 +432,38 @@ async fn process_gemini_sse<S>(
 
         if let Some(candidates) = chunk.candidates {
             for candidate in candidates {
+                if let Some(meta) = candidate.grounding_metadata.as_ref() {
+                    if let Some(web_search_queries) = meta.web_search_queries.as_ref() {
+                        let queries = normalize_unique_non_empty(web_search_queries);
+                        if !queries.is_empty() {
+                            let key = format!("search:{}", queries.join("\n"));
+                            if emitted_web_search_calls.insert(key) {
+                                let item = ResponseItem::WebSearchCall {
+                                    id: Some(format!("gemini-web-search-{last_response_id}")),
+                                    status: Some("completed".to_string()),
+                                    action: Some(WebSearchAction::Search {
+                                        query: None,
+                                        queries: Some(queries),
+                                    }),
+                                };
+                                web_search_items.push(item);
+                            }
+                        }
+                    }
+
+                    for (idx, uri) in top_grounding_uris(meta, 3).into_iter().enumerate() {
+                        let key = format!("open:{uri}");
+                        if emitted_web_search_calls.insert(key) {
+                            let item = ResponseItem::WebSearchCall {
+                                id: Some(format!("gemini-web-open-{last_response_id}-{idx}")),
+                                status: Some("completed".to_string()),
+                                action: Some(WebSearchAction::OpenPage { url: Some(uri) }),
+                            };
+                            web_search_items.push(item);
+                        }
+                    }
+                }
+
                 if let Some(content) = candidate.content
                     && let Some(parts) = content.parts
                 {
@@ -399,8 +480,9 @@ async fn process_gemini_sse<S>(
                                 && is_meaningful_thought_text(text)
                             {
                                 if !reasoning_item_sent {
+                                    let id = format!("gemini-thought-{last_response_id}");
                                     let item = ResponseItem::Reasoning {
-                                        id: format!("gemini-thought-{last_response_id}"),
+                                        id: id.clone(),
                                         summary: vec![],
                                         content: None,
                                         encrypted_content: None,
@@ -413,6 +495,7 @@ async fn process_gemini_sse<S>(
                                         return;
                                     }
                                     reasoning_item_sent = true;
+                                    reasoning_item_id = Some(id);
                                 }
                                 if tx_event
                                     .send(Ok(ResponseEvent::ReasoningContentDelta {
@@ -438,8 +521,9 @@ async fn process_gemini_sse<S>(
                                 && is_meaningful_thought_text(&reasoning_delta)
                             {
                                 if !reasoning_item_sent {
+                                    let id = format!("gemini-thought-{last_response_id}");
                                     let item = ResponseItem::Reasoning {
-                                        id: format!("gemini-thought-{last_response_id}"),
+                                        id: id.clone(),
                                         summary: vec![],
                                         content: None,
                                         encrypted_content: None,
@@ -452,6 +536,7 @@ async fn process_gemini_sse<S>(
                                         return;
                                     }
                                     reasoning_item_sent = true;
+                                    reasoning_item_id = Some(id);
                                 }
                                 if tx_event
                                     .send(Ok(ResponseEvent::ReasoningContentDelta {
@@ -466,6 +551,26 @@ async fn process_gemini_sse<S>(
                             }
 
                             if let Some(answer_delta) = deltas.answer_delta {
+                                if reasoning_item_sent
+                                    && !reasoning_item_done
+                                    && let Some(id) = reasoning_item_id.clone()
+                                {
+                                    let item = ResponseItem::Reasoning {
+                                        id,
+                                        summary: vec![],
+                                        content: None,
+                                        encrypted_content: None,
+                                    };
+                                    if tx_event
+                                        .send(Ok(ResponseEvent::OutputItemDone(item)))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    reasoning_item_done = true;
+                                }
+
                                 if !assistant_item_sent {
                                     let item = ResponseItem::Message {
                                         id: None,
@@ -535,6 +640,19 @@ async fn process_gemini_sse<S>(
     }
 
     // Emit final items
+    if reasoning_item_sent
+        && !reasoning_item_done
+        && let Some(id) = reasoning_item_id.clone()
+    {
+        let item = ResponseItem::Reasoning {
+            id,
+            summary: vec![],
+            content: None,
+            encrypted_content: None,
+        };
+        let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
+    }
+
     if assistant_item_sent || last_inline_image.is_some() {
         let mut content = Vec::new();
         if !accumulated_text.is_empty() {
@@ -560,6 +678,10 @@ async fn process_gemini_sse<S>(
             };
             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
         }
+    }
+
+    for item in web_search_items {
+        let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
     }
 
     for (name, arguments, thought_signature, call_id) in function_calls {
@@ -692,6 +814,72 @@ mod tests {
         assert_eq!(
             final_output,
             "[Gemini stream interrupted: backend timeout]".to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn grounding_metadata_emits_web_search_calls() {
+        let payload = concat!(
+            "data: {",
+            "\"candidates\":[{",
+            "\"content\":{\"parts\":[{\"text\":\"ok\"}]},",
+            "\"groundingMetadata\":{",
+            "\"webSearchQueries\":[\"q1\",\"q2\"],",
+            "\"groundingChunks\":[",
+            "{\"web\":{\"uri\":\"https://example.com\",\"title\":\"Example\"}},",
+            "{\"web\":{\"uri\":\"https://example.com\",\"title\":\"Dup\"}},",
+            "{\"web\":{\"uri\":\"https://example.org\",\"title\":\"Other\"}}",
+            "]}",
+            "}]}",
+            "\n\n"
+        );
+        let bytes_stream =
+            futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(payload))]);
+        let mut response_stream = spawn_gemini_sse_stream(bytes_stream, Duration::from_secs(1));
+
+        let mut web_search_actions = Vec::new();
+        while let Some(event) = response_stream.next().await {
+            match event.expect("stream event should be ok") {
+                ResponseEvent::OutputItemDone(ResponseItem::WebSearchCall { action, .. }) => {
+                    web_search_actions.push(action);
+                }
+                ResponseEvent::Completed { .. } => break,
+                _ => {}
+            }
+        }
+
+        let search_action = web_search_actions
+            .iter()
+            .filter_map(|action| action.as_ref())
+            .find_map(|action| match action {
+                WebSearchAction::Search { query, queries } => {
+                    Some((query.clone(), queries.clone()))
+                }
+                _ => None,
+            })
+            .expect("expected a search action");
+
+        assert_eq!(search_action.0, None);
+        assert_eq!(
+            search_action.1,
+            Some(vec!["q1".to_string(), "q2".to_string()])
+        );
+
+        let open_urls: Vec<String> = web_search_actions
+            .iter()
+            .filter_map(|action| action.as_ref())
+            .filter_map(|action| match action {
+                WebSearchAction::OpenPage { url } => url.clone(),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            open_urls,
+            vec![
+                "https://example.com".to_string(),
+                "https://example.org".to_string()
+            ]
         );
     }
 }
