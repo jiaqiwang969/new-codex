@@ -41,6 +41,7 @@ use crate::model_provider_info::GEMMA_PROVIDER_ID;
 use crate::model_provider_info::GROK_PROVIDER_ID;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use crate::model_provider_info::ModelProviderAccount;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
@@ -1376,6 +1377,38 @@ pub(crate) fn resolve_web_search_mode_for_turn(
     WebSearchMode::Disabled
 }
 
+fn normalize_provider_account(account: &ModelProviderAccount) -> Option<ModelProviderAccount> {
+    let base_url = account
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let env_key = account
+        .env_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if base_url.is_none() || env_key.is_none() {
+        return None;
+    }
+
+    Some(ModelProviderAccount { base_url, env_key })
+}
+
+fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
+    if let Some(primary_account) = provider
+        .account_pool
+        .iter()
+        .find_map(normalize_provider_account)
+    {
+        provider.base_url = primary_account.base_url;
+        provider.env_key = primary_account.env_key;
+    }
+}
+
 fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
     if is_gemma_model_slug(model_slug) {
         Some(GEMMA_PROVIDER_ID)
@@ -1567,6 +1600,7 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+        apply_primary_account_pool_selection(&mut model_provider);
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
 
@@ -1639,6 +1673,7 @@ impl Config {
         {
             model_provider_id = target_provider_id.to_string();
             model_provider = target_provider.clone();
+            apply_primary_account_pool_selection(&mut model_provider);
         }
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
@@ -4813,6 +4848,130 @@ trust_level = "trusted"
         assert_eq!(config.model_provider_id, custom_provider_id);
         assert_eq!(config.model_provider, custom_grok_provider);
         assert_eq!(config.user_configured_provider, custom_grok_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn account_pool_primary_entry_is_selected_on_config_load() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let provider_id = "openai-main".to_string();
+        let provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: Some("https://fallback.example/v1".to_string()),
+            env_key: Some("KEY_FALLBACK".to_string()),
+            wire_api: crate::WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("KEY_PREFERRED".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("KEY_FALLBACK".to_string()),
+                },
+            ],
+        };
+        let mut model_providers = HashMap::new();
+        model_providers.insert(provider_id.clone(), provider);
+
+        let cfg = ConfigToml {
+            model_provider: Some(provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.model_provider.base_url.as_deref(),
+            Some("https://preferred.example/v1")
+        );
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("KEY_PREFERRED")
+        );
+        assert_eq!(
+            config.user_configured_provider.base_url.as_deref(),
+            Some("https://preferred.example/v1")
+        );
+        assert_eq!(
+            config.user_configured_provider.env_key.as_deref(),
+            Some("KEY_PREFERRED")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn account_pool_ignores_invalid_entries_and_uses_first_valid_entry() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let provider_id = "openai-main".to_string();
+        let provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: Some("https://fallback.example/v1".to_string()),
+            env_key: Some("KEY_FALLBACK".to_string()),
+            wire_api: crate::WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("".to_string()),
+                    env_key: Some("KEY_SKIP".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("KEY_PREFERRED".to_string()),
+                },
+            ],
+        };
+        let mut model_providers = HashMap::new();
+        model_providers.insert(provider_id.clone(), provider);
+
+        let cfg = ConfigToml {
+            model_provider: Some(provider_id),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.model_provider.base_url.as_deref(),
+            Some("https://preferred.example/v1")
+        );
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("KEY_PREFERRED")
+        );
 
         Ok(())
     }
