@@ -30,6 +30,7 @@ use std::time::Duration;
 use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
@@ -139,6 +140,7 @@ struct ProcessEntry {
     command: Vec<String>,
     tty: bool,
     last_used: tokio::time::Instant,
+    end_event_notifier: Arc<Notify>,
 }
 
 pub(crate) fn clamp_yield_time(yield_time_ms: u64) -> u64 {

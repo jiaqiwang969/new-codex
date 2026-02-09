@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::Sleep;
@@ -112,6 +113,7 @@ pub(crate) fn spawn_exit_watcher(
     cwd: PathBuf,
     process_id: String,
     transcript: Arc<Mutex<HeadTailBuffer>>,
+    end_event_notifier: Arc<Notify>,
     started_at: Instant,
 ) {
     let exit_token = process.cancellation_token();
@@ -136,6 +138,7 @@ pub(crate) fn spawn_exit_watcher(
             duration,
         )
         .await;
+        end_event_notifier.notify_one();
     });
 }
 

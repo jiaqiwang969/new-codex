@@ -295,15 +295,20 @@ impl UnifiedExecProcessManager {
         // that through so the handler can tag TerminalInteraction with an
         // appropriate process_id and exit_code.
         let status = self.refresh_process_state(process_id.as_str()).await;
-        let (process_id, exit_code, event_call_id) = match status {
+        let (process_id, exit_code, event_call_id, end_event_notifier) = match status {
             ProcessStatus::Alive {
                 exit_code,
                 call_id,
                 process_id,
-            } => (Some(process_id), exit_code, call_id),
+            } => (Some(process_id), exit_code, call_id, None),
             ProcessStatus::Exited { exit_code, entry } => {
                 let call_id = entry.call_id.clone();
-                (None, exit_code, call_id)
+                (
+                    None,
+                    exit_code,
+                    call_id,
+                    Some(entry.end_event_notifier.clone()),
+                )
             }
             ProcessStatus::Unknown => {
                 return Err(UnifiedExecError::UnknownProcessId {
@@ -311,6 +316,13 @@ impl UnifiedExecProcessManager {
                 });
             }
         };
+
+        if let Some(notifier) = end_event_notifier {
+            // Ensure the exit watcher has a chance to emit ExecCommandEnd before we
+            // report the turn complete. This keeps tool lifecycle events ordered
+            // for UIs that stop consuming at TurnComplete.
+            let _ = tokio::time::timeout(Duration::from_millis(750), notifier.notified()).await;
+        }
 
         let response = UnifiedExecResponse {
             event_call_id,
@@ -405,6 +417,7 @@ impl UnifiedExecProcessManager {
         tty: bool,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
     ) {
+        let end_event_notifier = Arc::new(tokio::sync::Notify::new());
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
@@ -412,6 +425,7 @@ impl UnifiedExecProcessManager {
             command: command.to_vec(),
             tty,
             last_used: started_at,
+            end_event_notifier: Arc::clone(&end_event_notifier),
         };
         let number_processes = {
             let mut store = self.process_store.lock().await;
@@ -439,6 +453,7 @@ impl UnifiedExecProcessManager {
             cwd,
             process_id,
             transcript,
+            end_event_notifier,
             started_at,
         );
     }

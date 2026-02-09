@@ -125,6 +125,10 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
 
     items.retain(|item| match item {
         ResponseItem::FunctionCallOutput { call_id, .. } => {
+            if call_id.trim().is_empty() {
+                info!("Dropping function call output with empty call id");
+                return false;
+            }
             let has_match =
                 function_call_ids.contains(call_id) || local_shell_call_ids.contains(call_id);
             if !has_match {
@@ -135,6 +139,10 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
             has_match
         }
         ResponseItem::CustomToolCallOutput { call_id, .. } => {
+            if call_id.trim().is_empty() {
+                info!("Dropping custom tool call output with empty call id");
+                return false;
+            }
             let has_match = custom_tool_call_ids.contains(call_id);
             if !has_match {
                 error_or_panic(format!(
