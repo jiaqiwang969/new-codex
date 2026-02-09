@@ -70,6 +70,44 @@ impl SessionBar {
         bar
     }
 
+    /// Update session list and derived labels from a precomputed cache.
+    ///
+    /// This is primarily used by tests and any future background session cache
+    /// that already performed disk IO.
+    pub fn update_from_cache(
+        &mut self,
+        sessions: Vec<SessionInfo>,
+        label_cache: HashMap<PathBuf, String>,
+    ) {
+        self.loading = false;
+        self.error = None;
+
+        // De-duplicate by id (keep the first/newest in the provided order).
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::new();
+        for session in sessions {
+            if seen.insert(session.id.clone()) {
+                deduped.push(session);
+            }
+        }
+
+        self.sessions = deduped;
+        self.label_cache = label_cache;
+
+        // If current session is in history, select it by default.
+        if let Some(cur) = self.current_session_id.as_ref()
+            && let Some(pos) = self.sessions.iter().position(|s| &s.id == cur)
+        {
+            self.selected_index = pos;
+            self.selected_on_new = false;
+        }
+
+        // Keep selection in bounds.
+        if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
+            self.selected_index = self.sessions.len() - 1;
+        }
+    }
+
     /// Refresh the session list from disk
     pub fn refresh_sessions(&mut self) {
         self.loading = true;
