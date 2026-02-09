@@ -258,7 +258,7 @@ async fn update_thread_memory_after_turn(
         let age = Utc::now()
             .signed_duration_since(memory.updated_at)
             .num_seconds();
-        if age >= 0 && age < THREAD_MEMORY_MIN_UPDATE_INTERVAL_SECS {
+        if (0..THREAD_MEMORY_MIN_UPDATE_INTERVAL_SECS).contains(&age) {
             return;
         }
     }

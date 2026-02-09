@@ -408,9 +408,11 @@ async fn process_gemini_sse<S>(
                 }
                 assistant_item_sent = true;
             }
-            let separator = (!accumulated_text.is_empty())
-                .then_some("\n\n")
-                .unwrap_or("");
+            let separator = if !accumulated_text.is_empty() {
+                "\n\n"
+            } else {
+                ""
+            };
             let notice = format!("{separator}[Gemini stream interrupted: {error_message}]");
             if tx_event
                 .send(Ok(ResponseEvent::OutputTextDelta(notice.clone())))

@@ -1592,10 +1592,9 @@ impl Config {
             if matches!(
                 key.as_str(),
                 "openai" | GEMINI_PROVIDER_ID | GEMMA_PROVIDER_ID | GROK_PROVIDER_ID
-            ) {
-                if let Some(existing) = model_providers.get(&key) {
-                    provider.name = existing.name.clone();
-                }
+            ) && let Some(existing) = model_providers.get(&key)
+            {
+                provider.name = existing.name.clone();
             }
             model_providers.insert(key, provider);
         }
@@ -4902,7 +4901,7 @@ trust_level = "trusted"
         model_providers.insert(provider_id.clone(), provider);
 
         let cfg = ConfigToml {
-            model_provider: Some(provider_id.clone()),
+            model_provider: Some(provider_id),
             model_providers,
             ..Default::default()
         };

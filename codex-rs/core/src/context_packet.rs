@@ -67,47 +67,45 @@ pub(crate) async fn build_context_packet(
                 config.max_memory_summary_bytes,
             );
             sections.push(format!(
-                "Saved thread memory:\nTrace summary:\n{}\n\nMemory summary:\n{}",
-                trace_summary, memory_summary
+                "Saved thread memory:\nTrace summary:\n{trace_summary}\n\nMemory summary:\n{memory_summary}"
             ));
         }
 
-        if config.max_project_memories > 0 {
-            if let Some(memories) = state_db::get_last_n_thread_memories_for_cwd(
+        if config.max_project_memories > 0
+            && let Some(memories) = state_db::get_last_n_thread_memories_for_cwd(
                 sess.state_db().as_deref(),
                 turn_context.cwd.as_path(),
                 config.max_project_memories.saturating_add(1),
                 "context_packet_project_memory",
             )
             .await
-            {
-                let mut selected = Vec::new();
-                for memory in memories {
-                    if memory.thread_id == sess.conversation_id {
-                        continue;
-                    }
-                    selected.push(memory);
-                    if selected.len() >= config.max_project_memories {
-                        break;
-                    }
+        {
+            let mut selected = Vec::new();
+            for memory in memories {
+                if memory.thread_id == sess.conversation_id {
+                    continue;
                 }
+                selected.push(memory);
+                if selected.len() >= config.max_project_memories {
+                    break;
+                }
+            }
 
-                if !selected.is_empty() {
-                    let mut out = String::new();
-                    for (idx, memory) in selected.into_iter().enumerate() {
-                        if idx > 0 {
-                            out.push('\n');
-                            out.push('\n');
-                        }
-                        let thread_id = memory.thread_id;
-                        let summary = truncate_text_bytes(
-                            memory.memory_summary.trim(),
-                            config.max_project_memory_summary_bytes,
-                        );
-                        out.push_str(&format!("- Thread {thread_id}:\n{summary}"));
+            if !selected.is_empty() {
+                let mut out = String::new();
+                for (idx, memory) in selected.into_iter().enumerate() {
+                    if idx > 0 {
+                        out.push('\n');
+                        out.push('\n');
                     }
-                    sections.push(format!("Recent project memories (same cwd):\n{out}"));
+                    let thread_id = memory.thread_id;
+                    let summary = truncate_text_bytes(
+                        memory.memory_summary.trim(),
+                        config.max_project_memory_summary_bytes,
+                    );
+                    out.push_str(&format!("- Thread {thread_id}:\n{summary}"));
                 }
+                sections.push(format!("Recent project memories (same cwd):\n{out}"));
             }
         }
     }

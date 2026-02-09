@@ -128,7 +128,7 @@ async fn websocket_preconnect_debug_inspect() -> Result<()> {
             break;
         }
 
-        if step % 5 == 0 {
+        if step.is_multiple_of(5) {
             let handshakes = server.handshakes().len();
             println!(
                 "step={step} handshakes={handshakes} connections={} requests_in_connection0={requests}",
