@@ -31,6 +31,7 @@ result
 # cli tools
 CLAUDE.md
 .claude/
+.codex/
 AGENTS.override.md
 
 # caches
@@ -90,4 +91,3 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
-
