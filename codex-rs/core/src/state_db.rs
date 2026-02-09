@@ -76,6 +76,18 @@ pub(crate) async fn init_if_enabled(
     Some(runtime)
 }
 
+/// Initialize the SQLite-backed state DB runtime when the `sqlite` feature flag is enabled.
+///
+/// Unlike [`get_state_db`], this helper creates the DB when missing and returns the runtime even
+/// if rollout metadata backfill is still in progress. Tooling that needs to write state (for
+/// example, memory backfills) should prefer this entrypoint.
+pub async fn init_state_db_if_enabled(
+    config: &Config,
+    otel: Option<&OtelManager>,
+) -> Option<StateDbHandle> {
+    init_if_enabled(config, otel).await
+}
+
 /// Get the DB if the feature is enabled and the DB exists.
 pub async fn get_state_db(config: &Config, otel: Option<&OtelManager>) -> Option<StateDbHandle> {
     let state_path = codex_state::state_db_path(config.codex_home.as_path());

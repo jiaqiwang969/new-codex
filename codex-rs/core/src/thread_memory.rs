@@ -62,7 +62,7 @@ pub(crate) fn maybe_spawn_thread_memory_update_after_turn(
     });
 }
 
-pub(crate) fn build_thread_memory_trace_items(history: &[ResponseItem]) -> Vec<Value> {
+pub fn build_thread_memory_trace_items(history: &[ResponseItem]) -> Vec<Value> {
     let mut candidates: Vec<(usize, Value)> = Vec::new();
 
     let summary_prefix = format!("{}\n", compact::SUMMARY_PREFIX);
