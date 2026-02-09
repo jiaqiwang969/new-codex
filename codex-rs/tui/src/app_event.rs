@@ -59,6 +59,9 @@ pub(crate) enum AppEvent {
     /// Start a new session.
     NewSession,
 
+    /// Resume a specific session from its rollout path.
+    ResumeSession(PathBuf),
+
     /// Open the resume picker inside the running TUI session.
     OpenResumePicker,
 
