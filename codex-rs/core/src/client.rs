@@ -1425,18 +1425,36 @@ impl ModelClientSession {
 
         let client = crate::default_client::build_reqwest_client();
 
-        let gemini_api_key = crate::auth::read_gemini_api_key_from_env().or_else(|| {
-            // Try to read from auth.json (~/.codex/auth.json) which may contain
-            // a GEMINI_API_KEY field.
-            if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
-                crate::auth::read_gemini_api_key_from_auth_json(
-                    &codex_home,
-                    crate::auth::AuthCredentialsStoreMode::File,
-                )
-            } else {
-                None
-            }
-        });
+        let auth = match self.client.state.auth_manager.as_ref() {
+            Some(manager) => manager.auth().await,
+            None => None,
+        };
+
+        // Respect provider-local key rotation (account_pool updates env_key).
+        let gemini_api_key = if let Some(env_key) = provider.env_key.as_deref() {
+            std::env::var(env_key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    auth.as_ref()
+                        .and_then(|auth| auth.api_key_for_env_key(env_key))
+                        .map(str::to_string)
+                })
+        } else {
+            crate::auth::read_gemini_api_key_from_env().or_else(|| {
+                // Try to read from auth.json (~/.codex/auth.json) which may contain
+                // a GEMINI_API_KEY field.
+                if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
+                    crate::auth::read_gemini_api_key_from_auth_json(
+                        &codex_home,
+                        crate::auth::AuthCredentialsStoreMode::File,
+                    )
+                } else {
+                    None
+                }
+            })
+        };
 
         let make_request_builder = || {
             let mut req_builder = client.post(&url);

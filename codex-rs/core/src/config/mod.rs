@@ -1399,6 +1399,10 @@ fn normalize_provider_account(account: &ModelProviderAccount) -> Option<ModelPro
 }
 
 fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
+    if provider.current_account().is_some() {
+        return;
+    }
+
     if let Some(primary_account) = provider
         .account_pool
         .iter()
@@ -1580,9 +1584,20 @@ impl Config {
             approval_policy_was_explicit || sandbox_mode_was_explicit;
 
         let mut model_providers = built_in_model_providers();
-        // Merge user-defined providers into the built-in list.
-        for (key, provider) in cfg.model_providers.into_iter() {
-            model_providers.entry(key).or_insert(provider);
+        // Merge user-defined providers into the built-in list (overriding built-ins).
+        //
+        // Note: built-in providers use `name` for some capability routing (e.g. Gemma-vs-Gemini),
+        // so keep canonical names stable when overriding built-in providers in config.toml.
+        for (key, mut provider) in cfg.model_providers.into_iter() {
+            if matches!(
+                key.as_str(),
+                "openai" | GEMINI_PROVIDER_ID | GEMMA_PROVIDER_ID | GROK_PROVIDER_ID
+            ) {
+                if let Some(existing) = model_providers.get(&key) {
+                    provider.name = existing.name.clone();
+                }
+            }
+            model_providers.insert(key, provider);
         }
 
         let mut model_provider_id = model_provider
@@ -4859,8 +4874,8 @@ trust_level = "trusted"
         let provider_id = "openai-main".to_string();
         let provider = ModelProviderInfo {
             name: "OpenAI Main".to_string(),
-            base_url: Some("https://fallback.example/v1".to_string()),
-            env_key: Some("KEY_FALLBACK".to_string()),
+            base_url: None,
+            env_key: None,
             wire_api: crate::WireApi::Responses,
             env_key_instructions: None,
             experimental_bearer_token: None,
@@ -4925,8 +4940,8 @@ trust_level = "trusted"
         let provider_id = "openai-main".to_string();
         let provider = ModelProviderInfo {
             name: "OpenAI Main".to_string(),
-            base_url: Some("https://fallback.example/v1".to_string()),
-            env_key: Some("KEY_FALLBACK".to_string()),
+            base_url: None,
+            env_key: None,
             wire_api: crate::WireApi::Responses,
             env_key_instructions: None,
             experimental_bearer_token: None,
