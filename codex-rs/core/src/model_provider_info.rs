@@ -438,7 +438,8 @@ impl ModelProviderInfo {
             env_http_headers: None,
             request_max_retries: Some(3),
             stream_max_retries: Some(3),
-            stream_idle_timeout_ms: Some(300_000),
+            // Local Gemma stacks often have long first-token latency for large prompts.
+            stream_idle_timeout_ms: Some(900_000),
             requires_openai_auth: false,
             supports_websockets: false,
             account_pool: Vec::new(),

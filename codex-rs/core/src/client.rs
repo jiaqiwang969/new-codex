@@ -106,6 +106,7 @@ use crate::auth::RefreshTokenError;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::client_common::tools::ToolSpec;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
@@ -1351,7 +1352,11 @@ impl ModelClientSession {
         });
 
         let tools = build_gemini_tools(&prompt.tools, api_model);
-        let tool_config = tools.as_ref().map(|_| GeminiToolConfig {
+        let has_function_tools = prompt
+            .tools
+            .iter()
+            .any(|tool| matches!(tool, ToolSpec::Function(_)));
+        let tool_config = (tools.is_some() && has_function_tools).then(|| GeminiToolConfig {
             function_calling_config: build_gemini_tool_config(
                 &prompt.tools,
                 &formatted_input,

@@ -227,6 +227,18 @@ pub(crate) struct GeminiResponse {
     pub candidates: Option<Vec<GeminiCandidate>>,
     pub response_id: Option<String>,
     pub usage_metadata: Option<GeminiUsageMetadata>,
+    #[serde(default)]
+    pub error: Option<GeminiErrorResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GeminiErrorResponse {
+    pub message: Option<String>,
+    #[serde(default)]
+    pub code: Option<Value>,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,7 +281,12 @@ pub(crate) struct GeminiFunctionCall {
 pub(crate) struct GeminiTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function_declarations: Option<Vec<GeminiFunctionDeclaration>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "google_search")]
+    pub google_search: Option<GeminiGoogleSearchTool>,
 }
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct GeminiGoogleSearchTool {}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

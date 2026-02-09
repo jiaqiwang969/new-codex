@@ -131,6 +131,7 @@ pub(crate) fn build_gemini_tool_config(
     api_model: &str,
 ) -> GeminiFunctionCallingConfig {
     let is_gemma_model = is_gemma_model_slug(api_model);
+    let last_user_text = last_user_input_text(formatted_input);
     let force_read_first = std::env::var("CODEX_GEMINI_FORCE_READ_TOOLS_FIRST_TURN")
         .ok()
         .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
@@ -150,7 +151,15 @@ pub(crate) fn build_gemini_tool_config(
             )
         });
 
-    let should_force = force_read_first.unwrap_or(is_first_turn_with_user_text);
+    let should_force = match force_read_first {
+        Some(value) => value,
+        None => {
+            is_first_turn_with_user_text
+                && last_user_text
+                    .as_deref()
+                    .is_some_and(gemini_request_needs_local_context)
+        }
+    };
 
     let stream_fn_args = if is_gemini_3_model(api_model) && !is_gemma_model {
         Some(true)
@@ -196,6 +205,64 @@ pub(crate) fn build_gemini_tool_config(
     }
 }
 
+fn last_user_input_text(input: &[ResponseItem]) -> Option<String> {
+    for item in input.iter().rev() {
+        let ResponseItem::Message { role, content, .. } = item else {
+            continue;
+        };
+        if role != "user" {
+            continue;
+        }
+        let text: String = content
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        return Some(text.to_string());
+    }
+    None
+}
+
+fn gemini_request_needs_local_context(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let needs_repo_context = [
+        "this repo",
+        "this repository",
+        "this codebase",
+        "this project",
+        "current repo",
+        "current project",
+        "repo",
+        "repository",
+        "codebase",
+        "workspace",
+        "analyze project",
+        "analyse project",
+        "analyze the project",
+        "analyse the project",
+        "debug",
+        "fix",
+        "bug",
+        "stack trace",
+        "traceback",
+        "cargo",
+        "rust",
+        ".rs",
+        "cargo.toml",
+    ]
+    .into_iter()
+    .any(|needle| lower.contains(needle));
+
+    needs_repo_context || prompt.contains('/') || prompt.contains('\\')
+}
+
 // ── Tool declarations ────────────────────────────────────────────────
 
 fn strip_additional_properties(value: &mut Value) {
@@ -217,6 +284,10 @@ fn strip_additional_properties(value: &mut Value) {
 
 pub(crate) fn build_gemini_tools(tools: &[ToolSpec], api_model: &str) -> Option<Vec<GeminiTool>> {
     let filter_for_gemma = is_gemma_model_slug(api_model);
+    let enable_google_search = !filter_for_gemma
+        && tools
+            .iter()
+            .any(|tool| matches!(tool, ToolSpec::WebSearch { .. }));
     let mut functions = Vec::new();
     let mut filtered_out = 0usize;
     for tool in tools {
@@ -246,15 +317,23 @@ pub(crate) fn build_gemini_tools(tools: &[ToolSpec], api_model: &str) -> Option<
         let kept = functions.len();
         debug!("Gemma: filtered {filtered_out} function tools, keeping {kept}");
     }
-    if functions.is_empty() {
-        None
-    } else {
-        Some(vec![GeminiTool {
-            function_declarations: Some(functions),
-        }])
-    }
-}
 
+    let mut out = Vec::new();
+    if !functions.is_empty() {
+        out.push(GeminiTool {
+            function_declarations: Some(functions),
+            google_search: None,
+        });
+    }
+    if enable_google_search {
+        out.push(GeminiTool {
+            function_declarations: None,
+            google_search: Some(GeminiGoogleSearchTool::default()),
+        });
+    }
+
+    if out.is_empty() { None } else { Some(out) }
+}
 // ── Content building ─────────────────────────────────────────────────
 
 pub(crate) fn build_gemini_contents(
@@ -739,11 +818,15 @@ mod tests {
     }
 
     fn first_turn_input() -> Vec<ResponseItem> {
+        first_turn_input_with_text("hi")
+    }
+
+    fn first_turn_input_with_text(text: &str) -> Vec<ResponseItem> {
         vec![ResponseItem::Message {
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
-                text: "hi".to_string(),
+                text: text.to_string(),
             }],
             end_turn: None,
             phase: None,
@@ -920,6 +1003,42 @@ mod tests {
     }
 
     #[test]
+    fn gemini_tools_include_google_search_when_web_search_is_enabled() {
+        let tools = vec![
+            function_tool("shell_command"),
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+            },
+        ];
+
+        let gemini_tools = build_gemini_tools(&tools, "gemini-3-pro-preview")
+            .expect("gemini tools should be present");
+
+        assert!(
+            gemini_tools.iter().any(|tool| tool.google_search.is_some()),
+            "expected google_search tool to be enabled when web_search is present"
+        );
+    }
+
+    #[test]
+    fn gemma_tools_do_not_include_google_search() {
+        let tools = vec![
+            function_tool("shell_command"),
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+            },
+        ];
+
+        let gemini_tools =
+            build_gemini_tools(&tools, "gemma-3n").expect("gemma tools should be present");
+
+        assert!(
+            gemini_tools.iter().all(|tool| tool.google_search.is_none()),
+            "gemma should not enable google_search"
+        );
+    }
+
+    #[test]
     fn gemma_tool_config_does_not_force_any_mode() {
         let tools = vec![function_tool("shell_command"), function_tool("read_file")];
         let config = build_gemini_tool_config(&tools, &first_turn_input(), "gemma-3n");
@@ -930,9 +1049,20 @@ mod tests {
     }
 
     #[test]
-    fn gemini_3_tool_config_can_force_read_first_turn() {
+    fn gemini_3_tool_config_does_not_force_for_generic_first_turn() {
         let tools = vec![function_tool("shell_command"), function_tool("read_file")];
         let config = build_gemini_tool_config(&tools, &first_turn_input(), "gemini-3-pro-preview");
+
+        assert_eq!(config.mode, GeminiFunctionCallingMode::Auto);
+        assert_eq!(config.allowed_function_names, None);
+        assert_eq!(config.stream_function_call_arguments, Some(true));
+    }
+
+    #[test]
+    fn gemini_3_tool_config_forces_read_first_turn_when_prompt_needs_local_context() {
+        let tools = vec![function_tool("shell_command"), function_tool("read_file")];
+        let input = first_turn_input_with_text("analyze current project");
+        let config = build_gemini_tool_config(&tools, &input, "gemini-3-pro-preview");
 
         assert_eq!(config.mode, GeminiFunctionCallingMode::Any);
         assert_eq!(
