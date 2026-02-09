@@ -37,7 +37,7 @@
 \begin{abstract}
 当前我们在 Codex 中集成了一个 \texttt{claude\_code} 的 MCP 工具：当提示词中“呼唤 Claude 做事情”时，Codex 会转发调用到 Claude CLI 侧执行。但 MCP 调用默认只携带该次工具参数（prompt/workFolder 等），\textbf{不会自动携带当前 session 的历史上下文}，因此 Claude 很容易在缺少前情的情况下做出偏差实现。
 
-本文从第一性原理出发，给出一套“\textbf{调用时上下文注入（Context Packet）} + \textbf{跨会话持久记忆（SQLite thread\_memory）}”的组合方案，并说明其与 Codex 官方方向（\texttt{get\_memory} 工具 + SQLite）如何对齐，以及如何验证/迭代。
+本文从第一性原理出发，给出一套“\textbf{调用时上下文注入（Context Packet）} + \textbf{跨会话持久记忆（SQLite thread\_memory）}”的组合方案，并说明其与 Codex 官方方向（\texttt{get\_memory} 工具 + SQLite）如何对齐，以及如何验证/迭代。本文同时记录截至 \textbf{2026-02-09} 的落地实现现状与后续里程碑。
 \end{abstract}
 
 \tableofcontents
@@ -112,8 +112,8 @@ MCP 调用本质上是一次独立 RPC：Codex 会把工具参数 JSON 原样转
 \subsection{跨会话：SQLite thread\_memory + get\_memory}
 \begin{itemize}[nosep]
   \item SQLite migration：\texttt{thread\_memory(thread\_id, trace\_summary, memory\_summary, updated\_at)}。
-  \item Tool：\texttt{get\_memory(memory\_id = thread\_id)} 读取该结构化 JSON。
-  \item 关键缺口：需要一个\textbf{自动生成/更新 thread\_memory} 的流水线（何时写入、如何 summarise）。
+  \item Tool：\texttt{get\_memory(memory\_id = thread\_id)} 读取该结构化 JSON（feature-gated：\texttt{memory\_tool}）。
+  \item \textbf{已补齐关键链路：}实现了 thread\_memory 的自动生成/更新流水线（turn 完成 + compaction 后写入）。
 \end{itemize}
 
 \section{方案总览}
@@ -176,19 +176,40 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
 \subsection{数据库与工具已经具备}
 \begin{itemize}[nosep]
   \item 表结构与读工具已存在：\texttt{get\_memory}。
-  \item 需要实现：\textbf{何时写入}与\textbf{如何生成}。
+  \item 需要解决的关键问题是：\textbf{何时写入}与\textbf{如何生成}；当前已实现（见下节）。
 \end{itemize}
 
-\subsection{生成策略（建议）}
+\subsection{生成策略（已实现）}
 \begin{enumerate}[nosep]
   \item 触发时机：
     \begin{itemize}[nosep]
-      \item Turn 完成后（或 compaction 完成后），在后台异步生成；
-      \item 或提供手动命令：从 rollout 重新构建。
+      \item Turn 完成后（带 10 分钟节流），后台异步生成；
+      \item Compaction 完成后，后台异步生成；
+      \item 未来可补充：手动 backfill 命令，从 rollout 重新构建（用于历史 thread 补齐）。
     \end{itemize}
   \item 输入来源：rollout（.jsonl）或 normalized trace items。
-  \item 生成方式：调用官方 \texttt{/v1/memories/trace\_summarize}（Codex 已有 client wiring：\texttt{memory\_trace} 模块）。
+  \item 生成方式：调用官方 \texttt{/v1/memories/trace\_summarize}（复用 Codex client wiring）。
   \item 写入：\texttt{upsert\_thread\_memory(thread\_id, trace\_summary, memory\_summary)}。
+\end{enumerate}
+
+\subsection{实现要点（当前代码行为）}
+\begin{itemize}[nosep]
+  \item feature gate：仅在启用 SQLite state DB 且启用 \texttt{Feature::MemoryTool} 时运行（避免在无 DB/无工具时引入副作用）。
+  \item 内容过滤：memory trace 会排除 \texttt{FunctionCallOutput/CustomToolCallOutput/Reasoning/GhostSnapshot} 等高噪声项，仅保留 user/assistant 文字与工具调用元信息（不含工具输出）。
+  \item 回退策略：在 trace summarize 失败/不支持时，优先写入 compaction summary 或最后一条 agent message（只写 summary，不写全量）。
+  \item 写入时序：为避免 SQLite 中 thread 元数据尚未写入导致 upsert 失败，写入前会短暂轮询 thread 元数据可用性。
+  \item 预算控制：trace item 数量与字节数上限（避免超长与高成本）。
+\end{itemize}
+
+\section{实现进展（截至 2026-02-09）}
+\begin{enumerate}[nosep]
+  \item SessionBar / Resume：Enter 触发真正的 resume 并回放历史消息，修复“进入历史 session 但无内容”的问题。
+  \item Claude MCP Context Packet：
+    \begin{itemize}[nosep]
+      \item \texttt{workFolder} 缺省注入为 session cwd（使本地 \texttt{CLAUDE.md} 有机会生效）；
+      \item \texttt{context} 缺省自动注入（Saved thread memory + Session summary + 最近摘录 + 同 cwd 的 project memories）。
+    \end{itemize}
+  \item Thread Memory 自动写入链路：turn 完成 + compaction 后写入 thread\_memory，并通过 \texttt{get\_memory} 可读回。
 \end{enumerate}
 
 \subsection{内容约束（记忆的“正确粒度”）}
@@ -229,10 +250,12 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
 
 \section{里程碑（建议）}
 \begin{enumerate}[nosep]
-  \item M0：调用时注入 workFolder + context（session 摘要 + 最近消息）。
-  \item M1：接入 SQLite thread\_memory（如果存在则注入）。
-  \item M2：实现自动 summarization 并 upsert thread\_memory（官方 trace\_summarize）。
-  \item M3：按 cwd 做 memory 检索与多线程融合策略（可选）。
+  \item M0（已完成）：调用时注入 workFolder + context（session 摘要 + 最近消息摘录）。
+  \item M1（已完成）：接入 SQLite thread\_memory（如果存在则注入）。
+  \item M2（已完成）：自动 summarization 并 upsert thread\_memory（官方 trace\_summarize + 回退策略）。
+  \item M3（部分完成）：按 cwd 注入 project memories（同项目最近 N 条 thread\_memory 的 memory\_summary）；后续可做更智能的融合/去重/挑选策略。
+  \item M4（建议）：提供 backfill / rebuild 命令：从 rollout 重建并写入 thread\_memory（便于对历史 thread 补齐）。
+  \item M5（建议）：抽象可复用的 Context Packet Builder，让 Grok/Gemini/Review 等子 agent 复用同一套“记忆注入”策略（多模型协作的一致性核心）。
 \end{enumerate}
 
 \end{document}
