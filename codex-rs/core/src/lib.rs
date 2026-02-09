@@ -63,6 +63,7 @@ mod session_prefix;
 mod stream_events_utils;
 mod tagged_block_parser;
 mod text_encoding;
+mod thread_memory;
 pub mod token_data;
 mod truncate;
 mod unified_exec;

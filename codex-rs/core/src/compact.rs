@@ -187,6 +187,7 @@ async fn run_compact_task_inner(
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     let user_messages = collect_user_messages(history_items);
+    let trace_items = crate::thread_memory::build_thread_memory_trace_items(history_items);
 
     let initial_context = sess.build_initial_context(turn_context.as_ref()).await;
     let mut new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
@@ -204,6 +205,13 @@ async fn run_compact_task_inner(
         replacement_history: None,
     });
     sess.persist_rollout_items(&[rollout_item]).await;
+
+    crate::thread_memory::maybe_spawn_thread_memory_update_after_compaction(
+        sess.clone(),
+        turn_context.clone(),
+        summary_suffix.clone(),
+        trace_items,
+    );
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
         .await;
