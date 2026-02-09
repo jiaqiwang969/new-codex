@@ -242,7 +242,9 @@ mod tests {
 
         let request = NetworkPolicyRequest::new(NetworkPolicyRequestArgs {
             protocol: NetworkProtocol::Http,
-            host: "example.com".to_string(),
+            // Avoid relying on ambient DNS behavior (some networks resolve hostnames to private IPs,
+            // which would trigger `not_allowed_local` and skip the decider).
+            host: "8.8.8.8".to_string(),
             port: 80,
             client_addr: None,
             method: Some("GET".to_string()),

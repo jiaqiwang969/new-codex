@@ -535,17 +535,17 @@ mod tests {
     #[tokio::test]
     async fn host_blocked_requires_allowlist_match() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
-            allowed_domains: vec!["example.com".to_string()],
+            // Use public IP literals to avoid relying on ambient DNS behavior (some networks
+            // resolve hostnames to private IPs, which would trigger `not_allowed_local`).
+            allowed_domains: vec!["1.1.1.1".to_string()],
             ..NetworkProxySettings::default()
         });
 
         assert_eq!(
-            state.host_blocked("example.com", 80).await.unwrap(),
+            state.host_blocked("1.1.1.1", 80).await.unwrap(),
             HostBlockDecision::Allowed
         );
         assert_eq!(
-            // Use a public IP literal to avoid relying on ambient DNS behavior (some networks
-            // resolve unknown hostnames to private IPs, which would trigger `not_allowed_local`).
             state.host_blocked("8.8.8.8", 80).await.unwrap(),
             HostBlockDecision::Blocked(HostBlockReason::NotAllowed)
         );
@@ -555,6 +555,8 @@ mod tests {
     async fn host_blocked_subdomain_wildcards_exclude_apex() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["*.openai.com".to_string()],
+            // Avoid DNS lookups that could resolve to non-public IPs in restricted environments.
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 
