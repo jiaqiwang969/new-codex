@@ -770,16 +770,16 @@ impl StaticOverlay {
                     Ok(())
                 }
                 e if KEY_R.is_press(e) => {
-                    if let Some(ref cb) = self.refresh_callback {
-                        if let Ok(new_lines) = cb() {
-                            let paragraph = Paragraph::new(Text::from(new_lines));
-                            self.view = PagerView::new(
-                                vec![Box::new(CachedRenderable::new(paragraph))],
-                                self.title.clone(),
-                                0,
-                            );
-                            tui.frame_requester().schedule_frame();
-                        }
+                    if let Some(ref cb) = self.refresh_callback
+                        && let Ok(new_lines) = cb()
+                    {
+                        let paragraph = Paragraph::new(Text::from(new_lines));
+                        self.view = PagerView::new(
+                            vec![Box::new(CachedRenderable::new(paragraph))],
+                            self.title.clone(),
+                            0,
+                        );
+                        tui.frame_requester().schedule_frame();
                     }
                     Ok(())
                 }

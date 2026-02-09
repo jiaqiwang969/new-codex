@@ -50,29 +50,28 @@ pub fn get_cwd_sessions_for(codex_home: &Path, cwd_raw: &Path) -> Result<Vec<Ses
                 if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
                     if let Ok((id, session_cwd, msg_count, last_role, _tokens, model)) =
                         extract_session_meta(&path)
+                        && should_include_session(&session_cwd, cwd)
                     {
-                        if should_include_session(&session_cwd, cwd) {
-                            let mtime = entry
-                                .metadata()
-                                .ok()
-                                .and_then(|m| m.modified().ok())
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
+                        let mtime = entry
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
 
-                            let age = format_relative_time(mtime);
+                        let age = format_relative_time(mtime);
 
-                            sessions.push(SessionInfo {
-                                id,
-                                path: path.clone(),
-                                cwd: session_cwd,
-                                age,
-                                mtime,
-                                message_count: msg_count,
-                                last_role,
-                                model,
-                            });
-                        }
+                        sessions.push(SessionInfo {
+                            id,
+                            path: path.clone(),
+                            cwd: session_cwd,
+                            age,
+                            mtime,
+                            message_count: msg_count,
+                            last_role,
+                            model,
+                        });
                     }
                 } else if path.is_dir() {
                     let _ = find_sessions(path.as_path(), cwd, sessions, max_depth - 1);

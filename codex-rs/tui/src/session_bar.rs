@@ -142,17 +142,15 @@ impl SessionBar {
                         .map(|id| *id == s.id)
                         .unwrap_or(false)
                         || !self.label_cache.contains_key(&s.path);
-                    if must_update {
-                        if let Some(snippet) = last_user_snippet(&s.path, 5) {
-                            // Unicode-safe truncation to keep bar compact
-                            let short = if snippet.chars().count() > 10 {
-                                let truncated: String = snippet.chars().take(10).collect();
-                                format!("{truncated}…")
-                            } else {
-                                snippet
-                            };
-                            self.label_cache.insert(s.path.clone(), short);
-                        }
+                    if must_update && let Some(snippet) = last_user_snippet(&s.path, 5) {
+                        // Unicode-safe truncation to keep bar compact
+                        let short = if snippet.chars().count() > 10 {
+                            let truncated: String = snippet.chars().take(10).collect();
+                            format!("{truncated}…")
+                        } else {
+                            snippet
+                        };
+                        self.label_cache.insert(s.path.clone(), short);
                     }
                 }
             }

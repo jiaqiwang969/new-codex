@@ -2684,7 +2684,7 @@ impl App {
                     self.session_bar.reset_selection_for_focus(
                         self.active_thread_id
                             .as_ref()
-                            .map(|t| t.to_string())
+                            .map(std::string::ToString::to_string)
                             .as_deref(),
                     );
                     self.session_bar.refresh_sessions();

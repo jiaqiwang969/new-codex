@@ -116,17 +116,17 @@ pub(crate) fn scan_image_files(dir: &Path) -> Vec<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    let ext_lower = ext.to_lowercase();
-                    let is_processed = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.ends_with("_processed"))
-                        .unwrap_or(false);
-                    if !is_processed && image_extensions.contains(&ext_lower.as_str()) {
-                        images.push(path);
-                    }
+            if path.is_file()
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+            {
+                let ext_lower = ext.to_lowercase();
+                let is_processed = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.ends_with("_processed"))
+                    .unwrap_or(false);
+                if !is_processed && image_extensions.contains(&ext_lower.as_str()) {
+                    images.push(path);
                 }
             }
         }

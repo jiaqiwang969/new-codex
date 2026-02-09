@@ -3714,22 +3714,20 @@ impl ChatWidget {
         };
 
         // Check if the completion promise was detected
-        if let Some(output) = last_agent_message {
-            if crate::ralph_loop::check_completion_promise(output, &state.completion_promise) {
-                let iteration = state.iteration;
-                self.ralph_loop_state = None;
-                self.ralph_loop_turn_had_error = false;
-                if let Some(cwd) = &self.current_cwd {
-                    crate::ralph_loop::cleanup_ralph_state_file(cwd);
-                }
-                self.add_info_message(
-                    format!(
-                        "Ralph Loop complete: promise detected after {iteration} iteration(s)."
-                    ),
-                    None,
-                );
-                return;
+        if let Some(output) = last_agent_message
+            && crate::ralph_loop::check_completion_promise(output, &state.completion_promise)
+        {
+            let iteration = state.iteration;
+            self.ralph_loop_state = None;
+            self.ralph_loop_turn_had_error = false;
+            if let Some(cwd) = &self.current_cwd {
+                crate::ralph_loop::cleanup_ralph_state_file(cwd);
             }
+            self.add_info_message(
+                format!("Ralph Loop complete: promise detected after {iteration} iteration(s)."),
+                None,
+            );
+            return;
         }
 
         // Check if max iterations reached
@@ -3793,11 +3791,11 @@ impl ChatWidget {
 
     /// Handle the delayed ralph loop continuation after the timer fires.
     pub(crate) fn handle_ralph_loop_delayed_continue(&mut self) {
-        if let Some(ref state) = self.ralph_loop_state {
-            if state.enabled {
-                let prompt = state.original_prompt.clone();
-                self.queue_user_message(prompt.into());
-            }
+        if let Some(ref state) = self.ralph_loop_state
+            && state.enabled
+        {
+            let prompt = state.original_prompt.clone();
+            self.queue_user_message(prompt.into());
         }
     }
 
@@ -4444,11 +4442,11 @@ impl ChatWidget {
         let mut last_saved_path: Option<PathBuf> = None;
 
         for content_item in content {
-            if let ContentItem::InputImage { image_url } = content_item {
-                if let Some(path) = self.save_generated_image(&thread_id.to_string(), &image_url) {
-                    saved_any = true;
-                    last_saved_path = Some(path);
-                }
+            if let ContentItem::InputImage { image_url } = content_item
+                && let Some(path) = self.save_generated_image(&thread_id.to_string(), &image_url)
+            {
+                saved_any = true;
+                last_saved_path = Some(path);
             }
         }
 
@@ -4489,24 +4487,24 @@ impl ChatWidget {
         };
 
         // If batch processing is active, save to source directory with _processed suffix.
-        if let Some(batch_state) = &self.batch_image_state {
-            if let Some(current_image) = &batch_state.current_image {
-                let source_dir = &batch_state.source_dir;
-                let original_stem: &str = current_image
-                    .file_stem()
-                    .and_then(|s: &std::ffi::OsStr| s.to_str())
-                    .unwrap_or("output");
-                let processed_filename = format!("{original_stem}_processed.{ext}");
-                let path = source_dir.join(processed_filename);
-                if let Err(err) = std::fs::write(&path, &bytes) {
-                    tracing::warn!(
-                        "failed to write batch processed image to {}: {err}",
-                        path.display()
-                    );
-                    return None;
-                }
-                return Some(path);
+        if let Some(batch_state) = &self.batch_image_state
+            && let Some(current_image) = &batch_state.current_image
+        {
+            let source_dir = &batch_state.source_dir;
+            let original_stem: &str = current_image
+                .file_stem()
+                .and_then(|s: &std::ffi::OsStr| s.to_str())
+                .unwrap_or("output");
+            let processed_filename = format!("{original_stem}_processed.{ext}");
+            let path = source_dir.join(processed_filename);
+            if let Err(err) = std::fs::write(&path, &bytes) {
+                tracing::warn!(
+                    "failed to write batch processed image to {}: {err}",
+                    path.display()
+                );
+                return None;
             }
+            return Some(path);
         }
 
         // Default behavior: save to ~/.codex/images/{session_id}/
