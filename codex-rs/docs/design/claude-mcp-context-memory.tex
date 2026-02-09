@@ -1,0 +1,238 @@
+% !TEX program = xelatex
+\documentclass[UTF8,11pt]{ctexart}
+
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{hyperref}
+\usepackage{bookmark}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{tabularx}
+\usepackage{amsmath}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{black!20},
+  backgroundcolor=\color{black!2}
+}
+
+\title{Codex \,+\,Claude Code MCP：上下文注入与跨会话记忆（第一性原理方案）}
+\author{jqwang \quad (draft)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+当前我们在 Codex 中集成了一个 \texttt{claude\_code} 的 MCP 工具：当提示词中“呼唤 Claude 做事情”时，Codex 会转发调用到 Claude CLI 侧执行。但 MCP 调用默认只携带该次工具参数（prompt/workFolder 等），\textbf{不会自动携带当前 session 的历史上下文}，因此 Claude 很容易在缺少前情的情况下做出偏差实现。
+
+本文从第一性原理出发，给出一套“\textbf{调用时上下文注入（Context Packet）} + \textbf{跨会话持久记忆（SQLite thread\_memory）}”的组合方案，并说明其与 Codex 官方方向（\texttt{get\_memory} 工具 + SQLite）如何对齐，以及如何验证/迭代。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{问题陈述}
+\subsection{现象}
+\begin{itemize}[nosep]
+  \item 我们已能通过 MCP 调用 Claude Code 执行任务；
+  \item 但当用户在同一 session 中多轮讨论后再次呼唤 Claude，Claude 侧常常\textbf{不知道之前的决策、约束、上下文摘要}；
+  \item 结果：实现偏差（例如不遵守之前约定、忽略已有结论、重复工作）。
+\end{itemize}
+
+\subsection{根因（结构性）}
+MCP 调用本质上是一次独立 RPC：Codex 会把工具参数 JSON 原样转发到 MCP server。
+\textbf{除非我们显式把“历史摘要/上下文”作为参数传过去，否则 Claude CLI 侧拿不到任何 session 历史。}
+
+\section{目标与非目标}
+\subsection{目标（Goals）}
+\begin{enumerate}[nosep]
+  \item Claude Code 在被调用时，能获得\textbf{足够的高信噪比上下文}：
+    \begin{itemize}[nosep]
+      \item 当前工作目录（影响 \texttt{CLAUDE.md} 等本地指令文件的生效）；
+      \item 当前 session 的摘要（不含推理链，只含结论/约束/决定）；
+      \item 最近若干轮对话摘录（用于任务细节与引用）。
+    \end{itemize}
+  \item 在 Codex 内部建立\textbf{跨会话}可复用的“线程记忆”机制：同一 thread 被 resume 后仍可取回摘要。
+  \item 方案与 Codex 官方方向对齐：SQLite \texttt{thread\_memory} + \texttt{get\_memory} 工具。
+\end{enumerate}
+
+\subsection{非目标（Non-goals）}
+\begin{itemize}[nosep]
+  \item 不把完整 transcript 全量塞给 Claude（成本/泄露风险/长度不可控）。
+  \item 不传“思考过程/推理链”（只传总结与必要上下文）。
+  \item 不要求 Claude Code 直接读取 Codex 的私有 state DB（保持边界清晰）。
+\end{itemize}
+
+\section{第一性原理：为什么需要\,``Context Packet}
+\subsection{语言模型执行任务的输入假设}
+将模型视为函数：
+\[
+  y = f(\text{instructions}, \text{context}, \text{task})
+\]
+若 \texttt{context} 缺失，模型会用默认先验填补空白（hallucination / wrong assumptions）。
+
+\subsection{高信噪比上下文的最小闭包}
+对“代写/代做代码”类任务，最小闭包通常包含：
+\begin{itemize}[nosep]
+  \item \textbf{约束与偏好}：例如编码规范、禁止改动的区域、测试要求；
+  \item \textbf{已做的结论/决策}：例如“我们用 resume 实现历史进入”、“不注入 reasoning trace”；
+  \item \textbf{当前工作区环境}：cwd、构建工具、可用命令；
+  \item \textbf{最近的具体需求}：用户刚刚提出的目标与验收标准。
+\end{itemize}
+
+\subsection{为什么不能直接传全量 transcript}
+\begin{itemize}[nosep]
+  \item 长度不可控，容易超上下文窗；
+  \item 噪声大（工具输出、日志、反复讨论）；
+  \item 风险高（可能包含密钥/隐私）；
+  \item 成本高（token + 运行时间）。
+\end{itemize}
+因此，需要一份可控的、结构化的 ``Context Packet。
+
+\section{Codex 现状（可复用的“上下文来源”）}
+\subsection{Session 内：History / Compaction}
+\begin{itemize}[nosep]
+  \item Codex 内部可获取完整 transcript：\texttt{Session::clone\_history()}\, + \texttt{ContextManager::raw\_items()}。
+  \item Codex compaction 会在 transcript 中写入一个 ``summary message（用户 role 的一段摘要前缀）。
+  \item 这提供了\textbf{天然的“session 内摘要来源”}，且不包含模型推理链。
+\end{itemize}
+
+\subsection{跨会话：SQLite thread\_memory + get\_memory}
+\begin{itemize}[nosep]
+  \item SQLite migration：\texttt{thread\_memory(thread\_id, trace\_summary, memory\_summary, updated\_at)}。
+  \item Tool：\texttt{get\_memory(memory\_id = thread\_id)} 读取该结构化 JSON。
+  \item 关键缺口：需要一个\textbf{自动生成/更新 thread\_memory} 的流水线（何时写入、如何 summarise）。
+\end{itemize}
+
+\section{方案总览}
+\subsection{两层结构}
+\begin{enumerate}
+  \item \textbf{调用时上下文注入（Context Packet）}：
+    \begin{itemize}[nosep]
+      \item 发生在每次调用 \texttt{claude\_code} MCP 工具时；
+      \item 组装并注入一个 \texttt{context} 字段（字符串），且补齐 \texttt{workFolder}。
+    \end{itemize}
+  \item \textbf{跨会话持久记忆（Thread Memory）}：
+    \begin{itemize}[nosep]
+      \item 持久化在 SQLite；
+      \item 可在 resume 后取回；
+      \item 作为 Context Packet 的一部分（如果存在则拼进去）。
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Context Packet 建议结构}
+\begin{lstlisting}
+Working directory: /path/to/repo
+
+Saved thread memory:
+Trace summary:
+...
+
+Memory summary:
+...
+
+Session summary:
+...
+
+Recent chat excerpt:
+User: ...
+
+Assistant: ...
+\end{lstlisting}
+
+\section{Claude Code MCP：注入点与关键行为}
+\subsection{注入点}
+建议在 Codex 的 MCP 调用入口处，对 \texttt{tool == "claude\_code"} 做参数增强：
+\begin{itemize}[nosep]
+  \item 若未提供 \texttt{workFolder}：设置为 \texttt{turn\_context.cwd}。
+  \item 若未提供 \texttt{context} 或为空：构建 Context Packet 并填入。
+\end{itemize}
+
+\subsection{为什么 workFolder 很关键（CLAUDE.md 生效）}
+Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \texttt{CLAUDE.md} 作为局部指令。
+因此：\textbf{必须确保 MCP 工具默认在 Codex 的 session cwd 中运行}，否则 Claude 侧会漏掉本地约束。
+
+\subsection{上下文抽取策略（不含推理链）}
+\begin{itemize}[nosep]
+  \item 优先使用 compaction summary message（如果存在）；
+  \item 仅摘取 user/assistant 的文字消息；
+  \item 限制最近消息条数与字节预算（避免过长）；
+  \item 如存在 SQLite thread\_memory，拼接其 trace\_summary / memory\_summary（同样做截断）。
+\end{itemize}
+
+\section{Thread Memory：如何对齐官方方向}
+\subsection{数据库与工具已经具备}
+\begin{itemize}[nosep]
+  \item 表结构与读工具已存在：\texttt{get\_memory}。
+  \item 需要实现：\textbf{何时写入}与\textbf{如何生成}。
+\end{itemize}
+
+\subsection{生成策略（建议）}
+\begin{enumerate}[nosep]
+  \item 触发时机：
+    \begin{itemize}[nosep]
+      \item Turn 完成后（或 compaction 完成后），在后台异步生成；
+      \item 或提供手动命令：从 rollout 重新构建。
+    \end{itemize}
+  \item 输入来源：rollout（.jsonl）或 normalized trace items。
+  \item 生成方式：调用官方 \texttt{/v1/memories/trace\_summarize}（Codex 已有 client wiring：\texttt{memory\_trace} 模块）。
+  \item 写入：\texttt{upsert\_thread\_memory(thread\_id, trace\_summary, memory\_summary)}。
+\end{enumerate}
+
+\subsection{内容约束（记忆的“正确粒度”）}
+\begin{itemize}[nosep]
+  \item 只保留长期有价值的信息：项目背景、长期约束、关键架构决策；
+  \item 不存短期任务细节（短期细节留给“最近消息摘录”）；
+  \item 不存密钥/隐私；
+  \item 可考虑按 cwd 关联（已有 API：last N memories for cwd）。
+\end{itemize}
+
+\section{Sessionbar / Resume：进入历史但无内容的问题}
+问题的第一性原理解释：
+\begin{itemize}[nosep]
+  \item ``打开历史会话 本质是 \textbf{resume}：需要从 rollout 重建 thread 的 history 并恢复 session 配置；
+  \item 若只是在 UI 层切换选中态而未触发 resume，新的 thread 并未加载历史，因此显示为空。
+\end{itemize}
+
+解决思路：把 SessionBar 的 Enter 动作映射到 ``ResumeSession(path)，由 App 统一走 \texttt{resume\_thread\_from\_rollout}。
+
+\section{安全与隐私}
+\begin{itemize}[nosep]
+  \item Context Packet 应避免包含：工具原始输出、环境变量值、密钥文件内容。
+  \item 必须做长度预算与截断。
+  \item 未来可选：对历史做更严格的“敏感信息过滤”（例如 key patterns）。
+\end{itemize}
+
+\section{测试与验收}
+\subsection{单元测试}
+\begin{itemize}[nosep]
+  \item context 抽取：summary 优先、只取 summary 之后的消息、截断行为。
+\end{itemize}
+
+\subsection{集成测试}
+\begin{itemize}[nosep]
+  \item TUI：SessionBar Enter 选择历史 session 触发 ResumeSession。
+  \item MCP：\texttt{claude\_code} 工具调用参数中包含 workFolder/context（可通过 mock MCP server 验证）。
+\end{itemize}
+
+\section{里程碑（建议）}
+\begin{enumerate}[nosep]
+  \item M0：调用时注入 workFolder + context（session 摘要 + 最近消息）。
+  \item M1：接入 SQLite thread\_memory（如果存在则注入）。
+  \item M2：实现自动 summarization 并 upsert thread\_memory（官方 trace\_summarize）。
+  \item M3：按 cwd 做 memory 检索与多线程融合策略（可选）。
+\end{enumerate}
+
+\end{document}
