@@ -3,6 +3,8 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
 use clap_complete::generate;
+use codex_api::MemoryTrace;
+use codex_api::MemoryTraceMetadata;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_chatgpt::apply_command::ApplyCommand;
 use codex_chatgpt::apply_command::run_apply_command;
@@ -21,14 +23,18 @@ use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
+use codex_otel::OtelManager;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
 use codex_tui::update_action::UpdateAction;
 use owo_colors::OwoColorize;
+use std::collections::VecDeque;
 use std::io::IsTerminal;
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use supports_color::Stream;
 
 #[cfg(target_os = "macos")]
@@ -41,13 +47,27 @@ mod wsl_paths;
 
 use crate::mcp_cmd::McpCli;
 
+use codex_core::AuthManager;
+use codex_core::ModelClient;
+use codex_core::RolloutRecorder;
+use codex_core::build_thread_memory_trace_items;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
+use codex_core::features::Feature;
 use codex_core::features::Stage;
 use codex_core::features::is_known_feature_key;
+use codex_core::models_manager::manager::ModelsManager;
+use codex_core::models_manager::manager::RefreshStrategy;
+use codex_core::state_db;
 use codex_core::terminal::TerminalName;
+use codex_protocol::ThreadId;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 
 /// Codex CLI
 ///
@@ -162,6 +182,9 @@ struct DebugCommand {
 enum DebugSubcommand {
     /// Tooling: helps debug the app server.
     AppServer(DebugAppServerCommand),
+
+    /// [experimental] Tooling: rebuild/backfill thread memory summaries.
+    ThreadMemory(DebugThreadMemoryCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -180,6 +203,45 @@ enum DebugAppServerSubcommand {
 struct DebugAppServerSendMessageV2Command {
     #[arg(value_name = "USER_MESSAGE", required = true)]
     user_message: String,
+}
+
+#[derive(Debug, Parser)]
+struct DebugThreadMemoryCommand {
+    #[command(subcommand)]
+    subcommand: DebugThreadMemorySubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum DebugThreadMemorySubcommand {
+    /// Backfill SQLite thread memories from existing rollout files.
+    Backfill(ThreadMemoryBackfillCommand),
+}
+
+#[derive(Debug, Parser)]
+struct ThreadMemoryBackfillCommand {
+    /// Conversation/session id (UUID) to backfill.
+    #[arg(long = "thread", value_name = "SESSION_ID", conflicts_with = "all")]
+    thread_id: Option<String>,
+
+    /// Backfill every rollout file under CODEX_HOME.
+    #[arg(long, default_value_t = false)]
+    all: bool,
+
+    /// Also scan archived sessions.
+    #[arg(long, default_value_t = false)]
+    archived: bool,
+
+    /// Overwrite existing thread memories.
+    #[arg(long, default_value_t = false)]
+    force: bool,
+
+    /// Skip remote trace summarization and only write fallback summaries.
+    #[arg(long, default_value_t = false)]
+    no_remote: bool,
+
+    /// Limit number of rollouts processed (only applies with --all).
+    #[arg(long)]
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Parser)]
@@ -475,6 +537,376 @@ fn run_debug_app_server_command(cmd: DebugAppServerCommand) -> anyhow::Result<()
     }
 }
 
+async fn run_debug_thread_memory_command(
+    cmd: DebugThreadMemoryCommand,
+    root_config_overrides: CliConfigOverrides,
+    interactive: &TuiCli,
+) -> anyhow::Result<()> {
+    match cmd.subcommand {
+        DebugThreadMemorySubcommand::Backfill(args) => {
+            run_thread_memory_backfill(args, root_config_overrides, interactive).await
+        }
+    }
+}
+
+async fn run_thread_memory_backfill(
+    args: ThreadMemoryBackfillCommand,
+    root_config_overrides: CliConfigOverrides,
+    interactive: &TuiCli,
+) -> anyhow::Result<()> {
+    if args.thread_id.is_none() && !args.all {
+        anyhow::bail!("Expected --thread SESSION_ID or --all");
+    }
+
+    let cli_kv_overrides = root_config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let overrides = ConfigOverrides {
+        config_profile: interactive.config_profile.clone(),
+        ..Default::default()
+    };
+    let config =
+        Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
+
+    if !config.features.enabled(Feature::Sqlite) {
+        anyhow::bail!("SQLite state DB is disabled. Re-run with --enable sqlite.");
+    }
+    if !config.features.enabled(Feature::MemoryTool) {
+        anyhow::bail!("Thread memory tooling is disabled. Re-run with --enable memory_tool.");
+    }
+
+    let Some(db) = state_db::init_state_db_if_enabled(&config, None).await else {
+        anyhow::bail!("Failed to initialize state DB runtime.");
+    };
+
+    let auth_manager = AuthManager::shared(
+        config.codex_home.clone(),
+        false,
+        config.cli_auth_credentials_store_mode,
+    );
+    let models_manager = ModelsManager::new(config.codex_home.clone(), Arc::clone(&auth_manager));
+    let model_slug = models_manager
+        .get_default_model(&config.model, &config, RefreshStrategy::Offline)
+        .await;
+    let model_info = models_manager
+        .get_model_info(model_slug.as_str(), &config)
+        .await;
+
+    let model_client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        ThreadId::default(),
+        config.model_provider.clone(),
+        SessionSource::SubAgent(SubAgentSource::Other("thread_memory_backfill".to_string())),
+        config.model_verbosity,
+        config.features.enabled(Feature::ResponsesWebsockets)
+            || config.features.enabled(Feature::ResponsesWebsocketsV2),
+        config.features.enabled(Feature::ResponsesWebsocketsV2),
+        config.features.enabled(Feature::EnableRequestCompression),
+        config.features.enabled(Feature::RuntimeMetrics),
+        None,
+    );
+
+    let otel_manager = OtelManager::new(
+        ThreadId::default(),
+        model_slug.as_str(),
+        model_slug.as_str(),
+        None,
+        None,
+        None,
+        "codex-cli".to_string(),
+        false,
+        "cli".to_string(),
+        SessionSource::Cli,
+    );
+
+    let rollout_paths = if let Some(id_str) = args.thread_id.as_deref() {
+        resolve_rollout_path_for_thread(&config, id_str, args.archived).await?
+    } else {
+        collect_rollout_paths(&config, args.archived, args.limit).await?
+    };
+
+    if rollout_paths.is_empty() {
+        println!("No rollout files found.");
+        return Ok(());
+    }
+
+    let mut processed = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+
+    for path in rollout_paths {
+        processed = processed.saturating_add(1);
+
+        let archived_only = rollout_path_is_archived(&config, path.as_path());
+
+        let history = match RolloutRecorder::get_rollout_history(path.as_path()).await {
+            Ok(history) => history,
+            Err(err) => {
+                eprintln!("Failed to load rollout {}: {err}", path.display());
+                failed = failed.saturating_add(1);
+                continue;
+            }
+        };
+        let session_cwd = history.session_cwd();
+        let (thread_id, rollout_items) = match thread_id_and_items(history) {
+            Some(value) => value,
+            None => {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+        };
+
+        state_db::reconcile_rollout(
+            Some(db.as_ref()),
+            path.as_path(),
+            config.model_provider_id.as_str(),
+            None,
+            rollout_items.as_slice(),
+            Some(archived_only),
+        )
+        .await;
+
+        if !args.force {
+            match db.get_thread_memory(thread_id).await {
+                Ok(Some(_)) => {
+                    skipped = skipped.saturating_add(1);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("Failed to read thread memory for {thread_id}: {err}");
+                    failed = failed.saturating_add(1);
+                    continue;
+                }
+            }
+        }
+
+        let response_items = extract_response_items(rollout_items.as_slice());
+        let trace_items = build_thread_memory_trace_items(response_items.as_slice());
+        if trace_items.is_empty() {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+
+        let mut trace_summary = String::new();
+        let mut memory_summary = String::new();
+
+        if !args.no_remote {
+            let source_path = session_cwd
+                .as_deref()
+                .unwrap_or_else(|| config.cwd.as_path())
+                .display()
+                .to_string();
+            let trace = MemoryTrace {
+                id: format!("trace_{thread_id}"),
+                metadata: MemoryTraceMetadata { source_path },
+                items: trace_items.clone(),
+            };
+
+            match model_client
+                .summarize_memory_traces(
+                    vec![trace],
+                    &model_info,
+                    config.model_reasoning_effort,
+                    &otel_manager,
+                )
+                .await
+            {
+                Ok(mut outputs) => {
+                    if let Some(output) = outputs.pop() {
+                        trace_summary = output.trace_summary;
+                        memory_summary = output.memory_summary;
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "Remote trace summarization failed for {thread_id}: {err}. Falling back."
+                    );
+                }
+            }
+        }
+
+        if trace_summary.trim().is_empty() && memory_summary.trim().is_empty() {
+            let Some(summary) = fallback_summary_from_history(response_items.as_slice()) else {
+                eprintln!(
+                    "No fallback summary found for {thread_id} ({}).",
+                    path.display()
+                );
+                failed = failed.saturating_add(1);
+                continue;
+            };
+            trace_summary = summary.clone();
+            memory_summary = summary;
+        }
+
+        match db
+            .upsert_thread_memory(thread_id, trace_summary.trim(), memory_summary.trim())
+            .await
+        {
+            Ok(_) => {
+                updated = updated.saturating_add(1);
+                println!("Updated thread memory for {thread_id} ({})", path.display());
+            }
+            Err(err) => {
+                eprintln!("Failed to upsert thread memory for {thread_id}: {err}");
+                failed = failed.saturating_add(1);
+            }
+        }
+    }
+
+    println!(
+        "Backfill complete: processed={processed} updated={updated} skipped={skipped} failed={failed}"
+    );
+    Ok(())
+}
+
+async fn resolve_rollout_path_for_thread(
+    config: &Config,
+    id_str: &str,
+    archived: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+
+    let primary = if archived {
+        codex_core::find_archived_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
+    } else {
+        codex_core::find_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
+    };
+    if let Some(path) = primary {
+        out.push(path);
+        return Ok(out);
+    }
+
+    let secondary = if archived {
+        codex_core::find_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
+    } else {
+        codex_core::find_archived_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
+    };
+    if let Some(path) = secondary {
+        out.push(path);
+    }
+    Ok(out)
+}
+
+async fn collect_rollout_paths(
+    config: &Config,
+    archived: bool,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let sessions_root = config.codex_home.join(codex_core::SESSIONS_SUBDIR);
+    out.extend(collect_rollout_paths_in_root(sessions_root.as_path()).await?);
+
+    if archived {
+        let archived_root = config.codex_home.join(codex_core::ARCHIVED_SESSIONS_SUBDIR);
+        out.extend(collect_rollout_paths_in_root(archived_root.as_path()).await?);
+    }
+
+    out.sort_unstable();
+    if let Some(limit) = limit {
+        out.truncate(limit);
+    }
+    Ok(out)
+}
+
+async fn collect_rollout_paths_in_root(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if !tokio::fs::try_exists(root).await.unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+
+    let mut pending = VecDeque::new();
+    pending.push_back(root.to_path_buf());
+
+    let mut out = Vec::new();
+    while let Some(dir) = pending.pop_front() {
+        let mut entries = tokio::fs::read_dir(dir.as_path()).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push_back(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with("rollout-") && name.ends_with(".jsonl") {
+                out.push(path);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn rollout_path_is_archived(config: &Config, path: &Path) -> bool {
+    path.starts_with(config.codex_home.join(codex_core::ARCHIVED_SESSIONS_SUBDIR))
+}
+
+fn thread_id_and_items(history: InitialHistory) -> Option<(ThreadId, Vec<RolloutItem>)> {
+    match history {
+        InitialHistory::Resumed(resumed) => Some((resumed.conversation_id, resumed.history)),
+        InitialHistory::New => None,
+        InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) => Some((meta_line.meta.id, items.clone())),
+            _ => None,
+        }),
+    }
+}
+
+fn extract_response_items(items: &[RolloutItem]) -> Vec<ResponseItem> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(item) => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn fallback_summary_from_history(items: &[ResponseItem]) -> Option<String> {
+    let summary_prefix = format!("{}\n", codex_core::compact::SUMMARY_PREFIX);
+
+    for item in items.iter().rev() {
+        let ResponseItem::Message { role, content, .. } = item else {
+            continue;
+        };
+        if role == "user" {
+            let Some(text) = codex_core::compact::content_items_to_text(content) else {
+                continue;
+            };
+            let Some(suffix) = text.trim().strip_prefix(summary_prefix.as_str()) else {
+                continue;
+            };
+            let suffix = suffix.trim();
+            if !suffix.is_empty() {
+                return Some(suffix.to_string());
+            }
+        }
+    }
+
+    for item in items.iter().rev() {
+        let ResponseItem::Message { role, content, .. } = item else {
+            continue;
+        };
+        if role != "assistant" {
+            continue;
+        }
+        let Some(text) = codex_core::compact::content_items_to_text(content) else {
+            continue;
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+
+    None
+}
+
 #[derive(Debug, Default, Parser, Clone)]
 struct FeatureToggles {
     /// Enable a feature (repeatable). Equivalent to `-c features.<name>=true`.
@@ -748,6 +1180,10 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
             DebugSubcommand::AppServer(cmd) => {
                 run_debug_app_server_command(cmd)?;
+            }
+            DebugSubcommand::ThreadMemory(cmd) => {
+                run_debug_thread_memory_command(cmd, root_config_overrides.clone(), &interactive)
+                    .await?;
             }
         },
         Some(Subcommand::Execpolicy(ExecpolicyCommand { sub })) => match sub {
