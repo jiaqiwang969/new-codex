@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncBufReadExt;
@@ -9,6 +11,8 @@ use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
 use anyhow::Context;
 use codex_app_server_protocol::AddConversationListenerParams;
@@ -66,6 +70,14 @@ use codex_app_server_protocol::TurnSteerParams;
 use codex_core::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use tokio::process::Command;
 
+static MCP_PROCESS_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn mcp_process_semaphore() -> Arc<Semaphore> {
+    MCP_PROCESS_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
+
 pub struct McpProcess {
     next_request_id: AtomicI64,
     /// Retain this child process until the client is dropped. The Tokio runtime
@@ -73,6 +85,8 @@ pub struct McpProcess {
     /// not a guarantee. See the `kill_on_drop` documentation for details.
     #[allow(dead_code)]
     process: Child,
+    #[allow(dead_code)]
+    _permit: OwnedSemaphorePermit,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     pending_messages: VecDeque<JSONRPCMessage>,
@@ -104,6 +118,20 @@ impl McpProcess {
         cmd.env("CODEX_HOME", codex_home);
         cmd.env("RUST_LOG", "debug");
         cmd.env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
+        // Tests spin up mock servers on localhost; bypass any user/system proxy
+        // configuration to keep requests hermetic and avoid flakiness.
+        cmd.env("NO_PROXY", "127.0.0.1,localhost,::1");
+        cmd.env("no_proxy", "127.0.0.1,localhost,::1");
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            cmd.env_remove(key);
+        }
 
         for (k, v) in env_overrides {
             match v {
@@ -115,6 +143,14 @@ impl McpProcess {
                 }
             }
         }
+
+        // Starting a full app-server process per test is expensive. Limit the number
+        // of concurrently running processes to reduce flakiness from resource
+        // contention when the test runner executes many tests in parallel.
+        let permit = mcp_process_semaphore()
+            .acquire_owned()
+            .await
+            .expect("mcp process semaphore should be open");
 
         let mut process = cmd
             .kill_on_drop(true)
@@ -143,6 +179,7 @@ impl McpProcess {
         Ok(Self {
             next_request_id: AtomicI64::new(0),
             process,
+            _permit: permit,
             stdin,
             stdout,
             pending_messages: VecDeque::new(),
