@@ -28,6 +28,7 @@ const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
 
 const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
+const GROK_INSTRUCTIONS: &str = include_str!("../../grok_prompt.md");
 
 pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_048_576;
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
@@ -333,6 +334,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
         // - `reasoning.effort` support is model-dependent (see model_compat.rs)
         model_info!(
             slug,
+            base_instructions: format!("{BASE_INSTRUCTIONS}\n\n{GROK_INSTRUCTIONS}"),
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
             shell_type: ConfigShellToolType::ShellCommand,
             supports_parallel_tool_calls: true,
@@ -451,6 +453,16 @@ mod tests {
         assert!(model.supports_reasoning_summaries);
         assert!(model.support_verbosity);
         assert!(model.supported_reasoning_levels.is_empty());
+        assert!(
+            model
+                .base_instructions
+                .contains("Grok provider addendum for Codex CLI."),
+            "grok model should include Grok-specific prompt addendum"
+        );
+        assert!(
+            model.base_instructions.contains("`web_search`"),
+            "grok model should include web_search guidance"
+        );
     }
 
     #[test]

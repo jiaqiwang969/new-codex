@@ -287,6 +287,24 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_in_api: true,
             input_modalities: default_input_modalities(),
         },
+        ModelPreset {
+            id: "grok-4-1-fast-reasoning".to_string(),
+            model: "grok-4-1-fast-reasoning".to_string(),
+            display_name: "Grok 4.1 Fast Reasoning".to_string(),
+            description: "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::None,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::None,
+                description: "Reasoning effort is not configurable on this model.".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
         // Deprecated models.
         ModelPreset {
             id: "gpt-5-codex".to_string(),
