@@ -357,7 +357,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     ));
     let default_model = thread_manager
         .get_models_manager()
-        .get_default_model(&config.model, &config, RefreshStrategy::OnlineIfUncached)
+        // Avoid blocking exec startup on network-based model discovery.
+        .get_default_model(&config.model, &config, RefreshStrategy::Offline)
         .await;
 
     // Handle resume subcommand by resolving a rollout path and using explicit resume API.

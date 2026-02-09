@@ -254,6 +254,22 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             supports_personality: false,
             is_default: false,
         },
+        Model {
+            id: "grok-4-1-fast-reasoning".to_string(),
+            model: "grok-4-1-fast-reasoning".to_string(),
+            upgrade: None,
+            display_name: "Grok 4.1 Fast Reasoning".to_string(),
+            description: "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API."
+                .to_string(),
+            supported_reasoning_efforts: vec![ReasoningEffortOption {
+                reasoning_effort: ReasoningEffort::None,
+                description: "Reasoning effort is not configurable on this model.".to_string(),
+            }],
+            default_reasoning_effort: ReasoningEffort::None,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
     ];
 
     assert_eq!(items, expected_models);
@@ -443,7 +459,29 @@ async fn list_models_pagination_works() -> Result<()> {
 
     assert_eq!(eighth_items.len(), 1);
     assert_eq!(eighth_items[0].id, "grok-4-latest");
-    assert!(eighth_cursor.is_none());
+    let ninth_cursor = eighth_cursor.ok_or_else(|| anyhow!("cursor for ninth page"))?;
+
+    let ninth_request = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(1),
+            cursor: Some(ninth_cursor.clone()),
+        })
+        .await?;
+
+    let ninth_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(ninth_request)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: ninth_items,
+        next_cursor: tenth_cursor,
+    } = to_response::<ModelListResponse>(ninth_response)?;
+
+    assert_eq!(ninth_items.len(), 1);
+    assert_eq!(ninth_items[0].id, "grok-4-1-fast-reasoning");
+    assert!(tenth_cursor.is_none());
     Ok(())
 }
 

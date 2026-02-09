@@ -174,9 +174,7 @@ impl ModelsManager {
         config: &Config,
         refresh_strategy: RefreshStrategy,
     ) -> CoreResult<()> {
-        if !config.features.enabled(Feature::RemoteModels)
-            || self.auth_manager.auth_mode() == Some(AuthMode::ApiKey)
-        {
+        if !config.features.enabled(Feature::RemoteModels) {
             return Ok(());
         }
 
@@ -191,11 +189,21 @@ impl ModelsManager {
                 if self.try_load_cache().await {
                     return Ok(());
                 }
-                self.fetch_and_update_models().await
+                // Remote fetch requires ChatGPT auth. Without it, keep using bundled
+                // model metadata.
+                if matches!(self.auth_manager.auth_mode(), Some(AuthMode::Chatgpt)) {
+                    self.fetch_and_update_models().await
+                } else {
+                    Ok(())
+                }
             }
             RefreshStrategy::Online => {
-                // Always fetch from network
-                self.fetch_and_update_models().await
+                // Always fetch from network when supported.
+                if matches!(self.auth_manager.auth_mode(), Some(AuthMode::Chatgpt)) {
+                    self.fetch_and_update_models().await
+                } else {
+                    Ok(())
+                }
             }
         }
     }
@@ -354,7 +362,6 @@ impl ModelsManager {
 mod tests {
     use super::*;
     use crate::CodexAuth;
-    use crate::auth::AuthCredentialsStoreMode;
     use crate::config::ConfigBuilder;
     use crate::features::Feature;
     use crate::model_provider_info::WireApi;
@@ -507,11 +514,8 @@ mod tests {
             .await
             .expect("load default test config");
         config.features.enable(Feature::RemoteModels);
-        let auth_manager = Arc::new(AuthManager::new(
-            codex_home.path().to_path_buf(),
-            false,
-            AuthCredentialsStoreMode::File,
-        ));
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
         let provider = provider_for(server.uri());
         let manager =
             ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);
@@ -554,11 +558,8 @@ mod tests {
             .await
             .expect("load default test config");
         config.features.enable(Feature::RemoteModels);
-        let auth_manager = Arc::new(AuthManager::new(
-            codex_home.path().to_path_buf(),
-            false,
-            AuthCredentialsStoreMode::File,
-        ));
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
         let provider = provider_for(server.uri());
         let manager =
             ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);
@@ -623,11 +624,8 @@ mod tests {
             .await
             .expect("load default test config");
         config.features.enable(Feature::RemoteModels);
-        let auth_manager = Arc::new(AuthManager::new(
-            codex_home.path().to_path_buf(),
-            false,
-            AuthCredentialsStoreMode::File,
-        ));
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
         let provider = provider_for(server.uri());
         let manager =
             ModelsManager::with_provider(codex_home.path().to_path_buf(), auth_manager, provider);

@@ -253,7 +253,10 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 }),
             }),
         )
-    } else if slug.starts_with("gpt-5-codex") || slug.starts_with("codex-") {
+    } else if slug.starts_with("gpt-5.1-codex")
+        || slug.starts_with("gpt-5-codex")
+        || slug.starts_with("codex-")
+    {
         model_info!(
             slug,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
@@ -344,6 +347,11 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: Vec::new(),
+            experimental_supported_tools: vec![
+                "grep_files".to_string(),
+                "list_dir".to_string(),
+                "read_file".to_string(),
+            ],
         )
     } else {
         warn!("Unknown model {slug} is used. This will degrade the performance of Codex.");

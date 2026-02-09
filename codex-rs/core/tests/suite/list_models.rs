@@ -61,8 +61,15 @@ fn expected_models_for_api_key() -> Vec<ModelPreset> {
         gpt_5_codex(),
         gpt_5(),
         gpt_5_codex_mini(),
+        gpt_5_3_codex(),
         bengalfox(),
         boomslang(),
+        gemini_3_pro_preview(),
+        gemini_3_flash_preview(),
+        gemini_3_pro_image_preview(),
+        gemma_3n(),
+        grok_4_latest(),
+        grok_4_1_fast_reasoning(),
     ]
 }
 
@@ -142,7 +149,7 @@ fn gpt_5_1_codex_max() -> ModelPreset {
                 (ReasoningEffort::XHigh, ReasoningEffort::XHigh),
             ]),
         )),
-        show_in_picker: true,
+        show_in_picker: false,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
     }
@@ -178,7 +185,7 @@ fn gpt_5_1_codex_mini() -> ModelPreset {
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
             ]),
         )),
-        show_in_picker: true,
+        show_in_picker: false,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
     }
@@ -293,6 +300,192 @@ fn boomslang() -> ModelPreset {
         is_default: false,
         upgrade: None,
         show_in_picker: false,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn gpt_5_3_codex() -> ModelPreset {
+    ModelPreset {
+        id: "gpt-5.3-codex".to_string(),
+        model: "gpt-5.3-codex".to_string(),
+        display_name: "gpt-5.3-codex".to_string(),
+        description: "Latest frontier agentic coding model with enhanced reasoning.".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Fast responses with lighter reasoning",
+            ),
+            effort(
+                ReasoningEffort::Medium,
+                "Balances speed and reasoning depth for everyday tasks",
+            ),
+            effort(
+                ReasoningEffort::High,
+                "Greater reasoning depth for complex problems",
+            ),
+            effort(
+                ReasoningEffort::XHigh,
+                "Extra high reasoning depth for complex problems",
+            ),
+        ],
+        supports_personality: true,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn gemini_3_pro_preview() -> ModelPreset {
+    ModelPreset {
+        id: "gemini-3-pro-preview".to_string(),
+        model: "gemini-3-pro-preview".to_string(),
+        display_name: "Gemini 3 Pro".to_string(),
+        description: "Google Gemini 3 Pro with deep reasoning and 1M context.".to_string(),
+        default_reasoning_effort: ReasoningEffort::High,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Fast responses with lighter reasoning",
+            ),
+            effort(
+                ReasoningEffort::Medium,
+                "Balances speed and reasoning depth for everyday tasks",
+            ),
+            effort(
+                ReasoningEffort::High,
+                "Greater reasoning depth for complex problems",
+            ),
+        ],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn gemini_3_flash_preview() -> ModelPreset {
+    ModelPreset {
+        id: "gemini-3-flash-preview".to_string(),
+        model: "gemini-3-flash-preview".to_string(),
+        display_name: "Gemini 3 Flash".to_string(),
+        description: "Google Gemini 3 Flash \u{2014} fast and efficient with 1M context."
+            .to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Fast responses with lighter reasoning",
+            ),
+            effort(
+                ReasoningEffort::Medium,
+                "Balances speed and reasoning depth for everyday tasks",
+            ),
+            effort(
+                ReasoningEffort::High,
+                "Greater reasoning depth for complex problems",
+            ),
+        ],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn gemini_3_pro_image_preview() -> ModelPreset {
+    ModelPreset {
+        id: "gemini-3-pro-image-preview".to_string(),
+        model: "gemini-3-pro-image-preview".to_string(),
+        display_name: "Gemini 3 Pro Image".to_string(),
+        description: "Gemini 3 Pro for text, image understanding, and image generation."
+            .to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![effort(
+            ReasoningEffort::Medium,
+            "Default Gemini reasoning behaviour for image workflows.",
+        )],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn gemma_3n() -> ModelPreset {
+    ModelPreset {
+        id: "gemma-3n".to_string(),
+        model: "gemma-3n".to_string(),
+        display_name: "Gemma 3n (Local)".to_string(),
+        description: "Local Gemma 3n served via Gemini-compatible API.".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Fast responses with lighter reasoning",
+            ),
+            effort(
+                ReasoningEffort::Medium,
+                "Balances speed and reasoning depth for everyday tasks",
+            ),
+            effort(
+                ReasoningEffort::High,
+                "Greater reasoning depth for complex problems",
+            ),
+        ],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn grok_4_latest() -> ModelPreset {
+    ModelPreset {
+        id: "grok-4-latest".to_string(),
+        model: "grok-4-latest".to_string(),
+        display_name: "Grok 4 Latest".to_string(),
+        description: "xAI Grok 4 via OpenAI-compatible Responses API.".to_string(),
+        default_reasoning_effort: ReasoningEffort::None,
+        supported_reasoning_efforts: vec![effort(
+            ReasoningEffort::None,
+            "Reasoning effort is not configurable on this model.",
+        )],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn grok_4_1_fast_reasoning() -> ModelPreset {
+    ModelPreset {
+        id: "grok-4-1-fast-reasoning".to_string(),
+        model: "grok-4-1-fast-reasoning".to_string(),
+        display_name: "Grok 4.1 Fast Reasoning".to_string(),
+        description: "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API.".to_string(),
+        default_reasoning_effort: ReasoningEffort::None,
+        supported_reasoning_efforts: vec![effort(
+            ReasoningEffort::None,
+            "Reasoning effort is not configurable on this model.",
+        )],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
     }
