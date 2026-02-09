@@ -29,7 +29,7 @@ Within this context, Codex refers to the open-source agentic coding interface.
 
 ## Web Search (Gemini)
 
-When web search is enabled, prefer Gemini's built-in Google Search tool (`google_search`) for internet queries (news, pricing, versions, policies, "today"/"latest"). Avoid shell-based scraping (e.g. `curl`) unless explicitly necessary, and include concrete dates and sources in the final answer.
+When web search is enabled, prefer Gemini's built-in Google Search tool (`google_search`) for internet queries (news, pricing, versions, policies, "today"/"latest"). Avoid shell-based scraping via `exec_command` (e.g. `curl`) unless explicitly necessary, and include concrete dates and sources in the final answer.
 
 # How You Work
 

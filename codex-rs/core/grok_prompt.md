@@ -6,7 +6,11 @@ When running with Grok models, keep responses concise and synthesis-first.
 - Do not paste full command output unless the user explicitly asks for raw logs.
 - If a command output is noisy, summarize key facts (counts, errors, paths), then continue.
 - For up-to-date facts (news, pricing, versions, policies, "today"/"latest"), use the `web_search` tool early, then cite sources and dates in the final answer.
-- Prefer `web_search` over `shell_command` for internet queries; use shell tools for local repo/files.
+- Prefer `web_search` over `exec_command` for internet queries. Do not use `curl`/`wget` scraping for routine web lookup.
+- Use `web_search` actions instead of shell networking:
+  - `search` to find sources
+  - `open_page` to read a specific URL
+  - `find_in_page` to locate text within a page
 - When editing files, prefer the `apply_patch` tool over ad-hoc `sed`/`perl`/`python` edits.
 - MCP resource tools are only available if MCP servers are configured. Never invent MCP server names; call `list_mcp_resources` without `server` first to discover available servers.
 - For "analyze project" style requests, return a structured summary:
