@@ -210,6 +210,7 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
       \item \texttt{context} 缺省自动注入（Saved thread memory + Session summary + 最近摘录 + 同 cwd 的 project memories）。
     \end{itemize}
   \item Thread Memory 自动写入链路：turn 完成 + compaction 后写入 thread\_memory，并通过 \texttt{get\_memory} 可读回。
+  \item Context Packet Builder：抽成可复用组件，并复用于 \texttt{spawn\_agent} 的初始消息（让 Codex 内部 sub-agent 也能拿到同一份上下文/记忆摘要）。
 \end{enumerate}
 
 \subsection{内容约束（记忆的“正确粒度”）}
@@ -255,7 +256,7 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
   \item M2（已完成）：自动 summarization 并 upsert thread\_memory（官方 trace\_summarize + 回退策略）。
   \item M3（部分完成）：按 cwd 注入 project memories（同项目最近 N 条 thread\_memory 的 memory\_summary）；后续可做更智能的融合/去重/挑选策略。
   \item M4（建议）：提供 backfill / rebuild 命令：从 rollout 重建并写入 thread\_memory（便于对历史 thread 补齐）。
-  \item M5（建议）：抽象可复用的 Context Packet Builder，让 Grok/Gemini/Review 等子 agent 复用同一套“记忆注入”策略（多模型协作的一致性核心）。
+  \item M5（部分完成）：抽象可复用的 Context Packet Builder，并复用于 \texttt{claude\_code} 与 \texttt{spawn\_agent}；后续扩展到 Grok/Gemini/Review 等子 agent（多模型协作的一致性核心）。
 \end{enumerate}
 
 \end{document}
