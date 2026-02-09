@@ -5,18 +5,16 @@ use tracing::error;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::compact;
+use crate::context_packet;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
-use crate::state_db;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
@@ -24,8 +22,6 @@ use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::request_user_input::RequestUserInputResponse;
-use codex_utils_string::take_bytes_at_char_boundary;
-use codex_utils_string::take_last_bytes_at_char_boundary;
 use rmcp::model::ToolAnnotations;
 use serde::Serialize;
 use serde_json::Value;
@@ -34,16 +30,6 @@ use std::sync::Arc;
 const CLAUDE_CODE_TOOL_NAME: &str = "claude_code";
 const CLAUDE_CODE_CONTEXT_KEY: &str = "context";
 const CLAUDE_CODE_WORK_FOLDER_KEY: &str = "workFolder";
-const CLAUDE_CODE_MAX_CONTEXT_BYTES: usize = 12_000;
-const CLAUDE_CODE_CONTEXT_TRUNCATION_NOTICE: &str = "[Context truncated; showing most recent]\n\n";
-const CLAUDE_CODE_MAX_RECENT_MESSAGES: usize = 16;
-const CLAUDE_CODE_MAX_RECENT_BYTES: usize = 4_800;
-const CLAUDE_CODE_MAX_MESSAGE_BYTES: usize = 1_000;
-const CLAUDE_CODE_MAX_TRACE_SUMMARY_BYTES: usize = 1_600;
-const CLAUDE_CODE_MAX_MEMORY_SUMMARY_BYTES: usize = 1_600;
-const CLAUDE_CODE_MAX_SESSION_SUMMARY_BYTES: usize = 3_200;
-const CLAUDE_CODE_MAX_PROJECT_MEMORIES: usize = 3;
-const CLAUDE_CODE_MAX_PROJECT_MEMORY_SUMMARY_BYTES: usize = 800;
 
 /// Handles the specified tool call dispatches the appropriate
 /// `McpToolCallBegin` and `McpToolCallEnd` events to the `Session`.
@@ -216,204 +202,18 @@ async fn maybe_inject_claude_code_context(
     };
 
     if should_inject_context {
-        let context = build_claude_code_context(sess, turn_context).await;
+        let context = context_packet::build_context_packet(
+            sess,
+            turn_context,
+            context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
+        )
+        .await;
         if !context.trim().is_empty() {
             args.insert(CLAUDE_CODE_CONTEXT_KEY.to_string(), Value::String(context));
         }
     }
 
     Some(Value::Object(args))
-}
-
-async fn build_claude_code_context(sess: &Session, turn_context: &TurnContext) -> String {
-    let mut sections = Vec::new();
-
-    sections.push(format!("Working directory: {}", turn_context.cwd.display()));
-
-    if let Some(memory) = state_db::get_thread_memory(
-        sess.state_db().as_deref(),
-        sess.conversation_id,
-        "claude_code_mcp_context",
-    )
-    .await
-    {
-        let trace_summary = truncate_text_bytes(
-            memory.trace_summary.trim(),
-            CLAUDE_CODE_MAX_TRACE_SUMMARY_BYTES,
-        );
-        let memory_summary = truncate_text_bytes(
-            memory.memory_summary.trim(),
-            CLAUDE_CODE_MAX_MEMORY_SUMMARY_BYTES,
-        );
-        sections.push(format!(
-            "Saved thread memory:\nTrace summary:\n{}\n\nMemory summary:\n{}",
-            trace_summary, memory_summary
-        ));
-    }
-
-    if let Some(memories) = state_db::get_last_n_thread_memories_for_cwd(
-        sess.state_db().as_deref(),
-        turn_context.cwd.as_path(),
-        CLAUDE_CODE_MAX_PROJECT_MEMORIES.saturating_add(1),
-        "claude_code_mcp_project_memory",
-    )
-    .await
-    {
-        let mut selected = Vec::new();
-        for memory in memories {
-            if memory.thread_id == sess.conversation_id {
-                continue;
-            }
-            selected.push(memory);
-            if selected.len() >= CLAUDE_CODE_MAX_PROJECT_MEMORIES {
-                break;
-            }
-        }
-
-        if !selected.is_empty() {
-            let mut out = String::new();
-            for (idx, memory) in selected.into_iter().enumerate() {
-                if idx > 0 {
-                    out.push('\n');
-                    out.push('\n');
-                }
-                let thread_id = memory.thread_id;
-                let summary = truncate_text_bytes(
-                    memory.memory_summary.trim(),
-                    CLAUDE_CODE_MAX_PROJECT_MEMORY_SUMMARY_BYTES,
-                );
-                out.push_str(&format!("- Thread {thread_id}:\n{summary}"));
-            }
-            sections.push(format!("Recent project memories (same cwd):\n{out}"));
-        }
-    }
-
-    let history = sess.clone_history().await;
-    let collected = collect_claude_code_context_from_history(history.raw_items());
-    if let Some(summary) = collected.summary {
-        sections.push(format!(
-            "Session summary:\n{}",
-            truncate_text_bytes(summary.trim(), CLAUDE_CODE_MAX_SESSION_SUMMARY_BYTES).trim()
-        ));
-    }
-    if !collected.recent.is_empty() {
-        sections.push(format!(
-            "Recent chat excerpt:\n{}",
-            format_role_prefixed_messages(&collected.recent).trim()
-        ));
-    }
-
-    truncate_claude_code_context(sections.join("\n\n"))
-}
-
-struct ClaudeCodeHistoryContext {
-    summary: Option<String>,
-    recent: Vec<(String, String)>,
-}
-
-fn collect_claude_code_context_from_history(items: &[ResponseItem]) -> ClaudeCodeHistoryContext {
-    let mut summary: Option<String> = None;
-    let mut boundary = 0usize;
-    let mut messages: Vec<(String, String)> = Vec::new();
-
-    let summary_prefix = format!("{}\n", compact::SUMMARY_PREFIX);
-
-    for item in items {
-        let ResponseItem::Message { role, content, .. } = item else {
-            continue;
-        };
-        if role != "user" && role != "assistant" {
-            continue;
-        }
-        let Some(text) = compact::content_items_to_text(content) else {
-            continue;
-        };
-
-        if role == "user" && compact::is_summary_message(&text) {
-            let suffix = text
-                .strip_prefix(&summary_prefix)
-                .unwrap_or(text.as_str())
-                .to_string();
-            summary = Some(suffix);
-            boundary = messages.len();
-            continue;
-        }
-
-        messages.push((
-            role.clone(),
-            truncate_text_bytes(&text, CLAUDE_CODE_MAX_MESSAGE_BYTES),
-        ));
-    }
-
-    let after_summary = &messages[boundary..];
-    let recent = take_last_messages_with_byte_budget(
-        after_summary,
-        CLAUDE_CODE_MAX_RECENT_MESSAGES,
-        CLAUDE_CODE_MAX_RECENT_BYTES,
-    );
-
-    ClaudeCodeHistoryContext { summary, recent }
-}
-
-fn take_last_messages_with_byte_budget(
-    messages: &[(String, String)],
-    max_messages: usize,
-    max_bytes: usize,
-) -> Vec<(String, String)> {
-    if max_messages == 0 || max_bytes == 0 {
-        return Vec::new();
-    }
-
-    let mut used = 0usize;
-    let mut selected_rev = Vec::new();
-    for (role, text) in messages.iter().rev().take(max_messages) {
-        // Roughly account for formatting overhead ("User: " + "\n\n", etc.).
-        let cost = role.len().saturating_add(text.len()).saturating_add(16);
-        if !selected_rev.is_empty() && used.saturating_add(cost) > max_bytes {
-            break;
-        }
-        selected_rev.push((role.clone(), text.clone()));
-        used = used.saturating_add(cost);
-    }
-    selected_rev.reverse();
-    selected_rev
-}
-
-fn truncate_text_bytes(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_string();
-    }
-    let truncated = take_bytes_at_char_boundary(text, max_bytes);
-    format!("{truncated}...")
-}
-
-fn format_role_prefixed_messages(messages: &[(String, String)]) -> String {
-    let mut out = String::new();
-    for (idx, (role, text)) in messages.iter().enumerate() {
-        if idx > 0 {
-            out.push('\n');
-            out.push('\n');
-        }
-        let label = match role.as_str() {
-            "user" => "User",
-            "assistant" => "Assistant",
-            other => other,
-        };
-        out.push_str(&format!("{label}: {}\n", text.trim()));
-    }
-    out
-}
-
-fn truncate_claude_code_context(mut context: String) -> String {
-    if context.len() <= CLAUDE_CODE_MAX_CONTEXT_BYTES {
-        return context;
-    }
-
-    let notice_len = CLAUDE_CODE_CONTEXT_TRUNCATION_NOTICE.len();
-    let budget = CLAUDE_CODE_MAX_CONTEXT_BYTES.saturating_sub(notice_len);
-    let truncated = take_last_bytes_at_char_boundary(&context, budget);
-    context = format!("{CLAUDE_CODE_CONTEXT_TRUNCATION_NOTICE}{truncated}");
-    context
 }
 
 async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, event: EventMsg) {
@@ -673,7 +473,6 @@ async fn notify_mcp_tool_call_skip(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::models::ContentItem;
     use pretty_assertions::assert_eq;
 
     fn annotations(
@@ -706,83 +505,5 @@ mod tests {
     fn approval_not_required_when_read_only_true() {
         let annotations = annotations(Some(true), Some(true), Some(true));
         assert_eq!(requires_mcp_tool_approval(&annotations), false);
-    }
-
-    #[test]
-    fn collect_claude_code_context_prefers_last_summary_and_only_keeps_messages_after_it() {
-        let summary_prefix = format!("{}\n", compact::SUMMARY_PREFIX);
-        let first_summary = format!("{summary_prefix}summary one");
-        let second_summary = format!("{summary_prefix}summary two");
-
-        let items = vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "before summary".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: first_summary,
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "after first summary".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: second_summary,
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "after second summary".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-        ];
-
-        let collected = collect_claude_code_context_from_history(&items);
-        assert_eq!(collected.summary, Some("summary two".to_string()));
-        assert_eq!(
-            collected.recent,
-            vec![("user".to_string(), "after second summary".to_string())]
-        );
-    }
-
-    #[test]
-    fn truncate_claude_code_context_appends_notice() {
-        let long = "a".repeat(CLAUDE_CODE_MAX_CONTEXT_BYTES + 10);
-        let truncated = truncate_claude_code_context(long);
-        assert_eq!(truncated.len() <= CLAUDE_CODE_MAX_CONTEXT_BYTES, true);
-        assert_eq!(
-            truncated.starts_with(CLAUDE_CODE_CONTEXT_TRUNCATION_NOTICE),
-            true
-        );
     }
 }

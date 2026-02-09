@@ -88,6 +88,7 @@ impl ToolHandler for CollabHandler {
 mod spawn {
     use super::*;
     use crate::agent::AgentRole;
+    use crate::context_packet;
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
@@ -118,6 +119,7 @@ mod spawn {
                 "Empty message can't be sent to an agent".to_string(),
             ));
         }
+        let prompt_for_events = prompt.clone();
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         if exceeds_thread_spawn_depth_limit(child_depth) {
@@ -131,11 +133,13 @@ mod spawn {
                 CollabAgentSpawnBeginEvent {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
-                    prompt: prompt.clone(),
+                    prompt: prompt_for_events.clone(),
                 }
                 .into(),
             )
             .await;
+        let prompt_for_agent =
+            build_spawn_agent_prompt_with_context(session.as_ref(), turn.as_ref(), &prompt).await;
         let mut config = build_agent_spawn_config(
             &session.get_base_instructions().await,
             turn.as_ref(),
@@ -150,7 +154,7 @@ mod spawn {
             .agent_control
             .spawn_agent(
                 config,
-                prompt.clone(),
+                prompt_for_agent,
                 Some(thread_spawn_source(session.conversation_id, child_depth)),
             )
             .await
@@ -169,7 +173,7 @@ mod spawn {
                     call_id,
                     sender_thread_id: session.conversation_id,
                     new_thread_id,
-                    prompt,
+                    prompt: prompt_for_events,
                     status,
                 }
                 .into(),
@@ -188,6 +192,41 @@ mod spawn {
             body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
+    }
+
+    async fn build_spawn_agent_prompt_with_context(
+        session: &Session,
+        turn: &TurnContext,
+        prompt: &str,
+    ) -> String {
+        if prompt_already_has_context_packet(prompt) {
+            return prompt.to_string();
+        }
+
+        let context = context_packet::build_context_packet(
+            session,
+            turn,
+            context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
+        )
+        .await;
+        if context.trim().is_empty() {
+            return prompt.to_string();
+        }
+
+        format!(
+            "Context packet (from parent session):\n{}\n\nTask:\n{}",
+            context.trim(),
+            prompt.trim()
+        )
+    }
+
+    fn prompt_already_has_context_packet(prompt: &str) -> bool {
+        let lower = prompt.to_ascii_lowercase();
+        lower.contains("context packet")
+            || lower.contains("working directory:")
+            || lower.contains("session summary:")
+            || lower.contains("saved thread memory:")
+            || lower.contains("recent chat excerpt:")
     }
 }
 
