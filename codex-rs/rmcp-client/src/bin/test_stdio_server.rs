@@ -47,6 +47,7 @@ impl TestToolServer {
             Self::echo_tool(),
             Self::image_tool(),
             Self::image_scenario_tool(),
+            Self::claude_code_tool(),
         ];
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
@@ -148,6 +149,27 @@ impl TestToolServer {
         )
     }
 
+    fn claude_code_tool() -> Tool {
+        #[expect(clippy::expect_used)]
+        let schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string" },
+                "context": { "type": "string" },
+                "workFolder": { "type": "string" }
+            },
+            "required": ["prompt"],
+            "additionalProperties": false
+        }))
+        .expect("claude_code tool schema should deserialize");
+
+        Tool::new(
+            Cow::Borrowed("claude_code"),
+            Cow::Borrowed("Echo back args for testing context/workFolder injection."),
+            Arc::new(schema),
+        )
+    }
+
     fn memo_resource() -> Resource {
         let raw = RawResource {
             uri: MEMO_URI.to_string(),
@@ -185,6 +207,16 @@ struct EchoArgs {
     message: String,
     #[allow(dead_code)]
     env_var: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeCodeArgs {
+    prompt: String,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    work_folder: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -346,6 +378,21 @@ impl ServerHandler for TestToolServer {
             "image_scenario" => {
                 let args = Self::parse_call_args::<ImageScenarioArgs>(&request, "image_scenario")?;
                 Self::image_scenario_result(args)
+            }
+            "claude_code" => {
+                let args = Self::parse_call_args::<ClaudeCodeArgs>(&request, "claude_code")?;
+                let structured_content = json!({
+                    "prompt": args.prompt,
+                    "context": args.context,
+                    "workFolder": args.work_folder,
+                });
+
+                Ok(CallToolResult {
+                    content: Vec::new(),
+                    structured_content: Some(structured_content),
+                    is_error: Some(false),
+                    meta: None,
+                })
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
