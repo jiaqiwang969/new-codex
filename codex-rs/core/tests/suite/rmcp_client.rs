@@ -21,6 +21,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::responses;
+use core_test_support::responses::mount_function_call_agent_response;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
@@ -172,6 +173,99 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     assert_eq!(env_value, expected_env_value);
 
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    server.verify().await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(mcp_test_value)]
+async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+
+    let call_id = "claude-ctx-1";
+    let server_name = "rmcp";
+    let tool_name = format!("mcp__{server_name}__claude_code");
+
+    let mocks =
+        mount_function_call_agent_response(&server, call_id, "{\"prompt\":\"ping\"}", &tool_name)
+            .await;
+
+    let rmcp_test_server_bin = stdio_server_bin()?;
+
+    let fixture = test_codex()
+        .with_config(move |config| {
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                server_name.to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: None,
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    enabled: true,
+                    required: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                },
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+        })
+        .build(&server)
+        .await?;
+    fixture
+        .submit_turn_with_policies(
+            "call the rmcp claude_code tool",
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+        )
+        .await?;
+
+    let completion_request = mocks.completion.single_request();
+    let content = completion_request
+        .function_call_output_text(call_id)
+        .expect("function_call_output should be present");
+    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
+        panic!("failed to parse claude_code tool output as JSON: {err}. output={content:?}");
+    });
+    let Value::Object(map) = payload else {
+        panic!("function_call_output should be an object: {payload:?}");
+    };
+
+    let prompt = map
+        .get("prompt")
+        .and_then(Value::as_str)
+        .expect("prompt present");
+    assert_eq!(prompt, "ping");
+
+    let work_folder = map
+        .get("workFolder")
+        .and_then(Value::as_str)
+        .expect("workFolder present");
+    assert_eq!(work_folder, fixture.cwd.path().to_string_lossy().as_ref());
+
+    let context = map
+        .get("context")
+        .and_then(Value::as_str)
+        .expect("context present");
+    let expected_working_dir = format!("Working directory: {}", fixture.cwd.path().display());
+    assert!(
+        context.contains(&expected_working_dir),
+        "context should include working dir. expected substring={expected_working_dir:?} actual={context:?}"
+    );
 
     server.verify().await;
 
