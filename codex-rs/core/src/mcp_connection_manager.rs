@@ -444,12 +444,21 @@ impl McpConnectionManager {
     }
 
     async fn client_by_name(&self, name: &str) -> Result<ManagedClient> {
-        self.clients
-            .get(name)
-            .ok_or_else(|| anyhow!("unknown MCP server '{name}'"))?
-            .client()
-            .await
-            .context("failed to get client")
+        let Some(client) = self.clients.get(name) else {
+            let mut servers: Vec<&str> = self.clients.keys().map(String::as_str).collect();
+            servers.sort_unstable();
+            if servers.is_empty() {
+                return Err(anyhow!(
+                    "unknown MCP server '{name}' (no MCP servers configured)"
+                ));
+            }
+            let servers = servers.join(", ");
+            return Err(anyhow!(
+                "unknown MCP server '{name}'. Configured servers: {servers}. Hint: omit the `server` argument to list all servers."
+            ));
+        };
+
+        client.client().await.context("failed to get client")
     }
 
     pub async fn resolve_elicitation(
