@@ -206,6 +206,17 @@ fn is_allowed_trace_item(item: &Map<String, Value>) -> bool {
         return false;
     };
 
+    // Exclude tool outputs and reasoning payloads from memory traces; these can be noisy and may
+    // contain sensitive data. The summarize endpoint is expected to work on messages + call
+    // metadata alone.
+    if item_type == "function_call_output"
+        || item_type == "custom_tool_call_output"
+        || item_type == "reasoning"
+        || item_type == "ghost_snapshot"
+    {
+        return false;
+    }
+
     if item_type == "message" {
         return matches!(
             item.get("role").and_then(Value::as_str),
