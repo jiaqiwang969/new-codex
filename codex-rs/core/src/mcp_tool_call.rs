@@ -42,6 +42,8 @@ const CLAUDE_CODE_MAX_MESSAGE_BYTES: usize = 1_000;
 const CLAUDE_CODE_MAX_TRACE_SUMMARY_BYTES: usize = 1_600;
 const CLAUDE_CODE_MAX_MEMORY_SUMMARY_BYTES: usize = 1_600;
 const CLAUDE_CODE_MAX_SESSION_SUMMARY_BYTES: usize = 3_200;
+const CLAUDE_CODE_MAX_PROJECT_MEMORIES: usize = 3;
+const CLAUDE_CODE_MAX_PROJECT_MEMORY_SUMMARY_BYTES: usize = 800;
 
 /// Handles the specified tool call dispatches the appropriate
 /// `McpToolCallBegin` and `McpToolCallEnd` events to the `Session`.
@@ -247,6 +249,43 @@ async fn build_claude_code_context(sess: &Session, turn_context: &TurnContext) -
             "Saved thread memory:\nTrace summary:\n{}\n\nMemory summary:\n{}",
             trace_summary, memory_summary
         ));
+    }
+
+    if let Some(memories) = state_db::get_last_n_thread_memories_for_cwd(
+        sess.state_db().as_deref(),
+        turn_context.cwd.as_path(),
+        CLAUDE_CODE_MAX_PROJECT_MEMORIES.saturating_add(1),
+        "claude_code_mcp_project_memory",
+    )
+    .await
+    {
+        let mut selected = Vec::new();
+        for memory in memories {
+            if memory.thread_id == sess.conversation_id {
+                continue;
+            }
+            selected.push(memory);
+            if selected.len() >= CLAUDE_CODE_MAX_PROJECT_MEMORIES {
+                break;
+            }
+        }
+
+        if !selected.is_empty() {
+            let mut out = String::new();
+            for (idx, memory) in selected.into_iter().enumerate() {
+                if idx > 0 {
+                    out.push('\n');
+                    out.push('\n');
+                }
+                let thread_id = memory.thread_id;
+                let summary = truncate_text_bytes(
+                    memory.memory_summary.trim(),
+                    CLAUDE_CODE_MAX_PROJECT_MEMORY_SUMMARY_BYTES,
+                );
+                out.push_str(&format!("- Thread {thread_id}:\n{summary}"));
+            }
+            sections.push(format!("Recent project memories (same cwd):\n{out}"));
+        }
     }
 
     let history = sess.clone_history().await;
