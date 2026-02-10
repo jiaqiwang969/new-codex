@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub use runfiles;
 
@@ -43,6 +44,29 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
             return resolve_bin_from_env(key, value);
         }
     }
+
+    // When running tests via `cargo test`, the `CARGO_BIN_EXE_*` env vars are only set for
+    // binaries defined in the same Cargo package as the current test target. Many tests in this
+    // workspace spawn first-party binaries from other packages (for example, `codex`), so we
+    // provide a best-effort fallback that:
+    //   1) infers `target/<triple?>/<profile>` from the current test executable path
+    //   2) checks for `target/<triple?>/<profile>/{name}`
+    //   3) if missing, runs `cargo build --bin {name}` from the workspace root and rechecks
+    if !runfiles_available()
+        && let Ok(Some((workspace_root, profile_dir))) = workspace_root_and_profile_dir()
+    {
+        let candidate = profile_dir.join(platform_bin_name(name));
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+
+        if let Ok(true) = cargo_build_bin(&workspace_root, name)
+            && candidate.exists()
+        {
+            return Ok(candidate);
+        }
+    }
+
     match assert_cmd::Command::cargo_bin(name) {
         Ok(cmd) => {
             let mut path = PathBuf::from(cmd.get_program());
@@ -79,6 +103,63 @@ fn cargo_bin_env_keys(name: &str) -> Vec<String> {
     }
 
     keys
+}
+
+fn platform_bin_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+fn workspace_root_and_profile_dir() -> Result<Option<(PathBuf, PathBuf)>, CargoBinError> {
+    let exe = std::env::current_exe().map_err(|source| CargoBinError::CurrentExe { source })?;
+    let Some(deps_dir) = exe.parent() else {
+        return Ok(None);
+    };
+    let Some(profile_dir) = deps_dir.parent() else {
+        return Ok(None);
+    };
+
+    for ancestor in profile_dir.ancestors() {
+        if ancestor.file_name() == Some(std::ffi::OsStr::new("target"))
+            && let Some(workspace_root) = ancestor.parent()
+        {
+            return Ok(Some((
+                workspace_root.to_path_buf(),
+                profile_dir.to_path_buf(),
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+fn cargo_build_bin(workspace_root: &Path, name: &str) -> Result<bool, CargoBinError> {
+    let output = Command::new("cargo")
+        .args(["build", "--bin", name])
+        .current_dir(workspace_root)
+        .output()
+        .map_err(|source| CargoBinError::CurrentExe { source })?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    // Only used for best-effort test fallbacks; keep error surface small.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(CargoBinError::NotFound {
+        name: name.to_owned(),
+        env_keys: cargo_bin_env_keys(name),
+        fallback: format!(
+            "cargo build --bin {name} failed: status={} stdout={} stderr={}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        ),
+    })
 }
 
 pub fn runfiles_available() -> bool {
