@@ -102,7 +102,10 @@ pub(crate) enum AppEvent {
     RateLimitSnapshotFetched(RateLimitSnapshot),
 
     /// Result of prefetching connectors.
-    ConnectorsLoaded(Result<ConnectorsSnapshot, String>),
+    ConnectorsLoaded {
+        result: Result<ConnectorsSnapshot, String>,
+        is_final: bool,
+    },
 
     /// Result of computing a `/diff` command.
     DiffResult(String),

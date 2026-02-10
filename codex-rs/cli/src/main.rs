@@ -3,8 +3,8 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
 use clap_complete::generate;
-use codex_api::MemoryTrace;
-use codex_api::MemoryTraceMetadata;
+use codex_api::RawMemory;
+use codex_api::RawMemoryMetadata;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_chatgpt::apply_command::ApplyCommand;
 use codex_chatgpt::apply_command::run_apply_command;
@@ -846,14 +846,14 @@ async fn run_thread_memory_backfill(
                 .unwrap_or_else(|| config.cwd.as_path())
                 .display()
                 .to_string();
-            let trace = MemoryTrace {
+            let trace = RawMemory {
                 id: format!("trace_{thread_id}"),
-                metadata: MemoryTraceMetadata { source_path },
+                metadata: RawMemoryMetadata { source_path },
                 items: trace_items.clone(),
             };
 
             match model_client
-                .summarize_memory_traces(
+                .summarize_memories(
                     vec![trace],
                     &model_info,
                     config.model_reasoning_effort,
@@ -863,7 +863,7 @@ async fn run_thread_memory_backfill(
             {
                 Ok(mut outputs) => {
                     if let Some(output) = outputs.pop() {
-                        trace_summary = output.trace_summary;
+                        trace_summary = output.raw_memory;
                         memory_summary = output.memory_summary;
                     }
                 }

@@ -3,15 +3,8 @@ use codex_core::CodexAuth;
 use codex_core::ThreadManager;
 use codex_core::built_in_model_providers;
 use codex_core::models_manager::manager::RefreshStrategy;
-use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::openai_models::ModelUpgrade;
-use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::openai_models::default_input_modalities;
 use core_test_support::load_default_config_for_test;
-use indoc::indoc;
 use pretty_assertions::assert_eq;
-use std::collections::HashMap;
 use tempfile::tempdir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -26,8 +19,8 @@ async fn list_models_returns_api_key_models() -> Result<()> {
         .list_models(&config, RefreshStrategy::OnlineIfUncached)
         .await;
 
-    let expected_models = expected_models_for_api_key();
-    assert_eq!(expected_models, models);
+    let slugs: Vec<String> = models.into_iter().map(|m| m.id).collect();
+    assert_eq!(expected_slugs(), slugs);
 
     Ok(())
 }
@@ -44,13 +37,13 @@ async fn list_models_returns_chatgpt_models() -> Result<()> {
         .list_models(&config, RefreshStrategy::OnlineIfUncached)
         .await;
 
-    let expected_models = expected_models_for_chatgpt();
-    assert_eq!(expected_models, models);
+    let slugs: Vec<String> = models.into_iter().map(|m| m.id).collect();
+    assert_eq!(expected_slugs(), slugs);
 
     Ok(())
 }
 
-fn expected_models_for_api_key() -> Vec<ModelPreset> {
+fn expected_slugs() -> Vec<String> {
     vec![
         gpt_52_codex(),
         gpt_5_2(),

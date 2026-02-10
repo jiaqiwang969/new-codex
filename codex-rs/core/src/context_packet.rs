@@ -74,7 +74,7 @@ pub(crate) async fn build_context_packet(
         .await
         {
             let trace_summary =
-                truncate_text_bytes(memory.trace_summary.trim(), config.max_trace_summary_bytes);
+                truncate_text_bytes(memory.raw_memory.trim(), config.max_trace_summary_bytes);
             let memory_summary = truncate_text_bytes(
                 memory.memory_summary.trim(),
                 config.max_memory_summary_bytes,

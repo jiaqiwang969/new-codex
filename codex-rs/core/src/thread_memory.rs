@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use codex_api::MemoryTrace;
-use codex_api::MemoryTraceMetadata;
+use codex_api::RawMemory;
+use codex_api::RawMemoryMetadata;
 use codex_protocol::models::ResponseItem;
 use codex_utils_string::take_bytes_at_char_boundary;
 use serde_json::Value;
@@ -186,9 +186,9 @@ async fn update_thread_memory_after_compaction(
         return;
     }
 
-    let trace = MemoryTrace {
+    let trace = RawMemory {
         id: format!("trace_{thread_id}"),
-        metadata: MemoryTraceMetadata {
+        metadata: RawMemoryMetadata {
             source_path: turn_context.cwd.display().to_string(),
         },
         items: trace_items,
@@ -197,7 +197,7 @@ async fn update_thread_memory_after_compaction(
     let summary_output = sess
         .services
         .model_client
-        .summarize_memory_traces(
+        .summarize_memories(
             vec![trace],
             &turn_context.model_info,
             turn_context.reasoning_effort,
@@ -219,14 +219,14 @@ async fn update_thread_memory_after_compaction(
         }
     };
 
-    if output.trace_summary.trim().is_empty() && output.memory_summary.trim().is_empty() {
+    if output.raw_memory.trim().is_empty() && output.memory_summary.trim().is_empty() {
         return;
     }
 
     state_db::upsert_thread_memory(
         Some(db.as_ref()),
         thread_id,
-        output.trace_summary.trim(),
+        output.raw_memory.trim(),
         output.memory_summary.trim(),
         "thread_memory_trace_summarize",
     )
@@ -284,9 +284,9 @@ async fn update_thread_memory_after_turn(
         .await;
     }
 
-    let trace = MemoryTrace {
+    let trace = RawMemory {
         id: format!("trace_{thread_id}"),
-        metadata: MemoryTraceMetadata {
+        metadata: RawMemoryMetadata {
             source_path: turn_context.cwd.display().to_string(),
         },
         items: trace_items,
@@ -299,7 +299,7 @@ async fn update_thread_memory_after_turn(
     let output = match sess
         .services
         .model_client
-        .summarize_memory_traces(
+        .summarize_memories(
             vec![trace],
             &turn_context.model_info,
             turn_context.reasoning_effort,
@@ -320,14 +320,14 @@ async fn update_thread_memory_after_turn(
         }
     };
 
-    if output.trace_summary.trim().is_empty() && output.memory_summary.trim().is_empty() {
+    if output.raw_memory.trim().is_empty() && output.memory_summary.trim().is_empty() {
         return;
     }
 
     state_db::upsert_thread_memory(
         Some(db.as_ref()),
         thread_id,
-        output.trace_summary.trim(),
+        output.raw_memory.trim(),
         output.memory_summary.trim(),
         "thread_memory_trace_summarize",
     )

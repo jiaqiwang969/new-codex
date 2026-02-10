@@ -784,7 +784,14 @@ impl App {
         Ok(())
     }
 
-    fn open_agent_picker(&mut self) {
+    async fn open_agent_picker(&mut self) {
+        let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        for thread_id in thread_ids {
+            if self.server.get_thread(thread_id).await.is_err() {
+                self.thread_event_channels.remove(&thread_id);
+            }
+        }
+
         if self.thread_event_channels.is_empty() {
             self.chat_widget
                 .add_info_message("No agents available yet.".to_string(), None);
@@ -1568,46 +1575,57 @@ impl App {
                 self.chat_widget
                     .add_plain_history_lines(vec!["/fork".magenta().into()]);
                 if let Some(path) = self.chat_widget.rollout_path() {
-                    match self
-                        .server
-                        .fork_thread(usize::MAX, self.config.clone(), path.clone())
-                        .await
-                    {
-                        Ok(forked) => {
-                            self.shutdown_current_thread().await;
-                            let init = self.chatwidget_init_for_forked_or_resumed_thread(
-                                tui,
-                                self.config.clone(),
-                            );
-                            self.chat_widget = ChatWidget::new_from_existing(
-                                init,
-                                forked.thread,
-                                forked.session_configured,
-                            );
-                            self.reset_thread_event_state();
-                            if let Some(summary) = summary {
-                                let mut lines: Vec<Line<'static>> =
-                                    vec![summary.usage_line.clone().into()];
-                                if let Some(command) = summary.resume_command {
-                                    let spans = vec![
-                                        "To continue this session, run ".into(),
-                                        command.cyan(),
-                                    ];
-                                    lines.push(spans.into());
+                    // Fresh threads expose a precomputed path, but the file is
+                    // materialized lazily on first user message.
+                    if path.exists() {
+                        match self
+                            .server
+                            .fork_thread(usize::MAX, self.config.clone(), path.clone())
+                            .await
+                        {
+                            Ok(forked) => {
+                                self.shutdown_current_thread().await;
+                                let init = self.chatwidget_init_for_forked_or_resumed_thread(
+                                    tui,
+                                    self.config.clone(),
+                                );
+                                self.chat_widget = ChatWidget::new_from_existing(
+                                    init,
+                                    forked.thread,
+                                    forked.session_configured,
+                                );
+                                self.reset_thread_event_state();
+                                if let Some(summary) = summary {
+                                    let mut lines: Vec<Line<'static>> =
+                                        vec![summary.usage_line.clone().into()];
+                                    if let Some(command) = summary.resume_command {
+                                        let spans = vec![
+                                            "To continue this session, run ".into(),
+                                            command.cyan(),
+                                        ];
+                                        lines.push(spans.into());
+                                    }
+                                    self.chat_widget.add_plain_history_lines(lines);
                                 }
-                                self.chat_widget.add_plain_history_lines(lines);
+                            }
+                            Err(err) => {
+                                let path_display = path.display();
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to fork current session from {path_display}: {err}"
+                                ));
                             }
                         }
-                        Err(err) => {
-                            let path_display = path.display();
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to fork current session from {path_display}: {err}"
-                            ));
-                        }
+                    } else {
+                        self.chat_widget.add_error_message(
+                            "A thread must contain at least one turn before it can be forked."
+                                .to_string(),
+                        );
                     }
                 } else {
-                    self.chat_widget
-                        .add_error_message("Current session is not ready to fork yet.".to_string());
+                    self.chat_widget.add_error_message(
+                        "A thread must contain at least one turn before it can be forked."
+                            .to_string(),
+                    );
                 }
 
                 tui.frame_requester().schedule_frame();
@@ -1715,8 +1733,8 @@ impl App {
             AppEvent::RateLimitSnapshotFetched(snapshot) => {
                 self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
             }
-            AppEvent::ConnectorsLoaded(result) => {
-                self.chat_widget.on_connectors_loaded(result);
+            AppEvent::ConnectorsLoaded { result, is_final } => {
+                self.chat_widget.on_connectors_loaded(result, is_final);
             }
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
@@ -2279,7 +2297,7 @@ impl App {
                 self.chat_widget.open_approvals_popup();
             }
             AppEvent::OpenAgentPicker => {
-                self.open_agent_picker();
+                self.open_agent_picker().await;
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread(tui, thread_id).await?;
@@ -2468,6 +2486,7 @@ impl App {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                network_proxy: None,
                 rollout_path: thread.rollout_path(),
             }),
         };
@@ -2943,6 +2962,19 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn open_agent_picker_prunes_missing_threads() -> Result<()> {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(1));
+
+        app.open_agent_picker().await;
+
+        assert_eq!(app.thread_event_channels.contains_key(&thread_id), false);
+        Ok(())
+    }
+
     async fn make_test_app() -> App {
         let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
         let config = chat_widget.config_ref().clone();
@@ -3339,6 +3371,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                network_proxy: None,
                 rollout_path: Some(PathBuf::new()),
             };
             Arc::new(new_session_info(
@@ -3393,6 +3426,7 @@ mod tests {
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
+                network_proxy: None,
                 rollout_path: Some(PathBuf::new()),
             }),
         });
@@ -3439,6 +3473,7 @@ mod tests {
             history_log_id: 0,
             history_entry_count: 0,
             initial_messages: None,
+            network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         };
 

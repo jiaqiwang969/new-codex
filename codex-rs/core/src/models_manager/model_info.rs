@@ -1,14 +1,14 @@
-use codex_protocol::config_types::Verbosity;
-use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
-use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
+use codex_protocol::openai_models::ApplyPatchToolType;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
@@ -82,6 +82,11 @@ macro_rules! model_info {
         model
     }};
 }
+const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+const LOCAL_FRIENDLY_TEMPLATE: &str =
+    "You optimize for team morale and being a supportive teammate as much as code quality.";
+const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 
 pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> ModelInfo {
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries {
@@ -115,6 +120,87 @@ pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> Mo
     }
 
     model
+}
+
+
+/// Returns reasoning effort presets for Low, Medium, High.
+fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {
+    vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "Fast responses with lighter reasoning".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for complex problems".to_string(),
+        },
+    ]
+}
+
+/// Returns reasoning effort presets for Low, Medium, High, XHigh.
+fn supported_reasoning_level_low_medium_high_xhigh() -> Vec<ReasoningEffortPreset> {
+    vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "Fast responses with lighter reasoning".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for complex problems".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::XHigh,
+            description: "Extra high reasoning depth for complex problems".to_string(),
+        },
+    ]
+}
+
+/// Returns reasoning effort presets for Low, Medium, High (non-codex models).
+fn supported_reasoning_level_low_medium_high_non_codex() -> Vec<ReasoningEffortPreset> {
+    vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "Fast responses with lighter reasoning".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for complex problems".to_string(),
+        },
+    ]
+}
+
+/// Returns reasoning effort presets for Low, Medium, High, XHigh (non-codex models).
+fn supported_reasoning_level_low_medium_high_xhigh_non_codex() -> Vec<ReasoningEffortPreset> {
+    vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "Fast responses with lighter reasoning".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for complex problems".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::XHigh,
+            description: "Extra high reasoning depth for complex problems".to_string(),
+        },
+    ]
 }
 
 // todo(aibrahim): remove most of the entries here when enabling models.json
@@ -381,80 +467,20 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
     }
 }
 
-fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-    ]
-}
-
-fn supported_reasoning_level_low_medium_high_non_codex() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Balances speed with some reasoning; useful for straightforward queries and short explanations".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Provides a solid balance of reasoning depth and latency for general-purpose tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
-        },
-    ]
-}
-
-fn supported_reasoning_level_low_medium_high_xhigh() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::XHigh,
-            description: "Extra high reasoning depth for complex problems".to_string(),
-        },
-    ]
-}
-
-fn supported_reasoning_level_low_medium_high_xhigh_non_codex() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Balances speed with some reasoning; useful for straightforward queries and short explanations".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Provides a solid balance of reasoning depth and latency for general-purpose tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::XHigh,
-            description: "Extra high reasoning for complex problems".to_string(),
-        },
-    ]
+fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {
+    match slug {
+        "gpt-5.2-codex" | "exp-codex-personality" => Some(ModelMessages {
+            instructions_template: Some(format!(
+                "{DEFAULT_PERSONALITY_HEADER}\n\n{PERSONALITY_PLACEHOLDER}\n\n{BASE_INSTRUCTIONS}"
+            )),
+            instructions_variables: Some(ModelInstructionsVariables {
+                personality_default: Some(String::new()),
+                personality_friendly: Some(LOCAL_FRIENDLY_TEMPLATE.to_string()),
+                personality_pragmatic: Some(LOCAL_PRAGMATIC_TEMPLATE.to_string()),
+            }),
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

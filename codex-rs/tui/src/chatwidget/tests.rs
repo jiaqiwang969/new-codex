@@ -164,6 +164,7 @@ async fn resumed_initial_messages_render_history() {
                 message: "assistant reply".to_string(),
             }),
         ]),
+        network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
 
@@ -226,6 +227,7 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
             text_elements: text_elements.clone(),
             local_images: local_images.clone(),
         })]),
+        network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
 
@@ -338,6 +340,7 @@ async fn submission_preserves_text_elements_and_local_images() {
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: None,
+        network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
     chat.handle_codex_event(Event {
@@ -417,6 +420,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: None,
+        network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
     chat.handle_codex_event(Event {
@@ -434,6 +438,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             short_description: None,
             interface: None,
             dependencies: None,
+            policy: None,
             path: repo_skill_path,
             scope: SkillScope::Repo,
         },
@@ -443,6 +448,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             short_description: None,
             interface: None,
             dependencies: None,
+            policy: None,
             path: user_skill_path.clone(),
             scope: SkillScope::User,
         },
@@ -1074,6 +1080,7 @@ async fn make_chatwidget_manual(
         agent_turn_running: false,
         mcp_startup_status: None,
         connectors_cache: ConnectorsCacheState::default(),
+        connectors_prefetch_in_flight: false,
         interrupts: InterruptManager::new(),
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
@@ -1105,6 +1112,7 @@ async fn make_chatwidget_manual(
         feedback_audience: FeedbackAudience::External,
         current_rollout_path: None,
         current_cwd: None,
+        session_network_proxy: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         status_line_branch: None,
         status_line_branch_cwd: None,
@@ -2977,6 +2985,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         history_log_id: 0,
         history_entry_count: 0,
         initial_messages: None,
+        network_proxy: None,
         rollout_path: None,
     };
     chat.handle_codex_event(Event {
@@ -3221,6 +3230,22 @@ async fn slash_exit_requests_exit() {
     chat.dispatch_command(SlashCommand::Exit);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::Exit(ExitMode::ShutdownFirst)));
+}
+
+#[tokio::test]
+async fn slash_clean_submits_background_terminal_cleanup() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::Clean);
+
+    assert_matches!(op_rx.try_recv(), Ok(Op::CleanBackgroundTerminals));
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected cleanup confirmation message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Stopping all background terminals."),
+        "expected cleanup confirmation, got {rendered:?}"
+    );
 }
 
 #[tokio::test]
@@ -3673,6 +3698,74 @@ fn render_bottom_popup(chat: &ChatWidget, width: u16) -> String {
     }
 
     lines.join("\n")
+}
+
+#[tokio::test]
+async fn apps_popup_refreshes_when_connectors_snapshot_updates() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.features.enable(Feature::Apps);
+    chat.bottom_pane.set_connectors_enabled(true);
+
+    chat.on_connectors_loaded(
+        Ok(ConnectorsSnapshot {
+            connectors: vec![codex_chatgpt::connectors::AppInfo {
+                id: "connector_1".to_string(),
+                name: "Notion".to_string(),
+                description: Some("Workspace docs".to_string()),
+                logo_url: None,
+                logo_url_dark: None,
+                distribution_channel: None,
+                install_url: Some("https://example.test/notion".to_string()),
+                is_accessible: true,
+            }],
+        }),
+        false,
+    );
+    chat.add_connectors_output();
+
+    let before = render_bottom_popup(&chat, 80);
+    assert!(
+        before.contains("Installed 1 of 1 available apps."),
+        "expected initial apps popup snapshot, got:\n{before}"
+    );
+
+    chat.on_connectors_loaded(
+        Ok(ConnectorsSnapshot {
+            connectors: vec![
+                codex_chatgpt::connectors::AppInfo {
+                    id: "connector_1".to_string(),
+                    name: "Notion".to_string(),
+                    description: Some("Workspace docs".to_string()),
+                    logo_url: None,
+                    logo_url_dark: None,
+                    distribution_channel: None,
+                    install_url: Some("https://example.test/notion".to_string()),
+                    is_accessible: true,
+                },
+                codex_chatgpt::connectors::AppInfo {
+                    id: "connector_2".to_string(),
+                    name: "Linear".to_string(),
+                    description: Some("Project tracking".to_string()),
+                    logo_url: None,
+                    logo_url_dark: None,
+                    distribution_channel: None,
+                    install_url: Some("https://example.test/linear".to_string()),
+                    is_accessible: true,
+                },
+            ],
+        }),
+        true,
+    );
+
+    let after = render_bottom_popup(&chat, 80);
+    assert!(
+        after.contains("Installed 2 of 2 available apps."),
+        "expected refreshed apps popup snapshot, got:\n{after}"
+    );
+    assert!(
+        after.contains("Linear"),
+        "expected refreshed popup to include new connector, got:\n{after}"
+    );
 }
 
 #[tokio::test]
@@ -4540,6 +4633,42 @@ async fn interrupt_clears_unified_exec_processes() {
 }
 
 #[tokio::test]
+async fn review_ended_keeps_unified_exec_processes() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    begin_unified_exec_startup(&mut chat, "call-1", "process-1", "sleep 5");
+    begin_unified_exec_startup(&mut chat, "call-2", "process-2", "sleep 6");
+    assert_eq!(chat.unified_exec_processes.len(), 2);
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnAborted(codex_core::protocol::TurnAbortedEvent {
+            reason: TurnAbortReason::ReviewEnded,
+        }),
+    });
+
+    assert_eq!(chat.unified_exec_processes.len(), 2);
+
+    chat.add_ps_output();
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined.contains("Background terminals"),
+        "expected /ps to remain available after review-ended abort; got {combined:?}"
+    );
+    assert!(
+        combined.contains("sleep 5") && combined.contains("sleep 6"),
+        "expected /ps to list running unified exec processes; got {combined:?}"
+    );
+
+    let _ = drain_insert_history(&mut rx);
+}
+
+#[tokio::test]
 async fn interrupt_clears_unified_exec_wait_streak_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 
@@ -4573,7 +4702,7 @@ async fn interrupt_clears_unified_exec_wait_streak_snapshot() {
 }
 
 #[tokio::test]
-async fn turn_complete_clears_unified_exec_processes() {
+async fn turn_complete_keeps_unified_exec_processes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 
     begin_unified_exec_startup(&mut chat, "call-1", "process-1", "sleep 5");
@@ -4587,7 +4716,23 @@ async fn turn_complete_clears_unified_exec_processes() {
         }),
     });
 
-    assert!(chat.unified_exec_processes.is_empty());
+    assert_eq!(chat.unified_exec_processes.len(), 2);
+
+    chat.add_ps_output();
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined.contains("Background terminals"),
+        "expected /ps to remain available after turn complete; got {combined:?}"
+    );
+    assert!(
+        combined.contains("sleep 5") && combined.contains("sleep 6"),
+        "expected /ps to list running unified exec processes; got {combined:?}"
+    );
 
     let _ = drain_insert_history(&mut rx);
 }

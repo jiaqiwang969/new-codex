@@ -28,6 +28,10 @@
 //!
 //! # Submission and Prompt Expansion
 //!
+//! When steer is enabled, `Enter` submits immediately. `Tab` requests queuing while a task is
+//! running; if no task is running, `Tab` submits just like Enter so input is never dropped.
+//! `Tab` does not submit when entering a `!` shell command.
+//!
 //! On submit/queue paths, the composer:
 //!
 //! - Expands pending paste placeholders so element ranges align with the final text.
@@ -421,6 +425,7 @@ impl ChatComposer {
 
     pub fn set_connector_mentions(&mut self, connectors_snapshot: Option<ConnectorsSnapshot>) {
         self.connectors_snapshot = connectors_snapshot;
+        self.sync_popups();
     }
 
     pub(crate) fn take_mention_bindings(&mut self) -> Vec<MentionBinding> {
@@ -443,7 +448,8 @@ impl ChatComposer {
     /// Enables or disables "Steer" behavior for submission keys.
     ///
     /// When steer is enabled, `Enter` produces [`InputResult::Submitted`] (send immediately) and
-    /// `Tab` produces [`InputResult::Queued`] (eligible to queue if a task is running).
+    /// `Tab` produces [`InputResult::Queued`] when a task is running; otherwise it submits
+    /// immediately. `Tab` does not submit when the input is a `!` shell command.
     /// When steer is disabled, `Enter` produces [`InputResult::Queued`], preserving the default
     /// "queue while a task is running" behavior.
     pub fn set_steer_enabled(&mut self, enabled: bool) {
@@ -540,12 +546,7 @@ impl ChatComposer {
         };
         // Persistent ↑/↓ history is text-only (backwards-compatible and avoids persisting
         // attachments), but local in-session ↑/↓ history can rehydrate elements and image paths.
-        self.set_text_content_with_mention_bindings(
-            entry.text,
-            entry.text_elements,
-            entry.local_image_paths,
-            entry.mention_bindings,
-        );
+        self.apply_history_entry(entry);
         true
     }
 
@@ -837,6 +838,7 @@ impl ChatComposer {
             .iter()
             .map(|img| img.path.clone())
             .collect();
+        let pending_pastes = std::mem::take(&mut self.pending_pastes);
         let mention_bindings = self.snapshot_mention_bindings();
         self.set_text_content(String::new(), Vec::new(), Vec::new());
         self.history.reset_navigation();
@@ -845,6 +847,7 @@ impl ChatComposer {
             text_elements,
             local_image_paths,
             mention_bindings,
+            pending_pastes,
         });
         Some(previous)
     }
@@ -852,6 +855,23 @@ impl ChatComposer {
     /// Get the current composer text.
     pub(crate) fn current_text(&self) -> String {
         self.textarea.text().to_string()
+    }
+
+    fn apply_history_entry(&mut self, entry: HistoryEntry) {
+        let HistoryEntry {
+            text,
+            text_elements,
+            local_image_paths,
+            mention_bindings,
+            pending_pastes,
+        } = entry;
+        self.set_text_content_with_mention_bindings(
+            text,
+            text_elements,
+            local_image_paths,
+            mention_bindings,
+        );
+        self.set_pending_pastes(pending_pastes);
     }
 
     pub(crate) fn text_elements(&self) -> Vec<TextElement> {
@@ -1525,7 +1545,11 @@ impl ChatComposer {
 
     fn is_image_path(path: &str) -> bool {
         let lower = path.to_ascii_lowercase();
-        lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+        lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".gif")
+            || lower.ends_with(".webp")
     }
 
     fn trim_text_elements(
@@ -2065,6 +2089,7 @@ impl ChatComposer {
                 text_elements: text_elements.clone(),
                 local_image_paths,
                 mention_bindings: original_mention_bindings,
+                pending_pastes: Vec::new(),
             });
         }
         self.pending_pastes.clear();
@@ -2352,12 +2377,7 @@ impl ChatComposer {
                         _ => unreachable!(),
                     };
                     if let Some(entry) = replace_entry {
-                        self.set_text_content_with_mention_bindings(
-                            entry.text,
-                            entry.text_elements,
-                            entry.local_image_paths,
-                            entry.mention_bindings,
-                        );
+                        self.apply_history_entry(entry);
                         return (InputResult::None, true);
                     }
                 }
@@ -2368,7 +2388,17 @@ impl ChatComposer {
                 modifiers: KeyModifiers::NONE,
                 kind: KeyEventKind::Press,
                 ..
-            } if self.is_task_running => self.handle_submission(true),
+            } if self.steer_enabled && !self.is_bang_shell_command() => {
+                self.handle_submission(self.is_task_running)
+            }
+            KeyEvent {
+                code: KeyCode::Tab,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                ..
+            } if self.is_task_running && !self.is_bang_shell_command() => {
+                self.handle_submission(true)
+            }
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
@@ -2379,6 +2409,10 @@ impl ChatComposer {
             }
             input => self.handle_input_basic(input),
         }
+    }
+
+    fn is_bang_shell_command(&self) -> bool {
+        self.textarea.text().trim_start().starts_with('!')
     }
 
     /// Applies any due `PasteBurst` flush at time `now`.
@@ -3130,12 +3164,20 @@ impl ChatComposer {
         }
     }
 
-    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
+    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) -> bool {
+        if self.status_line_value == status_line {
+            return false;
+        }
         self.status_line_value = status_line;
+        true
     }
 
-    pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) {
+    pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) -> bool {
+        if self.status_line_enabled == enabled {
+            return false;
+        }
         self.status_line_enabled = enabled;
+        true
     }
 }
 
@@ -4057,8 +4099,118 @@ mod tests {
 
         assert_eq!(
             composer.history.navigate_up(&composer.app_event_tx),
-            Some(HistoryEntry::from_text("draft text".to_string()))
+            Some(HistoryEntry::new("draft text".to_string()))
         );
+    }
+
+    #[test]
+    fn clear_for_ctrl_c_preserves_pending_paste_history_entry() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let large = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+        composer.handle_paste(large.clone());
+        let char_count = large.chars().count();
+        let placeholder = format!("[Pasted Content {char_count} chars]");
+        assert_eq!(composer.textarea.text(), placeholder);
+        assert_eq!(
+            composer.pending_pastes,
+            vec![(placeholder.clone(), large.clone())]
+        );
+
+        composer.clear_for_ctrl_c();
+        assert!(composer.is_empty());
+
+        let history_entry = composer
+            .history
+            .navigate_up(&composer.app_event_tx)
+            .expect("expected history entry");
+        let text_elements = vec![TextElement::new(
+            (0..placeholder.len()).into(),
+            Some(placeholder.clone()),
+        )];
+        assert_eq!(
+            history_entry,
+            HistoryEntry::with_pending(
+                placeholder.clone(),
+                text_elements,
+                Vec::new(),
+                vec![(placeholder.clone(), large.clone())]
+            )
+        );
+
+        composer.apply_history_entry(history_entry);
+        assert_eq!(composer.textarea.text(), placeholder);
+        assert_eq!(composer.pending_pastes, vec![(placeholder.clone(), large)]);
+        assert_eq!(composer.textarea.element_payloads(), vec![placeholder]);
+
+        composer.set_steer_enabled(true);
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match result {
+            InputResult::Submitted {
+                text,
+                text_elements,
+            } => {
+                assert_eq!(text, "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5));
+                assert!(text_elements.is_empty());
+            }
+            _ => panic!("expected Submitted"),
+        }
+    }
+
+    #[test]
+    fn clear_for_ctrl_c_preserves_image_draft_state() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let path = PathBuf::from("example.png");
+        composer.attach_image(path.clone());
+        let placeholder = local_image_label_text(1);
+
+        composer.clear_for_ctrl_c();
+        assert!(composer.is_empty());
+
+        let history_entry = composer
+            .history
+            .navigate_up(&composer.app_event_tx)
+            .expect("expected history entry");
+        let text_elements = vec![TextElement::new(
+            (0..placeholder.len()).into(),
+            Some(placeholder.clone()),
+        )];
+        assert_eq!(
+            history_entry,
+            HistoryEntry::with_pending(
+                placeholder.clone(),
+                text_elements,
+                vec![path.clone()],
+                Vec::new()
+            )
+        );
+
+        composer.apply_history_entry(history_entry);
+        assert_eq!(composer.textarea.text(), placeholder);
+        assert_eq!(composer.local_image_paths(), vec![path]);
+        assert_eq!(composer.textarea.element_payloads(), vec![placeholder]);
     }
 
     /// Behavior: `?` toggles the shortcut overlay only when the composer is otherwise empty. After
@@ -4147,6 +4299,43 @@ mod tests {
 
         assert_eq!(composer.textarea.text(), "hi?there");
         assert_ne!(composer.footer_mode, FooterMode::ShortcutOverlay);
+    }
+
+    #[test]
+    fn set_connector_mentions_refreshes_open_mention_popup() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_connectors_enabled(true);
+        composer.set_text_content("$".to_string(), Vec::new(), Vec::new());
+        assert!(matches!(composer.active_popup, ActivePopup::None));
+
+        let connectors = vec![AppInfo {
+            id: "connector_1".to_string(),
+            name: "Notion".to_string(),
+            description: Some("Workspace docs".to_string()),
+            logo_url: None,
+            logo_url_dark: None,
+            distribution_channel: None,
+            install_url: Some("https://example.test/notion".to_string()),
+            is_accessible: true,
+        }];
+        composer.set_connector_mentions(Some(ConnectorsSnapshot { connectors }));
+
+        let ActivePopup::Skill(popup) = &composer.active_popup else {
+            panic!("expected mention popup to open after connectors update");
+        };
+        let mention = popup
+            .selected_mention()
+            .expect("expected connector mention to be selected");
+        assert_eq!(mention.insert_text, "$notion".to_string());
+        assert_eq!(mention.path, Some("app://connector_1".to_string()));
     }
 
     #[test]
@@ -5255,6 +5444,65 @@ mod tests {
         let elements = composer.textarea.text_elements();
         assert_eq!(text, "x/review ");
         assert!(elements.is_empty());
+    }
+
+    #[test]
+    fn tab_submits_when_no_task_running_in_steer_mode() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_steer_enabled(true);
+
+        type_chars_humanlike(&mut composer, &['h', 'i']);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert!(matches!(
+            result,
+            InputResult::Submitted { ref text, .. } if text == "hi"
+        ));
+        assert!(composer.textarea.is_empty());
+    }
+
+    #[test]
+    fn tab_does_not_submit_for_bang_shell_command_in_steer_mode() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.set_steer_enabled(true);
+        composer.set_task_running(false);
+
+        type_chars_humanlike(&mut composer, &['!', 'l', 's']);
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert!(matches!(result, InputResult::None));
+        assert!(
+            composer.textarea.text().starts_with("!ls"),
+            "expected Tab not to submit or clear a `!` command"
+        );
     }
 
     #[test]
@@ -7479,6 +7727,34 @@ mod tests {
 
         assert_eq!(composer.current_text(), "No images here".to_string());
         assert!(composer.attached_images.is_empty());
+    }
+
+    #[test]
+    fn apply_external_edit_renumbers_image_placeholders() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        let first_path = PathBuf::from("img1.png");
+        let second_path = PathBuf::from("img2.png");
+        composer.attach_image(first_path);
+        composer.attach_image(second_path.clone());
+
+        let placeholder2 = local_image_label_text(2);
+        composer.apply_external_edit(format!("Keep {placeholder2}"));
+
+        let placeholder1 = local_image_label_text(1);
+        assert_eq!(composer.current_text(), format!("Keep {placeholder1}"));
+        assert_eq!(composer.attached_images.len(), 1);
+        assert_eq!(composer.attached_images[0].placeholder, placeholder1);
+        assert_eq!(composer.local_image_paths(), vec![second_path]);
+        assert_eq!(composer.textarea.element_payloads(), vec![placeholder1]);
     }
 
     #[test]
