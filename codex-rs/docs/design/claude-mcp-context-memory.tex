@@ -37,7 +37,7 @@
 \begin{abstract}
 当前我们在 Codex 中集成了一个 \texttt{claude\_code} 的 MCP 工具：当提示词中“呼唤 Claude 做事情”时，Codex 会转发调用到 Claude CLI 侧执行。但 MCP 调用默认只携带该次工具参数（prompt/workFolder 等），\textbf{不会自动携带当前 session 的历史上下文}，因此 Claude 很容易在缺少前情的情况下做出偏差实现。
 
-本文从第一性原理出发，给出一套“\textbf{调用时上下文注入（Context Packet）} + \textbf{跨会话持久记忆（SQLite thread\_memory）}”的组合方案，并说明其与 Codex 官方方向（\texttt{get\_memory} 工具 + SQLite）如何对齐，以及如何验证/迭代。本文同时记录截至 \textbf{2026-02-09} 的落地实现现状与后续里程碑。
+本文从第一性原理出发，给出一套“\textbf{调用时上下文注入（Context Packet）} + \textbf{跨会话持久记忆（SQLite thread\_memory）}”的组合方案，并说明其与 Codex 官方方向（\texttt{get\_memory} 工具 + SQLite）如何对齐，以及如何验证/迭代。本文同时记录截至 \textbf{2026-02-10} 的落地实现现状与后续里程碑。
 \end{abstract}
 
 \tableofcontents
@@ -212,7 +212,7 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
   \item 预算控制：trace item 数量与字节数上限（避免超长与高成本）。
 \end{itemize}
 
-\section{实现进展（截至 2026-02-09）}
+\section{实现进展（截至 2026-02-10）}
 \begin{enumerate}[nosep]
   \item SessionBar / Resume：Enter 触发真正的 resume 并回放历史消息，修复“进入历史 session 但无内容”的问题。
   \item Claude MCP Context Packet：
@@ -222,6 +222,7 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
     \end{itemize}
   \item Thread Memory 自动写入链路：turn 完成 + compaction 后写入 thread\_memory，并通过 \texttt{get\_memory} 可读回。
   \item Context Packet Builder：抽成可复用组件，并复用于 \texttt{spawn\_agent} 的初始消息（让 Codex 内部 sub-agent 也能拿到同一份上下文/记忆摘要）。
+  \item Agent Worktrees / Resume-Clone：Fork 会话与 Spawned Agent 可选使用隔离 git worktree，并将 thread\_id \textrightarrow worktree 的映射持久化为 lease；resume 进入历史会话时自动切回对应 worktree，且在 worktree 缺失时可自动重建。
 \end{enumerate}
 
 \subsection{内容约束（记忆的“正确粒度”）}
@@ -240,6 +241,45 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
 \end{itemize}
 
 解决思路：把 SessionBar 的 Enter 动作映射到 ``ResumeSession(path)，由 App 统一走 \texttt{resume\_thread\_from\_rollout}。
+
+\section{Agent Worktrees / Resume-Clone：多 Agent 协作的工作区隔离}
+\subsection{问题：共享工作区会导致协作互相污染}
+当 Codex 同时驱动多个 Agent（例如：主线程 + Claude MCP + Spawned Agent），如果它们共享同一个工作区：
+\begin{itemize}[nosep]
+  \item 改动会互相覆盖：不同 agent 的未提交变更混在一起，难以归因与回滚；
+  \item 进入历史 session 时，\textbf{“正确的工作目录/分支上下文”无法复原}：即使 transcript 能 resume，代码视角也可能已经不在当时的 checkout。
+\end{itemize}
+从第一性原理看：\textbf{线程（thread）不仅是对话状态，也是“执行环境状态”的边界}；因此需要隔离执行环境。
+
+\subsection{解决：每个 thread 一个 worktree + lease 映射}
+采用 git worktree 实现轻量隔离（非完整 clone），对每个 Forked Session / Spawned Agent：
+\begin{itemize}[nosep]
+  \item 创建 worktree 路径：\texttt{<repo>/.codex/worktrees/\{fork|agent\}/<uuid>}；
+  \item 创建并绑定分支：\texttt{codex/\{fork|agent\}/<uuid>}；
+  \item 写入 lease：\texttt{<repo>/.codex/leases/<thread\_id>.json}，记录：
+    \begin{itemize}[nosep]
+      \item thread\_id、parent\_thread\_id；
+      \item worktree\_path、branch、purpose；
+      \item created\_at/updated\_at、pid 等元信息。
+    \end{itemize}
+\end{itemize}
+这样，Codex 可以把“对话线程”与“代码工作区”做稳定绑定。
+
+\subsection{恢复：resume 时切回 worktree；缺失则自动重建}
+当用户在 SessionBar 中 resume 进入历史 thread 时：
+\begin{itemize}[nosep]
+  \item 若存在 lease：将 thread 的 cwd 切换到 \texttt{lease.worktree\_path}；
+  \item 若 worktree 目录已被清理/丢失：执行 \texttt{git worktree prune} + \texttt{git worktree add --force <path> <branch>} 复原；
+  \item 复原后再从 rollout 重建 transcript（使“代码上下文 + 对话上下文”一致）。
+\end{itemize}
+
+\subsection{调试工具（Debug CLI）}
+为支持排障与人工恢复，增加 debug 命令：
+\begin{lstlisting}
+codex debug agent-worktrees list [--json]
+codex debug agent-worktrees ensure --thread <SESSION_ID>
+codex debug agent-worktrees ensure --all
+\end{lstlisting}
 
 \section{安全与隐私}
 \begin{itemize}[nosep]
