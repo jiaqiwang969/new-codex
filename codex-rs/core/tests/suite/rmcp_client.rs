@@ -101,6 +101,12 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
                 .mcp_servers
                 .set(servers)
                 .expect("test mcp servers should accept any configuration");
+            config.project_doc_max_bytes = 32 * 1024;
+            std::fs::write(
+                config.cwd.join("AGENTS.override.md"),
+                "test user instructions: follow AGENTS.md",
+            )
+            .expect("should write test AGENTS.md");
         })
         .build(&server)
         .await?;
@@ -223,6 +229,12 @@ async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<(
                 .mcp_servers
                 .set(servers)
                 .expect("test mcp servers should accept any configuration");
+            config.project_doc_max_bytes = 32 * 1024;
+            std::fs::write(
+                config.cwd.join("AGENTS.override.md"),
+                "test user instructions: follow AGENTS.md",
+            )
+            .expect("should write test AGENTS.md");
         })
         .build(&server)
         .await?;
@@ -265,6 +277,10 @@ async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<(
     assert!(
         context.contains(&expected_working_dir),
         "context should include working dir. expected substring={expected_working_dir:?} actual={context:?}"
+    );
+    assert!(
+        context.contains("test user instructions: follow AGENTS.md"),
+        "context should include user instructions. actual={context:?}"
     );
 
     server.verify().await;

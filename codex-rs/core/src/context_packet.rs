@@ -16,6 +16,7 @@ pub(crate) struct ContextPacketConfig {
     pub(crate) max_message_bytes: usize,
     pub(crate) max_trace_summary_bytes: usize,
     pub(crate) max_memory_summary_bytes: usize,
+    pub(crate) max_user_instructions_bytes: usize,
     pub(crate) max_session_summary_bytes: usize,
     pub(crate) max_project_memories: usize,
     pub(crate) max_project_memory_summary_bytes: usize,
@@ -32,6 +33,7 @@ pub(crate) const CLAUDE_CODE_CONTEXT_PACKET_CONFIG: ContextPacketConfig = Contex
     max_message_bytes: 1_000,
     max_trace_summary_bytes: 1_600,
     max_memory_summary_bytes: 1_600,
+    max_user_instructions_bytes: 3_200,
     max_session_summary_bytes: 3_200,
     max_project_memories: 3,
     max_project_memory_summary_bytes: 800,
@@ -48,6 +50,17 @@ pub(crate) async fn build_context_packet(
 
     let mut sections = Vec::new();
     sections.push(format!("Working directory: {}", turn_context.cwd.display()));
+
+    if config.max_user_instructions_bytes > 0
+        && let Some(user_instructions) = turn_context.user_instructions.as_deref()
+    {
+        let user_instructions =
+            truncate_text_bytes(user_instructions.trim(), config.max_user_instructions_bytes);
+        let user_instructions = user_instructions.trim();
+        if !user_instructions.is_empty() {
+            sections.push(format!("User instructions:\n{user_instructions}"));
+        }
+    }
 
     let include_memory_sections =
         sess.state_db().is_some() && turn_context.features.enabled(Feature::MemoryTool);
