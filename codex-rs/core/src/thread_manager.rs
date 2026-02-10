@@ -4,6 +4,7 @@ use crate::CodexAuth;
 #[cfg(any(test, feature = "test-support"))]
 use crate::ModelProviderInfo;
 use crate::agent::AgentControl;
+use crate::agent_worktree;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
 use crate::codex::INITIAL_SUBMIT_ID;
@@ -453,6 +454,27 @@ impl ThreadManagerState {
         session_source: SessionSource,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     ) -> CodexResult<NewThread> {
+        let mut config = config;
+        if let InitialHistory::Resumed(resumed) = &initial_history {
+            match agent_worktree::ensure_worktree_for_thread(
+                &config.cwd,
+                &resumed.conversation_id.to_string(),
+            )
+            .await
+            {
+                Ok(Some(lease)) => {
+                    config.cwd = lease.worktree_path;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        "failed to restore leased worktree for resumed thread {}: {err:#}",
+                        resumed.conversation_id
+                    );
+                }
+            }
+        }
+
         self.file_watcher.register_config(&config);
         let CodexSpawnOk {
             codex, thread_id, ..

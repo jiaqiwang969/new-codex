@@ -113,6 +113,8 @@ pub enum Feature {
     EnableRequestCompression,
     /// Enable collab tools.
     Collab,
+    /// Create isolated git worktrees for forked sessions and spawned agents.
+    AgentWorktrees,
     /// Enable apps.
     Apps,
     /// Allow prompting and installing missing MCP dependencies.
@@ -522,6 +524,16 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Sub-agents",
             menu_description: "Ask Codex to spawn multiple agents to parallelize the work and win in efficiency.",
             announcement: "NEW: Sub-agents can now be spawned by Codex. Enable in /experimental and restart Codex!",
+        },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AgentWorktrees,
+        key: "agent_worktrees",
+        stage: Stage::Experimental {
+            name: "Agent worktrees",
+            menu_description: "Run forks and sub-agents inside isolated git worktrees to avoid cross-agent working tree conflicts.",
+            announcement: "NEW: Agents can now use isolated git worktrees. Enable in /experimental and restart Codex!",
         },
         default_enabled: false,
     },

@@ -88,6 +88,7 @@ impl ToolHandler for CollabHandler {
 mod spawn {
     use super::*;
     use crate::agent::AgentRole;
+    use crate::agent_worktree;
     use crate::context_packet;
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
@@ -103,6 +104,8 @@ mod spawn {
     #[derive(Debug, Serialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        worktree_path: Option<String>,
+        branch: Option<String>,
     }
 
     pub async fn handle(
@@ -138,8 +141,6 @@ mod spawn {
                 .into(),
             )
             .await;
-        let prompt_for_agent =
-            build_spawn_agent_prompt_with_context(session.as_ref(), turn.as_ref(), &prompt).await;
         let mut config = build_agent_spawn_config(
             &session.get_base_instructions().await,
             turn.as_ref(),
@@ -148,6 +149,31 @@ mod spawn {
         agent_role
             .apply_to_config(&mut config)
             .map_err(FunctionCallError::RespondToModel)?;
+
+        let mut worktree = None;
+        if turn.features.enabled(Feature::AgentWorktrees) {
+            worktree = agent_worktree::create_agent_worktree(
+                &config.cwd,
+                agent_worktree::WorktreePurpose::SpawnedAgent,
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to create isolated agent worktree: {err}"
+                ))
+            })?;
+            if let Some(worktree) = worktree.as_ref() {
+                config.cwd = worktree.path.clone();
+            }
+        }
+
+        let prompt_for_agent = build_spawn_agent_prompt_with_context(
+            session.as_ref(),
+            turn.as_ref(),
+            &prompt,
+            worktree.as_ref(),
+        )
+        .await;
 
         let result = session
             .services
@@ -159,6 +185,11 @@ mod spawn {
             )
             .await
             .map_err(collab_spawn_error);
+        if result.is_err()
+            && let Some(worktree) = worktree.as_ref()
+        {
+            let _ = agent_worktree::remove_agent_worktree(worktree).await;
+        }
         let (new_thread_id, status) = match &result {
             Ok(thread_id) => (
                 Some(*thread_id),
@@ -181,8 +212,21 @@ mod spawn {
             .await;
         let new_thread_id = result?;
 
+        if let Some(worktree) = worktree.as_ref() {
+            let lease = agent_worktree::build_lease(
+                &new_thread_id.to_string(),
+                Some(session.conversation_id.to_string()),
+                worktree,
+            );
+            let _ = agent_worktree::write_lease(&lease);
+        }
+
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
+            worktree_path: worktree
+                .as_ref()
+                .map(|worktree| worktree.path.display().to_string()),
+            branch: worktree.as_ref().map(|worktree| worktree.branch.clone()),
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -198,23 +242,32 @@ mod spawn {
         session: &Session,
         turn: &TurnContext,
         prompt: &str,
+        worktree: Option<&agent_worktree::AgentWorktree>,
     ) -> String {
         if prompt_already_has_context_packet(prompt) {
             return prompt.to_string();
         }
 
+        let worktree_block = worktree.map(|worktree| {
+            format!(
+                "Agent worktree:\nPath: {}\nBranch: {}\n\nNote: Commit your changes to the branch above when done.\n\n",
+                worktree.path.display(),
+                worktree.branch
+            )
+        });
         let context = context_packet::build_context_packet(
             session,
             turn,
             context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
         )
         .await;
-        if context.trim().is_empty() {
+        if context.trim().is_empty() && worktree_block.is_none() {
             return prompt.to_string();
         }
 
         format!(
-            "Context packet (from parent session):\n{}\n\nTask:\n{}",
+            "{}Context packet (from parent session):\n{}\n\nTask:\n{}",
+            worktree_block.unwrap_or_default(),
             context.trim(),
             prompt.trim()
         )
