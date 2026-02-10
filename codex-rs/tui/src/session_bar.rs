@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -19,7 +21,6 @@ use crate::key_hint;
 use crate::session_alias_manager::SessionAliasManager;
 use crate::session_utils::SessionInfo;
 use crate::session_utils::get_cwd_sessions_for;
-use crate::session_utils::last_user_snippet;
 use crossterm::event::KeyCode;
 
 /// Bottom session bar (similar to tmux)
@@ -44,13 +45,15 @@ pub struct SessionBar {
     current_session_status: Option<String>,
     /// Cached labels derived from first user message (by path)
     label_cache: HashMap<PathBuf, String>,
+    /// Time when sessions were last refreshed from disk.
+    last_refresh_at: Option<Instant>,
     /// Session alias manager
     alias_manager: SessionAliasManager,
 }
 
 impl SessionBar {
     pub fn new(cwd: PathBuf, codex_home: PathBuf) -> Self {
-        let mut bar = Self {
+        Self {
             codex_home,
             cwd,
             sessions: Vec::new(),
@@ -62,12 +65,9 @@ impl SessionBar {
             current_session_id: None,
             current_session_status: None,
             label_cache: HashMap::new(),
+            last_refresh_at: None,
             alias_manager: SessionAliasManager::load(),
-        };
-
-        // Load sessions on creation
-        bar.refresh_sessions();
-        bar
+        }
     }
 
     /// Update session list and derived labels from a precomputed cache.
@@ -81,31 +81,24 @@ impl SessionBar {
     ) {
         self.loading = false;
         self.error = None;
-
-        // De-duplicate by id (keep the first/newest in the provided order).
-        let mut seen = HashSet::new();
-        let mut deduped = Vec::new();
-        for session in sessions {
-            if seen.insert(session.id.clone()) {
-                deduped.push(session);
-            }
-        }
-
-        self.sessions = deduped;
         self.label_cache = label_cache;
+        self.set_sessions(sessions);
+        self.last_refresh_at = Some(Instant::now());
+    }
 
-        // If current session is in history, select it by default.
-        if let Some(cur) = self.current_session_id.as_ref()
-            && let Some(pos) = self.sessions.iter().position(|s| &s.id == cur)
-        {
-            self.selected_index = pos;
-            self.selected_on_new = false;
+    /// Apply sessions preloaded in the background.
+    ///
+    /// Returns `true` when the preloaded data was accepted.
+    pub fn apply_prefetched_sessions(&mut self, sessions: Vec<SessionInfo>) -> bool {
+        // Ignore stale prefetch results after any foreground refresh.
+        if self.last_refresh_at.is_some() {
+            return false;
         }
-
-        // Keep selection in bounds.
-        if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
-            self.selected_index = self.sessions.len() - 1;
-        }
+        self.loading = false;
+        self.error = None;
+        self.set_sessions(sessions);
+        self.last_refresh_at = Some(Instant::now());
+        true
     }
 
     /// Refresh the session list from disk
@@ -114,45 +107,9 @@ impl SessionBar {
         self.error = None;
 
         match get_cwd_sessions_for(&self.codex_home, &self.cwd) {
-            Ok(mut sessions) => {
-                // De-duplicate by id (keep newest)
-                let mut seen = HashSet::new();
-                sessions.retain(|s| seen.insert(s.id.clone()));
-
-                self.sessions = sessions;
+            Ok(sessions) => {
                 self.loading = false;
-
-                // If current session is in history, select it by default
-                if let Some(cur) = self.current_session_id.as_ref()
-                    && let Some(pos) = self.sessions.iter().position(|s| &s.id == cur)
-                {
-                    self.selected_index = pos;
-                }
-
-                // Keep selection in bounds
-                if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
-                    self.selected_index = self.sessions.len() - 1;
-                }
-
-                // Compute labels lazily for visible sessions (cache by path)
-                for s in &self.sessions {
-                    let must_update = self
-                        .current_session_id
-                        .as_ref()
-                        .map(|id| *id == s.id)
-                        .unwrap_or(false)
-                        || !self.label_cache.contains_key(&s.path);
-                    if must_update && let Some(snippet) = last_user_snippet(&s.path, 5) {
-                        // Unicode-safe truncation to keep bar compact
-                        let short = if snippet.chars().count() > 10 {
-                            let truncated: String = snippet.chars().take(10).collect();
-                            format!("{truncated}…")
-                        } else {
-                            snippet
-                        };
-                        self.label_cache.insert(s.path.clone(), short);
-                    }
-                }
+                self.set_sessions(sessions);
             }
             Err(e) => {
                 self.error = Some(e);
@@ -160,6 +117,17 @@ impl SessionBar {
                 self.sessions.clear();
             }
         }
+        self.last_refresh_at = Some(Instant::now());
+    }
+
+    /// Refresh sessions only when cache is stale.
+    pub fn refresh_sessions_if_stale(&mut self, max_age: Duration) {
+        if let Some(last_refresh) = self.last_refresh_at
+            && last_refresh.elapsed() < max_age
+        {
+            return;
+        }
+        self.refresh_sessions();
     }
 
     /// Get the currently selected session
@@ -217,6 +185,51 @@ impl SessionBar {
     /// Get focus state
     pub fn has_focus(&self) -> bool {
         self.has_focus
+    }
+
+    fn set_sessions(&mut self, mut sessions: Vec<SessionInfo>) {
+        // De-duplicate by id (keep newest).
+        let mut seen = HashSet::new();
+        sessions.retain(|session| seen.insert(session.id.clone()));
+        self.sessions = sessions;
+
+        // Drop labels for removed sessions.
+        let known_paths: HashSet<PathBuf> = self.sessions.iter().map(|s| s.path.clone()).collect();
+        self.label_cache
+            .retain(|path, _| known_paths.contains(path));
+
+        // If current session is in history, select it by default.
+        if let Some(cur) = self.current_session_id.as_ref()
+            && let Some(pos) = self.sessions.iter().position(|s| &s.id == cur)
+        {
+            self.selected_index = pos;
+            self.selected_on_new = false;
+        }
+
+        // Keep selection in bounds.
+        if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
+            self.selected_index = self.sessions.len() - 1;
+        }
+
+        // Labels are extracted while scanning sessions; hydrate cache without extra file IO.
+        for session in &self.sessions {
+            let must_update = session.id == self.current_session_id.as_deref().unwrap_or("")
+                || !self.label_cache.contains_key(&session.path);
+            if must_update {
+                if let Some(snippet) = session.last_user_snippet.as_ref() {
+                    // Unicode-safe truncation to keep bar compact.
+                    let short = if snippet.chars().count() > 10 {
+                        let truncated: String = snippet.chars().take(10).collect();
+                        format!("{truncated}…")
+                    } else {
+                        snippet.clone()
+                    };
+                    self.label_cache.insert(session.path.clone(), short);
+                } else {
+                    self.label_cache.remove(&session.path);
+                }
+            }
+        }
     }
 
     /// Set current session ID

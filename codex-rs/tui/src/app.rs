@@ -104,6 +104,8 @@ use toml::Value as TomlValue;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
+const SESSION_BAR_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const SESSION_BAR_PREFETCH_DELAY: Duration = Duration::from_millis(150);
 /// Baseline cadence for periodic stream commit animation ticks.
 ///
 /// Smooth-mode streaming drains one line per tick, so this interval controls
@@ -1145,6 +1147,34 @@ impl App {
             panel_focus: PanelFocus::Chat,
         };
 
+        // Warm up session bar in the background so Ctrl+P is instant even with
+        // large session history. Delay slightly to avoid competing with startup
+        // initialization (PTY handshake, initial draw).
+        {
+            let tx = app.app_event_tx.clone();
+            let codex_home = app.config.codex_home.clone();
+            let cwd = app.config.cwd.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(SESSION_BAR_PREFETCH_DELAY).await;
+                let sessions = tokio::task::spawn_blocking(move || {
+                    crate::session_utils::get_cwd_sessions_for(codex_home.as_path(), cwd.as_path())
+                        .unwrap_or_default()
+                })
+                .await;
+
+                match sessions {
+                    Ok(sessions) => {
+                        if !sessions.is_empty() {
+                            tx.send(AppEvent::SessionBarPrefetched { sessions });
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "session bar prefetch task failed");
+                    }
+                }
+            });
+        }
+
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
         #[cfg(target_os = "windows")]
         {
@@ -1658,6 +1688,13 @@ impl App {
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
                 self.refresh_status_line();
+            }
+            AppEvent::SessionBarPrefetched { sessions } => {
+                if self.session_bar.apply_prefetched_sessions(sessions)
+                    && self.panel_focus == PanelFocus::Sessions
+                {
+                    tui.frame_requester().schedule_frame();
+                }
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
@@ -2687,7 +2724,8 @@ impl App {
                             .map(std::string::ToString::to_string)
                             .as_deref(),
                     );
-                    self.session_bar.refresh_sessions();
+                    self.session_bar
+                        .refresh_sessions_if_stale(SESSION_BAR_REFRESH_INTERVAL);
                 } else {
                     self.panel_focus = PanelFocus::Chat;
                     self.session_bar.set_focus(false);
@@ -2940,6 +2978,7 @@ mod tests {
                 message_count: 3,
                 last_role: "Assistant".to_string(),
                 model: "gpt-5".to_string(),
+                last_user_snippet: Some("hello world".to_string()),
             }],
             HashMap::new(),
         );
@@ -2963,6 +3002,7 @@ mod tests {
                 message_count: 3,
                 last_role: "Assistant".to_string(),
                 model: "gpt-5".to_string(),
+                last_user_snippet: Some("hello world".to_string()),
             }],
             HashMap::new(),
         );

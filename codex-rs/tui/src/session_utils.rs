@@ -3,10 +3,19 @@
 //! Extracted from the reference project's `cxresume_picker_widget.rs` — only the
 //! minimal set of types and helpers needed by `SessionBar`.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::BufRead;
 use std::path::Path;
 use std::path::PathBuf;
+
+use codex_core::path_utils::write_atomically;
+use serde::Deserialize;
+use serde::Serialize;
+
+const SESSION_BAR_CACHE_FILE: &str = "session_bar_cache.v2.json";
+const SESSION_BAR_CACHE_VERSION: u32 = 2;
 
 /// Simplified session metadata (no TUMIX).
 #[derive(Debug, Clone)]
@@ -19,6 +28,7 @@ pub struct SessionInfo {
     pub message_count: usize,
     pub last_role: String,
     pub model: String,
+    pub last_user_snippet: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -32,12 +42,18 @@ pub fn get_cwd_sessions_for(codex_home: &Path, cwd_raw: &Path) -> Result<Vec<Ses
         .canonicalize()
         .unwrap_or_else(|_| cwd_raw.to_path_buf());
     let sessions_dir = codex_home.join("sessions");
-    let mut sessions = Vec::new();
+    let mut details_cache = load_session_details_cache(codex_home);
+    let mut cache_dirty = false;
+    let mut candidates = Vec::new();
+    let mut seen_paths = HashSet::new();
 
     fn find_sessions(
         dir: &Path,
         cwd: &Path,
-        sessions: &mut Vec<SessionInfo>,
+        details_cache: &mut SessionDetailsCache,
+        candidates: &mut Vec<SessionCandidate>,
+        seen_paths: &mut HashSet<PathBuf>,
+        cache_dirty: &mut bool,
         max_depth: u32,
     ) -> Result<(), String> {
         if max_depth == 0 {
@@ -48,33 +64,75 @@ pub fn get_cwd_sessions_for(codex_home: &Path, cwd_raw: &Path) -> Result<Vec<Ses
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
-                    if let Ok((id, session_cwd, msg_count, last_role, _tokens, model)) =
-                        extract_session_meta(&path)
-                        && should_include_session(&session_cwd, cwd)
+                    seen_paths.insert(path.clone());
+                    let mtime = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    if let Some(cached) = details_cache.entries.get(&path)
+                        && cached.mtime == mtime
                     {
-                        let mtime = entry
-                            .metadata()
-                            .ok()
-                            .and_then(|m| m.modified().ok())
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
+                        if should_include_session(&cached.cwd, cwd) {
+                            candidates.push(SessionCandidate {
+                                id: cached.id.clone(),
+                                path: path.clone(),
+                                cwd: cached.cwd.clone(),
+                                mtime,
+                                model: cached.model.clone(),
+                                cached_details: cached.details.clone(),
+                            });
+                        }
+                        continue;
+                    }
 
-                        let age = format_relative_time(mtime);
+                    let header = match extract_session_header(&path) {
+                        Ok(Some(header)) => header,
+                        Ok(None) | Err(_) => {
+                            if details_cache.entries.remove(&path).is_some() {
+                                *cache_dirty = true;
+                            }
+                            continue;
+                        }
+                    };
 
-                        sessions.push(SessionInfo {
-                            id,
+                    let updated_entry = CachedSessionEntry {
+                        mtime,
+                        id: header.id.clone(),
+                        cwd: header.cwd.clone(),
+                        model: header.model.clone(),
+                        details: None,
+                    };
+                    let previous = details_cache
+                        .entries
+                        .insert(path.clone(), updated_entry.clone());
+                    if previous.as_ref() != Some(&updated_entry) {
+                        *cache_dirty = true;
+                    }
+
+                    if should_include_session(&header.cwd, cwd) {
+                        candidates.push(SessionCandidate {
+                            id: header.id,
                             path: path.clone(),
-                            cwd: session_cwd,
-                            age,
+                            cwd: header.cwd,
                             mtime,
-                            message_count: msg_count,
-                            last_role,
-                            model,
+                            model: header.model,
+                            cached_details: None,
                         });
                     }
                 } else if path.is_dir() {
-                    let _ = find_sessions(path.as_path(), cwd, sessions, max_depth - 1);
+                    let _ = find_sessions(
+                        path.as_path(),
+                        cwd,
+                        details_cache,
+                        candidates,
+                        seen_paths,
+                        cache_dirty,
+                        max_depth - 1,
+                    );
                 }
             }
         }
@@ -82,121 +140,282 @@ pub fn get_cwd_sessions_for(codex_home: &Path, cwd_raw: &Path) -> Result<Vec<Ses
         Ok(())
     }
 
-    find_sessions(&sessions_dir, &cwd, &mut sessions, 4)?;
+    find_sessions(
+        &sessions_dir,
+        &cwd,
+        &mut details_cache,
+        &mut candidates,
+        &mut seen_paths,
+        &mut cache_dirty,
+        4,
+    )?;
+
+    let cache_len_before = details_cache.entries.len();
+    details_cache
+        .entries
+        .retain(|path, _| seen_paths.contains(path));
+    if details_cache.entries.len() != cache_len_before {
+        cache_dirty = true;
+    }
 
     // Sort by modification time (newest first)
-    sessions.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    candidates.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+
+    // Limit to recent 100 sessions before parsing full message history.
+    candidates.truncate(100);
+
+    let mut sessions = Vec::new();
+    for candidate in candidates {
+        let details = if let Some(cached_details) = candidate.cached_details {
+            SessionDetails {
+                message_count: cached_details.message_count,
+                last_role: cached_details.last_role.clone(),
+                last_user_snippet: cached_details.last_user_snippet.clone(),
+            }
+        } else {
+            let details = extract_session_details(&candidate.path);
+            let updated_details = CachedSessionDetails {
+                message_count: details.message_count,
+                last_role: details.last_role.clone(),
+                last_user_snippet: details.last_user_snippet.clone(),
+            };
+
+            if let Some(cached_entry) = details_cache.entries.get_mut(&candidate.path) {
+                if cached_entry.mtime == candidate.mtime
+                    && cached_entry.details.as_ref() != Some(&updated_details)
+                {
+                    cached_entry.details = Some(updated_details.clone());
+                    cache_dirty = true;
+                }
+            } else {
+                let updated_entry = CachedSessionEntry {
+                    mtime: candidate.mtime,
+                    id: candidate.id.clone(),
+                    cwd: candidate.cwd.clone(),
+                    model: candidate.model.clone(),
+                    details: Some(updated_details.clone()),
+                };
+                let previous = details_cache
+                    .entries
+                    .insert(candidate.path.clone(), updated_entry.clone());
+                if previous.as_ref() != Some(&updated_entry) {
+                    cache_dirty = true;
+                }
+            }
+
+            details
+        };
+        sessions.push(SessionInfo {
+            id: candidate.id,
+            path: candidate.path,
+            cwd: candidate.cwd,
+            age: format_relative_time(candidate.mtime),
+            mtime: candidate.mtime,
+            message_count: details.message_count,
+            last_role: details.last_role,
+            model: candidate.model,
+            last_user_snippet: details.last_user_snippet,
+        });
+    }
 
     sessions.retain(|session| session.message_count > 0);
 
-    // Limit to recent 100 sessions for performance
-    sessions.truncate(100);
+    if cache_dirty {
+        persist_session_details_cache(codex_home, &details_cache);
+    }
 
     Ok(sessions)
-}
-
-/// Return the last User message's first `max_words` words as a snippet label.
-pub fn last_user_snippet(path: &PathBuf, max_words: usize) -> Option<String> {
-    let data = collect_session_messages(path);
-    let last_user = data
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "User" && !m.content.trim().is_empty())?;
-    let mut words = last_user
-        .content
-        .split_whitespace()
-        .filter(|w| !w.is_empty());
-    let mut taken: Vec<&str> = Vec::new();
-    for _ in 0..max_words {
-        if let Some(w) = words.next() {
-            taken.push(w);
-        } else {
-            break;
-        }
-    }
-    if taken.is_empty() {
-        None
-    } else {
-        Some(taken.join(" "))
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn extract_session_meta(
-    path: &Path,
-) -> Result<(String, String, usize, String, usize, String), String> {
+struct SessionCandidate {
+    id: String,
+    path: PathBuf,
+    cwd: String,
+    mtime: u64,
+    model: String,
+    cached_details: Option<CachedSessionDetails>,
+}
+
+struct SessionHeader {
+    id: String,
+    cwd: String,
+    model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CachedSessionDetails {
+    message_count: usize,
+    last_role: String,
+    last_user_snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CachedSessionEntry {
+    mtime: u64,
+    id: String,
+    cwd: String,
+    model: String,
+    details: Option<CachedSessionDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SessionDetailsCache {
+    version: u32,
+    entries: HashMap<PathBuf, CachedSessionEntry>,
+}
+
+impl Default for SessionDetailsCache {
+    fn default() -> Self {
+        Self {
+            version: SESSION_BAR_CACHE_VERSION,
+            entries: HashMap::new(),
+        }
+    }
+}
+
+fn session_details_cache_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(SESSION_BAR_CACHE_FILE)
+}
+
+fn load_session_details_cache(codex_home: &Path) -> SessionDetailsCache {
+    let cache_path = session_details_cache_path(codex_home);
+    let raw = match fs::read_to_string(cache_path) {
+        Ok(raw) => raw,
+        Err(_) => return SessionDetailsCache::default(),
+    };
+    let cache = match serde_json::from_str::<SessionDetailsCache>(&raw) {
+        Ok(cache) => cache,
+        Err(_) => return SessionDetailsCache::default(),
+    };
+    if cache.version == SESSION_BAR_CACHE_VERSION {
+        cache
+    } else {
+        SessionDetailsCache::default()
+    }
+}
+
+fn persist_session_details_cache(codex_home: &Path, cache: &SessionDetailsCache) {
+    let cache_path = session_details_cache_path(codex_home);
+    if let Ok(serialized) = serde_json::to_string(cache) {
+        let _ = write_atomically(&cache_path, &serialized);
+    }
+}
+
+fn extract_session_header(path: &Path) -> Result<Option<SessionHeader>, String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
     let reader = std::io::BufReader::new(file);
-    let mut lines = reader.lines();
 
-    let mut session_id = String::new();
+    let mut session_id = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     let mut cwd = String::new();
     let mut model = String::from("unknown");
-    let mut last_role = String::from("-");
-    let mut total_tokens = 0;
 
-    // First pass: extract session metadata from first line
-    if let Some(Ok(first_line)) = lines.next()
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&first_line)
-        && let Some(payload) = json.get("payload")
-    {
-        session_id = payload
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(std::string::ToString::to_string)
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            });
+    for line_res in reader.lines() {
+        let line = match line_res {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
 
-        cwd = payload
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(std::string::ToString::to_string)
-            .unwrap_or_default();
+        let json = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
 
-        model = payload
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(std::string::ToString::to_string)
-            .unwrap_or_else(|| "unknown".to_string());
+        if let Some(payload) = json.get("payload") {
+            if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
+                session_id = id.to_string();
+            }
+            cwd = payload
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default();
+            model = payload
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string)
+                .unwrap_or_else(|| "unknown".to_string());
+        }
+
+        return Ok(Some(SessionHeader {
+            id: session_id,
+            cwd,
+            model,
+        }));
     }
 
-    // Second pass: gather message metadata
-    let parsed = collect_session_messages(&path.to_path_buf());
-    if let Some(tokens) = parsed.total_tokens {
-        total_tokens = tokens;
-    }
-    let dialog_messages: Vec<&ParsedMessage> = parsed
-        .messages
-        .iter()
-        .filter(|m| matches!(m.role.as_str(), "User" | "Assistant"))
-        .collect();
-    let message_count = dialog_messages.len();
-    if let Some(last) = dialog_messages.last() {
-        last_role = last.role.clone();
+    Ok(None)
+}
+
+struct SessionDetails {
+    message_count: usize,
+    last_role: String,
+    last_user_snippet: Option<String>,
+}
+
+fn extract_session_details(path: &Path) -> SessionDetails {
+    let mut details = SessionDetails {
+        message_count: 0,
+        last_role: "-".to_string(),
+        last_user_snippet: None,
+    };
+
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return details,
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut first_line = true;
+    let mut new_format = false;
+
+    for line_res in reader.lines() {
+        let line = match line_res {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let json = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
+
+        if first_line {
+            first_line = false;
+            new_format = json.get("type").and_then(|v| v.as_str()) == Some("session_meta");
+            if new_format {
+                continue;
+            }
+        }
+
+        let message = if new_format {
+            parse_new_format_message(&json)
+        } else {
+            parse_legacy_format_message(&json)
+        };
+        if let Some(message) = message {
+            if matches!(message.role.as_str(), "User" | "Assistant") {
+                details.message_count += 1;
+                details.last_role = message.role.clone();
+            }
+            if message.role == "User" {
+                details.last_user_snippet = snippet_words(&message.content, 5);
+            }
+        }
     }
 
-    if session_id.is_empty() {
-        session_id = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-    }
-
-    Ok((
-        session_id,
-        cwd,
-        message_count,
-        last_role,
-        total_tokens,
-        model,
-    ))
+    details
 }
 
 fn should_include_session(session_cwd: &str, cwd: &Path) -> bool {
@@ -204,13 +423,12 @@ fn should_include_session(session_cwd: &str, cwd: &Path) -> bool {
         return false;
     }
 
-    let raw_path = PathBuf::from(session_cwd);
-    let candidate = if raw_path.is_absolute() {
-        raw_path
-    } else {
-        cwd.join(raw_path)
-    };
+    let session_path = Path::new(session_cwd);
+    if session_path.is_absolute() {
+        return session_path == cwd || session_path.starts_with(cwd);
+    }
 
+    let candidate = cwd.join(session_path);
     match candidate.canonicalize() {
         Ok(real_path) => real_path == cwd || real_path.starts_with(cwd),
         Err(_) => false,
@@ -250,67 +468,6 @@ fn format_relative_time(mtime: u64) -> String {
 struct ParsedMessage {
     role: String,
     content: String,
-    #[allow(dead_code)]
-    timestamp: Option<String>,
-}
-
-#[derive(Default)]
-struct ParsedSessionData {
-    messages: Vec<ParsedMessage>,
-    total_tokens: Option<usize>,
-}
-
-fn collect_session_messages(path: &PathBuf) -> ParsedSessionData {
-    let mut data = ParsedSessionData::default();
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(_) => return data,
-    };
-
-    let reader = std::io::BufReader::new(file);
-    let mut first_line = true;
-    let mut new_format = false;
-
-    for line_res in reader.lines() {
-        let line = match line_res {
-            Ok(line) => line,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            if first_line {
-                first_line = false;
-                if json.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
-                    new_format = true;
-                    if let Some(tokens) = extract_total_tokens(&json) {
-                        data.total_tokens = Some(tokens);
-                    }
-                    continue;
-                }
-            }
-
-            if let Some(tokens) = extract_total_tokens(&json) {
-                data.total_tokens = Some(tokens);
-            }
-
-            let message = if new_format {
-                parse_new_format_message(&json)
-            } else {
-                parse_legacy_format_message(&json)
-            };
-
-            if let Some(message) = message
-                && !message.content.trim().is_empty()
-            {
-                data.messages.push(message);
-            }
-        }
-    }
-
-    data
 }
 
 fn parse_new_format_message(json: &serde_json::Value) -> Option<ParsedMessage> {
@@ -330,17 +487,9 @@ fn parse_new_format_message(json: &serde_json::Value) -> Option<ParsedMessage> {
         .and_then(|v| v.as_str())
         .map(std::string::ToString::to_string)
         .or_else(|| extract_text_from_content(payload.get("content")))?;
-
-    let timestamp = json
-        .get("timestamp")
-        .and_then(|v| v.as_str())
-        .or_else(|| payload.get("timestamp").and_then(|v| v.as_str()))
-        .map(std::string::ToString::to_string);
-
     Some(ParsedMessage {
         role: role.to_string(),
         content,
-        timestamp,
     })
 }
 
@@ -374,17 +523,7 @@ fn parse_legacy_format_message(json: &serde_json::Value) -> Option<ParsedMessage
     if content.trim().is_empty() {
         return None;
     }
-
-    let timestamp = payload
-        .and_then(|p| p.get("timestamp").and_then(|v| v.as_str()))
-        .or_else(|| json.get("timestamp").and_then(|v| v.as_str()))
-        .map(std::string::ToString::to_string);
-
-    Some(ParsedMessage {
-        role,
-        content,
-        timestamp,
-    })
+    Some(ParsedMessage { role, content })
 }
 
 fn normalize_role(raw: &str) -> String {
@@ -439,25 +578,80 @@ fn collect_text_segments(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-fn extract_total_tokens(json: &serde_json::Value) -> Option<usize> {
-    let payload = json.get("payload")?;
+fn snippet_words(content: &str, max_words: usize) -> Option<String> {
+    let words: Vec<&str> = content
+        .split_whitespace()
+        .filter(|word| !word.is_empty())
+        .take(max_words)
+        .collect();
+    if words.is_empty() {
+        None
+    } else {
+        Some(words.join(" "))
+    }
+}
 
-    if let Some(usage) = payload.get("usage")
-        && let Some(total) = usage
-            .get("total_tokens")
-            .and_then(serde_json::Value::as_u64)
-    {
-        return Some(total as usize);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    #[test]
+    fn session_details_cache_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let mut entries = HashMap::new();
+        entries.insert(
+            PathBuf::from("/tmp/a.jsonl"),
+            CachedSessionEntry {
+                mtime: 123,
+                id: "session-a".to_string(),
+                cwd: "/tmp".to_string(),
+                model: "gemma-3n".to_string(),
+                details: Some(CachedSessionDetails {
+                    message_count: 4,
+                    last_role: "Assistant".to_string(),
+                    last_user_snippet: Some("hello world".to_string()),
+                }),
+            },
+        );
+        let cache = SessionDetailsCache {
+            version: SESSION_BAR_CACHE_VERSION,
+            entries,
+        };
+
+        persist_session_details_cache(temp.path(), &cache);
+        let loaded = load_session_details_cache(temp.path());
+
+        assert_eq!(loaded, cache);
+        Ok(())
     }
 
-    if let Some(info) = payload.get("info")
-        && let Some(total) = info
-            .get("total_token_usage")
-            .and_then(|usage| usage.get("total_tokens"))
-            .and_then(serde_json::Value::as_u64)
-    {
-        return Some(total as usize);
-    }
+    #[test]
+    fn session_details_cache_ignores_old_version() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let cache_path = session_details_cache_path(temp.path());
+        let raw = serde_json::json!({
+            "version": 0,
+            "entries": {
+                "/tmp/a.jsonl": {
+                    "mtime": 1,
+                    "id": "session-a",
+                    "cwd": "/tmp",
+                    "model": "gemma-3n",
+                    "details": {
+                        "message_count": 2,
+                        "last_role": "User",
+                        "last_user_snippet": "hi"
+                    }
+                }
+            }
+        });
+        fs::write(cache_path, serde_json::to_string(&raw)?)?;
 
-    None
+        let loaded = load_session_details_cache(temp.path());
+
+        assert_eq!(loaded, SessionDetailsCache::default());
+        Ok(())
+    }
 }

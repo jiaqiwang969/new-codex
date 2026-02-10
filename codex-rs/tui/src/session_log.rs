@@ -154,6 +154,15 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             });
             LOGGER.write_json_line(value);
         }
+        AppEvent::SessionBarPrefetched { sessions } => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "session_bar_prefetched",
+                "sessions": sessions.len(),
+            });
+            LOGGER.write_json_line(value);
+        }
         AppEvent::FileSearchResult { query, matches } => {
             let value = json!({
                 "ts": now_ts(),

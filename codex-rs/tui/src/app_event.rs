@@ -29,6 +29,8 @@ use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ReasoningEffort;
 
+use crate::session_utils::SessionInfo;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) enum WindowsSandboxEnableMode {
@@ -122,6 +124,11 @@ pub(crate) enum AppEvent {
 
     /// Update the current reasoning effort in the running app and widget.
     UpdateReasoningEffort(Option<ReasoningEffort>),
+
+    /// Prefetched session-bar data computed in the background.
+    SessionBarPrefetched {
+        sessions: Vec<SessionInfo>,
+    },
 
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
