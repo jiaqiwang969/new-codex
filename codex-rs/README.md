@@ -1,99 +1,51 @@
-# Codex CLI (Rust Implementation)
+  这个项目是基于 OpenAI Codex CLI 的深度定制 fork，在上游基础上扩展了 6 大核心能力：
 
-We provide Codex CLI as a standalone, native executable to ensure a zero-dependency install.
+  ---
+  1. 多模型 Provider 支持
 
-## Installing Codex
+  - OpenAI (GPT-5.3-codex, GPT-5.2-codex)
+  - Google Gemini (Gemini 3 Pro/Flash, Gemini 3 Pro Image, 1M context)
+  - Grok (Grok 4, Grok 4.1 Fast Reasoning)
+  - 本地模型 (Gemma-3n via Ollama/LM Studio)
+  - 运行时自动切换 + Account Pool 故障转移 (401/403/429 自动换号)
+  - 模型兼容矩阵：按模型自动启用/禁用 web search、reasoning effort、image 等能力
 
-Today, the easiest way to install Codex is via `npm`:
+  2. 跨会话记忆系统
 
-```shell
-npm i -g @openai/codex
-codex
-```
+  - SQLite 持久化的 Thread Memory（对话摘要 + trace）
+  - Context Packet 注入：自动将记忆、用户指令、项目 memories 注入 MCP 调用和子 agent
+  - 会话压缩后自动更新记忆，最小 10 分钟间隔防抖
 
-You can also install via Homebrew (`brew install --cask codex`) or download a platform-specific release directly from our [GitHub Releases](https://github.com/openai/codex/releases).
+  3. 多 Agent 协作
 
-## Documentation quickstart
+  - spawn_agent / send_input / resume_agent / wait / close_agent 完整生命周期
+  - Agent Worktrees：每个子 agent 在隔离的 git worktree 中工作
+  - Lease 持久化：.codex/leases/ 目录，支持 worktree 恢复
+  - Context Packet 自动注入子 agent 启动 prompt
 
-- First run with Codex? Start with [`docs/getting-started.md`](../docs/getting-started.md) (links to the walkthrough for prompts, keyboard shortcuts, and session management).
-- Want deeper control? See [`docs/config.md`](../docs/config.md) and [`docs/install.md`](../docs/install.md).
+  4. 图像处理流水线
 
-## What's new in the Rust CLI
+  - /ref-image：设置参考图片
+  - /ref-image-batch：批量处理文件夹中的图片
+  - /image-quality (1K/2K/4K) + /aspect-ratio (1:1/16:9/9:16/4:3/3:4)
+  - /pdf-update：PDF 水印去除 + 批量图片处理
+  - Gemini Image 模型专用配置（response_modalities、image_config）
 
-The Rust implementation is now the maintained Codex CLI and serves as the default experience. It includes a number of features that the legacy TypeScript CLI never supported.
+  5. TUI 增强
 
-### Config
+  - Git Graph (Ctrl+G)：内嵌 git 提交历史可视化，Unicode 圆角风格
+  - Session Bar (Ctrl+P)：tmux 风格底部面板，会话导航/新建/删除/重命名
+  - 后台预热：2s 空闲后自动加载 session 列表和 git graph，打开时即时显示
+  - Ralph Loop (/ralph-loop)：迭代自纠正循环，支持 <promise> 完成检测
 
-Codex supports a rich set of configuration options. Note that the Rust CLI uses `config.toml` instead of `config.json`. See [`docs/config.md`](../docs/config.md) for details.
+  6. 基础设施
 
-### Model Context Protocol Support
+  - Gemma 系统 prompt 截断（29K→4K，防止本地小模型空输出）
+  - Thought Signature 跨模型泄漏防护（Gemini→GPT 切换时自动清理）
+  - WebSocket preconnect 跨 turn 复用
+  - MCP 后台初始化（不阻塞启动）
+  - Debug CLI：thread-memory backfill、agent-worktrees list/restore
 
-#### MCP client
-
-Codex CLI functions as an MCP client that allows the Codex CLI and IDE extension to connect to MCP servers on startup. See the [`configuration documentation`](../docs/config.md#connecting-to-mcp-servers) for details.
-
-#### MCP server (experimental)
-
-Codex can be launched as an MCP _server_ by running `codex mcp-server`. This allows _other_ MCP clients to use Codex as a tool for another agent.
-
-Use the [`@modelcontextprotocol/inspector`](https://github.com/modelcontextprotocol/inspector) to try it out:
-
-```shell
-npx @modelcontextprotocol/inspector codex mcp-server
-```
-
-Use `codex mcp` to add/list/get/remove MCP server launchers defined in `config.toml`, and `codex mcp-server` to run the MCP server directly.
-
-### Notifications
-
-You can enable notifications by configuring a script that is run whenever the agent finishes a turn. The [notify documentation](../docs/config.md#notify) includes a detailed example that explains how to get desktop notifications via [terminal-notifier](https://github.com/julienXX/terminal-notifier) on macOS. When Codex detects that it is running under WSL 2 inside Windows Terminal (`WT_SESSION` is set), the TUI automatically falls back to native Windows toast notifications so approval prompts and completed turns surface even though Windows Terminal does not implement OSC 9.
-
-### `codex exec` to run Codex programmatically/non-interactively
-
-To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
-Use `codex exec --ephemeral ...` to run without persisting session rollout files to disk.
-
-### Experimenting with the Codex Sandbox
-
-To test to see what happens when a command is run under the sandbox provided by Codex, we provide the following subcommands in Codex CLI:
-
-```
-# macOS
-codex sandbox macos [--full-auto] [--log-denials] [COMMAND]...
-
-# Linux
-codex sandbox linux [--full-auto] [COMMAND]...
-
-# Windows
-codex sandbox windows [--full-auto] [COMMAND]...
-
-# Legacy aliases
-codex debug seatbelt [--full-auto] [--log-denials] [COMMAND]...
-codex debug landlock [--full-auto] [COMMAND]...
-```
-
-### Selecting a sandbox policy via `--sandbox`
-
-The Rust CLI exposes a dedicated `--sandbox` (`-s`) flag that lets you pick the sandbox policy **without** having to reach for the generic `-c/--config` option:
-
-```shell
-# Run Codex with the default, read-only sandbox
-codex --sandbox read-only
-
-# Allow the agent to write within the current workspace while still blocking network access
-codex --sandbox workspace-write
-
-# Danger! Disable sandboxing entirely (only do this if you are already running in a container or other isolated env)
-codex --sandbox danger-full-access
-```
-
-The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
-
-## Code Organization
-
-This folder is the root of a Cargo workspace. It contains quite a bit of experimental code, but here are the key crates:
-
-- [`core/`](./core) contains the business logic for Codex. Ultimately, we hope this to be a library crate that is generally useful for building other Rust/native applications that use Codex.
-- [`exec/`](./exec) "headless" CLI for use in automation.
-- [`tui/`](./tui) CLI that launches a fullscreen TUI built with [Ratatui](https://ratatui.rs/).
-- [`cli/`](./cli) CLI multitool that provides the aforementioned CLIs via subcommands.
+  ---
+  简单来说：从单一 OpenAI 模型的 CLI 工具，扩展成了支持 4 家 Provider、跨会话记忆、多 Agent
+  协作、图像处理、git 可视化的多模型 AI 开发平台。
