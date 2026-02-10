@@ -185,6 +185,9 @@ enum DebugSubcommand {
 
     /// [experimental] Tooling: rebuild/backfill thread memory summaries.
     ThreadMemory(DebugThreadMemoryCommand),
+
+    /// [experimental] Tooling: inspect/restore agent worktree leases for the current repo.
+    AgentWorktrees(DebugAgentWorktreesCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -215,6 +218,39 @@ struct DebugThreadMemoryCommand {
 enum DebugThreadMemorySubcommand {
     /// Backfill SQLite thread memories from existing rollout files.
     Backfill(ThreadMemoryBackfillCommand),
+}
+
+#[derive(Debug, Parser)]
+struct DebugAgentWorktreesCommand {
+    #[command(subcommand)]
+    subcommand: DebugAgentWorktreesSubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum DebugAgentWorktreesSubcommand {
+    /// List agent worktree leases stored under .codex/leases for the current git repo.
+    List(AgentWorktreesListCommand),
+
+    /// Restore missing agent worktrees recorded in leases (git worktree add).
+    Ensure(AgentWorktreesEnsureCommand),
+}
+
+#[derive(Debug, Parser)]
+struct AgentWorktreesListCommand {
+    /// Output machine-readable JSON.
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct AgentWorktreesEnsureCommand {
+    /// Conversation/session id (UUID) to restore.
+    #[arg(long = "thread", value_name = "SESSION_ID", conflicts_with = "all")]
+    thread_id: Option<String>,
+
+    /// Restore every lease under .codex/leases for the current repo.
+    #[arg(long, default_value_t = false)]
+    all: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -547,6 +583,118 @@ async fn run_debug_thread_memory_command(
             run_thread_memory_backfill(args, root_config_overrides, interactive).await
         }
     }
+}
+
+async fn run_debug_agent_worktrees_command(cmd: DebugAgentWorktreesCommand) -> anyhow::Result<()> {
+    match cmd.subcommand {
+        DebugAgentWorktreesSubcommand::List(args) => run_agent_worktrees_list(args).await,
+        DebugAgentWorktreesSubcommand::Ensure(args) => run_agent_worktrees_ensure(args).await,
+    }
+}
+
+async fn run_agent_worktrees_list(args: AgentWorktreesListCommand) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let Some(repo_root) = codex_core::git_info::resolve_root_git_project_for_trust(&cwd) else {
+        anyhow::bail!(
+            "Not in a git repository. Agent worktrees require a git repo (run from inside one)."
+        );
+    };
+
+    let mut leases = codex_core::agent_worktree::list_leases(&repo_root)?;
+    leases.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.thread_id.cmp(&a.thread_id))
+    });
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&leases)?);
+        return Ok(());
+    }
+
+    if leases.is_empty() {
+        let leases_dir = repo_root.join(".codex").join("leases");
+        println!("No agent worktree leases found in {}", leases_dir.display());
+        return Ok(());
+    }
+
+    for lease in &leases {
+        println!(
+            "thread={} purpose={} branch={} worktree={} parent={} updated_at={} pid={}",
+            lease.thread_id,
+            lease.purpose,
+            lease.branch,
+            lease.worktree_path.display(),
+            lease.parent_thread_id.as_deref().unwrap_or("-"),
+            lease.updated_at,
+            lease.pid
+        );
+    }
+    Ok(())
+}
+
+async fn run_agent_worktrees_ensure(args: AgentWorktreesEnsureCommand) -> anyhow::Result<()> {
+    if args.thread_id.is_none() && !args.all {
+        anyhow::bail!("Expected --thread SESSION_ID or --all");
+    }
+
+    let cwd = std::env::current_dir()?;
+    let Some(repo_root) = codex_core::git_info::resolve_root_git_project_for_trust(&cwd) else {
+        anyhow::bail!(
+            "Not in a git repository. Agent worktrees require a git repo (run from inside one)."
+        );
+    };
+
+    let thread_ids = if let Some(thread_id) = args.thread_id.as_deref() {
+        vec![thread_id.to_string()]
+    } else {
+        codex_core::agent_worktree::list_leases(&repo_root)?
+            .into_iter()
+            .map(|lease| lease.thread_id)
+            .collect()
+    };
+
+    if thread_ids.is_empty() {
+        println!("No leases found; nothing to restore.");
+        return Ok(());
+    }
+
+    let mut failures = Vec::new();
+    for thread_id in thread_ids {
+        let Some(lease) = codex_core::agent_worktree::read_lease(&repo_root, &thread_id)? else {
+            failures.push(format!("thread {thread_id}: lease not found"));
+            continue;
+        };
+
+        let existed = tokio::fs::try_exists(&lease.worktree_path)
+            .await
+            .unwrap_or(false);
+        match codex_core::agent_worktree::ensure_worktree_for_thread(&repo_root, &thread_id).await {
+            Ok(Some(_)) => {
+                let action = if existed { "ok" } else { "restored" };
+                println!(
+                    "{action}: thread={} branch={} worktree={}",
+                    lease.thread_id,
+                    lease.branch,
+                    lease.worktree_path.display()
+                );
+            }
+            Ok(None) => failures.push(format!(
+                "thread {}: no repo root detected (run from inside a git repo)",
+                lease.thread_id
+            )),
+            Err(err) => failures.push(format!("thread {}: {err:#}", lease.thread_id)),
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    for failure in &failures {
+        eprintln!("ERROR: {failure}");
+    }
+    anyhow::bail!("failed to restore {} worktree(s)", failures.len());
 }
 
 async fn run_thread_memory_backfill(
@@ -1180,6 +1328,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
             DebugSubcommand::AppServer(cmd) => {
                 run_debug_app_server_command(cmd)?;
+            }
+            DebugSubcommand::AgentWorktrees(cmd) => {
+                run_debug_agent_worktrees_command(cmd).await?;
             }
             DebugSubcommand::ThreadMemory(cmd) => {
                 run_debug_thread_memory_command(cmd, root_config_overrides.clone(), &interactive)
