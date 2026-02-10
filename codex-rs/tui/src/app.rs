@@ -38,6 +38,7 @@ use codex_app_server_protocol::ConfigLayerSource;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
+use codex_core::agent_worktree;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
@@ -1070,13 +1071,45 @@ impl App {
             }
             SessionSelection::Fork(path) => {
                 otel_manager.counter("codex.thread.fork", 1, &[("source", "cli_subcommand")]);
+                let mut fork_worktree = None;
+                if config.features.enabled(Feature::AgentWorktrees) {
+                    fork_worktree = agent_worktree::create_agent_worktree(
+                        &config.cwd,
+                        agent_worktree::WorktreePurpose::ForkedSession,
+                    )
+                    .await
+                    .map_err(|err| {
+                        color_eyre::eyre::eyre!(
+                            "Failed to create isolated worktree for forked session: {err}"
+                        )
+                    })?;
+                    if let Some(worktree) = fork_worktree.as_ref() {
+                        config.cwd = worktree.path.clone();
+                    }
+                }
+
                 let forked = thread_manager
                     .fork_thread(usize::MAX, config.clone(), path.clone())
                     .await
                     .wrap_err_with(|| {
                         let path_display = path.display();
                         format!("Failed to fork session from {path_display}")
-                    })?;
+                    });
+                let forked = match forked {
+                    Ok(forked) => forked,
+                    Err(err) => {
+                        if let Some(worktree) = fork_worktree.as_ref() {
+                            let _ = agent_worktree::remove_agent_worktree(worktree).await;
+                        }
+                        return Err(err);
+                    }
+                };
+
+                if let Some(worktree) = fork_worktree.as_ref() {
+                    let lease =
+                        agent_worktree::build_lease(&forked.thread_id.to_string(), None, worktree);
+                    let _ = agent_worktree::write_lease(&lease);
+                }
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
