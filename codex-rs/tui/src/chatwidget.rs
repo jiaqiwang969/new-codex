@@ -3240,6 +3240,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    #[allow(dead_code)]
     pub(crate) fn can_launch_external_editor(&self) -> bool {
         self.bottom_pane.can_launch_external_editor()
     }

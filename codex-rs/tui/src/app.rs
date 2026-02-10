@@ -103,7 +103,6 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use toml::Value as TomlValue;
 
-const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 const SESSION_BAR_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_BAR_PREFETCH_DELAY: Duration = Duration::from_millis(150);
@@ -2603,16 +2602,6 @@ impl App {
                     )));
             }
         }
-        tui.frame_requester().schedule_frame();
-    }
-
-    fn request_external_editor_launch(&mut self, tui: &mut tui::Tui) {
-        self.chat_widget
-            .set_external_editor_state(ExternalEditorState::Requested);
-        self.chat_widget.set_footer_hint_override(Some(vec![(
-            EXTERNAL_EDITOR_HINT.to_string(),
-            String::new(),
-        )]));
         tui.frame_requester().schedule_frame();
     }
 

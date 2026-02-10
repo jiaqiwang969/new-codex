@@ -80,7 +80,6 @@ use http::HeaderMap as ApiHeaderMap;
 use http::HeaderValue;
 use http::StatusCode as HttpStatusCode;
 use reqwest::StatusCode;
-use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
@@ -154,8 +153,8 @@ struct CurrentClientSetup {
 /// This bundles the socket with optional sticky-routing state captured during
 /// handshake so they are taken and cleared atomically.
 struct PreconnectedWebSocket {
-    connection: ApiWebSocketConnection,
-    turn_state: Option<String>,
+    _connection: ApiWebSocketConnection,
+    _turn_state: Option<String>,
 }
 
 /// Session-level lifecycle of startup websocket preconnect.
@@ -163,6 +162,7 @@ struct PreconnectedWebSocket {
 /// `InFlight` tracks the startup task so the first turn can await it and reuse the same socket.
 /// `Ready` stores a one-shot warmed socket for turn adoption.
 
+#[allow(dead_code)]
 enum PreconnectState {
     /// No startup preconnect task is active and no warmed socket is available.
     Idle,
@@ -409,8 +409,8 @@ impl ModelClient {
     ) {
         let mut guard = self.state.preconnect.blocking_lock();
         *guard = PreconnectState::Ready(PreconnectedWebSocket {
-            connection,
-            turn_state,
+            _connection: connection,
+            _turn_state: turn_state,
         });
     }
     /// Creates a fresh turn-scoped streaming session with a provider override.

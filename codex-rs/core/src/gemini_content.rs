@@ -791,6 +791,7 @@ fn limit_inline_images_for_model(contents: &mut [GeminiContentRequest], api_mode
 
 // ── Thought signature stripping for non-Gemini providers ─────────────
 
+#[allow(dead_code)]
 pub(crate) fn strip_thought_signatures_from_input(input: &[ResponseItem]) -> Vec<ResponseItem> {
     input
         .iter()
