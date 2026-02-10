@@ -641,6 +641,39 @@ async fn process_gemini_sse<S>(
         }
     }
 
+    // Some local Gemini-compatible gateways may return HTTP 200 + SSE headers
+    // but emit no data frames (for example, unsupported model alias).
+    // Emit a visible notice instead of silently ending the turn with no output.
+    let no_output_emitted = !assistant_item_sent
+        && !reasoning_item_sent
+        && function_calls.is_empty()
+        && web_search_items.is_empty()
+        && last_inline_image.is_none()
+        && accumulated_text.is_empty();
+    if no_output_emitted {
+        let item = ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![],
+            end_turn: None,
+            phase: None,
+            thought_signature: None,
+        };
+        let notice =
+            "[Gemini stream returned no content. Check provider model name and endpoint compatibility.]".to_string();
+        if tx_event
+            .send(Ok(ResponseEvent::OutputItemAdded(item)))
+            .await
+            .is_ok()
+        {
+            let _ = tx_event
+                .send(Ok(ResponseEvent::OutputTextDelta(notice.clone())))
+                .await;
+            assistant_item_sent = true;
+            accumulated_text.push_str(&notice);
+        }
+    }
+
     // Emit final items
     if reasoning_item_sent
         && !reasoning_item_done
@@ -817,6 +850,35 @@ mod tests {
             final_output,
             "[Gemini stream interrupted: backend timeout]".to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn empty_stream_emits_visible_notice() {
+        let bytes_stream =
+            futures::stream::iter(Vec::<std::result::Result<Bytes, reqwest::Error>>::new());
+        let mut response_stream = spawn_gemini_sse_stream(bytes_stream, Duration::from_secs(1));
+
+        let mut deltas = String::new();
+        let mut final_output = String::new();
+
+        while let Some(event) = response_stream.next().await {
+            match event.expect("stream event should be ok") {
+                ResponseEvent::OutputTextDelta(delta) => deltas.push_str(&delta),
+                ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
+                    for item in content {
+                        if let ContentItem::OutputText { text } = item {
+                            final_output.push_str(&text);
+                        }
+                    }
+                }
+                ResponseEvent::Completed { .. } => break,
+                _ => {}
+            }
+        }
+
+        let expected = "[Gemini stream returned no content. Check provider model name and endpoint compatibility.]";
+        assert_eq!(deltas, expected.to_string());
+        assert_eq!(final_output, expected.to_string());
     }
 
     #[tokio::test]

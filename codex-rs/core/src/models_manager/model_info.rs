@@ -31,6 +31,7 @@ const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
 const GROK_INSTRUCTIONS: &str = include_str!("../../grok_prompt.md");
 
 pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_048_576;
+pub(crate) const CONTEXT_WINDOW_8K: i64 = 8_192;
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
     include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
 
@@ -309,7 +310,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if slug.starts_with("gemini-") || is_gemma_model_slug(slug) {
+    } else if slug.starts_with("gemini-") {
         model_info!(
             slug,
             base_instructions: GEMINI_INSTRUCTIONS.to_string(),
@@ -319,11 +320,27 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: false,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
             context_window: Some(CONTEXT_WINDOW_1M),
-            default_reasoning_level: if is_gemma_model_slug(slug) {
-                Some(ReasoningEffort::Medium)
-            } else {
-                Some(ReasoningEffort::High)
-            },
+            default_reasoning_level: Some(ReasoningEffort::High),
+            experimental_supported_tools: vec![
+                "grep_files".to_string(),
+                "list_dir".to_string(),
+                "read_file".to_string(),
+            ],
+        )
+    } else if is_gemma_model_slug(slug) {
+        // Local Gemma deployments often run with a smaller llama.cpp context
+        // window than Gemini cloud models. Use a leaner system prompt and a
+        // realistic default window so requests fit by default.
+        model_info!(
+            slug,
+            base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: false,
+            support_verbosity: false,
+            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            context_window: Some(CONTEXT_WINDOW_8K),
+            default_reasoning_level: Some(ReasoningEffort::Medium),
             experimental_supported_tools: vec![
                 "grep_files".to_string(),
                 "list_dir".to_string(),
@@ -474,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn gemma_models_use_gemini_defaults_with_medium_reasoning() {
+    fn gemma_models_use_lean_defaults_with_medium_reasoning() {
         let model = find_model_info_for_slug("gemma-3n");
 
         assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
@@ -482,6 +499,13 @@ mod tests {
         assert!(!model.supports_reasoning_summaries);
         assert!(!model.support_verbosity);
         assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_8K));
+        assert!(
+            model
+                .base_instructions
+                .contains("You are Codex, based on GPT-5."),
+            "gemma model should use the lean codex prompt"
+        );
         assert_eq!(
             model.experimental_supported_tools,
             vec![

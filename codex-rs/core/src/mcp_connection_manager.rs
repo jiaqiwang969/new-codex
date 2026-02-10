@@ -87,6 +87,7 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 const CODEX_APPS_TOOLS_CACHE_TTL: Duration = Duration::from_secs(3600);
+const MCP_LIST_READY_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// The Responses API requires tool names to match `^[a-zA-Z0-9_-]+$`.
 /// MCP server/tool names are user-controlled, so sanitize the fully-qualified
@@ -508,34 +509,43 @@ impl McpConnectionManager {
         failures
     }
 
+    async fn client_ready_for_listing(
+        async_managed_client: &AsyncManagedClient,
+    ) -> Option<ManagedClient> {
+        match tokio::time::timeout(MCP_LIST_READY_TIMEOUT, async_managed_client.client()).await {
+            Ok(Ok(client)) => Some(client),
+            Ok(Err(_)) | Err(_) => None,
+        }
+    }
+
     /// Returns a single map that contains all tools. Each key is the
     /// fully-qualified name for the tool.
     #[instrument(level = "trace", skip_all)]
     pub async fn list_all_tools(&self) -> HashMap<String, ToolInfo> {
         let mut tools = HashMap::new();
         for (server_name, managed_client) in &self.clients {
-            let client = managed_client.client().await.ok();
-            if let Some(client) = client {
-                let rmcp_client = client.client;
-                let tool_timeout = client.tool_timeout;
-                let tool_filter = client.tool_filter;
-                let mut server_tools = client.tools;
+            let Some(client) = Self::client_ready_for_listing(managed_client).await else {
+                continue;
+            };
+            let rmcp_client = client.client;
+            let tool_timeout = client.tool_timeout;
+            let tool_filter = client.tool_filter;
+            let mut server_tools = client.tools;
 
-                if server_name == CODEX_APPS_MCP_SERVER_NAME {
-                    match list_tools_for_client(server_name, &rmcp_client, tool_timeout).await {
-                        Ok(fresh_or_cached_tools) => {
-                            server_tools = fresh_or_cached_tools;
-                        }
-                        Err(err) => {
-                            warn!(
-                                "Failed to refresh tools for MCP server '{server_name}', using startup snapshot: {err:#}"
-                            );
-                        }
+            if server_name == CODEX_APPS_MCP_SERVER_NAME {
+                match list_tools_for_client(server_name, &rmcp_client, tool_timeout).await {
+                    Ok(fresh_or_cached_tools) => {
+                        server_tools = fresh_or_cached_tools;
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to refresh tools for MCP server '{server_name}', using startup snapshot: {err:#}"
+                        );
                     }
                 }
-
-                tools.extend(qualify_tools(filter_tools(server_tools, tool_filter)));
             }
+
+            tools.extend(qualify_tools(filter_tools(server_tools, tool_filter)));
         }
         tools
     }
@@ -549,7 +559,8 @@ impl McpConnectionManager {
 
         for (server_name, async_managed_client) in clients_snapshot {
             let server_name = server_name.clone();
-            let Ok(managed_client) = async_managed_client.client().await else {
+            let Some(managed_client) = Self::client_ready_for_listing(async_managed_client).await
+            else {
                 continue;
             };
             let timeout = managed_client.tool_timeout;
@@ -614,7 +625,8 @@ impl McpConnectionManager {
 
         for (server_name, async_managed_client) in clients_snapshot {
             let server_name_cloned = server_name.clone();
-            let Ok(managed_client) = async_managed_client.client().await else {
+            let Some(managed_client) = Self::client_ready_for_listing(async_managed_client).await
+            else {
                 continue;
             };
             let client = managed_client.client.clone();

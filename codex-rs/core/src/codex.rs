@@ -236,6 +236,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::user_input::UserInput;
 use codex_utils_readiness::Readiness;
 use codex_utils_readiness::ReadinessFlag;
+use codex_utils_string::take_bytes_at_char_boundary;
 use tokio::sync::watch;
 
 /// The high-level interface to the Codex system.
@@ -261,6 +262,29 @@ pub struct CodexSpawnOk {
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 64;
+const SMALL_CONTEXT_WINDOW_THRESHOLD: i64 = 16_384;
+const SMALL_CONTEXT_MAX_USER_INSTRUCTIONS_BYTES: usize = 3_200;
+const USER_INSTRUCTIONS_TRUNCATION_NOTICE: &str =
+    "\n\n[AGENTS instructions truncated to fit local model context window.]";
+
+fn truncate_user_instructions_for_context(
+    user_instructions: &str,
+    context_window: Option<i64>,
+) -> String {
+    let Some(context_window) = context_window else {
+        return user_instructions.to_string();
+    };
+    if context_window > SMALL_CONTEXT_WINDOW_THRESHOLD
+        || user_instructions.len() <= SMALL_CONTEXT_MAX_USER_INSTRUCTIONS_BYTES
+    {
+        return user_instructions.to_string();
+    }
+
+    let truncated =
+        take_bytes_at_char_boundary(user_instructions, SMALL_CONTEXT_MAX_USER_INSTRUCTIONS_BYTES)
+            .trim_end();
+    format!("{truncated}{USER_INSTRUCTIONS_TRUNCATION_NOTICE}")
+}
 
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
@@ -1229,26 +1253,41 @@ impl Session {
             .collect();
         required_mcp_servers.sort();
         let cancel_token = sess.mcp_startup_cancellation_token().await;
-
-        sess.services
-            .mcp_connection_manager
-            .write()
-            .await
-            .initialize(
-                &mcp_servers,
-                config.mcp_oauth_credentials_store_mode,
-                auth_statuses.clone(),
-                tx_event.clone(),
-                cancel_token,
-                sandbox_state,
-            )
-            .await;
-        if !required_mcp_servers.is_empty() {
-            let failures = sess
-                .services
-                .mcp_connection_manager
-                .read()
-                .await
+        if required_mcp_servers.is_empty() {
+            // No required MCP servers: initialize in background so first turn is
+            // not blocked by optional server startup latency.
+            let manager = Arc::clone(&sess.services.mcp_connection_manager);
+            let mcp_servers_for_init = mcp_servers.clone();
+            let auth_statuses_for_init = auth_statuses.clone();
+            let tx_event_for_init = tx_event.clone();
+            tokio::spawn(async move {
+                let mut initialized_manager = McpConnectionManager::default();
+                initialized_manager
+                    .initialize(
+                        &mcp_servers_for_init,
+                        config.mcp_oauth_credentials_store_mode,
+                        auth_statuses_for_init,
+                        tx_event_for_init,
+                        cancel_token,
+                        sandbox_state,
+                    )
+                    .await;
+                let mut guard = manager.write().await;
+                *guard = initialized_manager;
+            });
+        } else {
+            let mut initialized_manager = McpConnectionManager::default();
+            initialized_manager
+                .initialize(
+                    &mcp_servers,
+                    config.mcp_oauth_credentials_store_mode,
+                    auth_statuses.clone(),
+                    tx_event.clone(),
+                    cancel_token,
+                    sandbox_state,
+                )
+                .await;
+            let failures = initialized_manager
                 .required_startup_failures(&required_mcp_servers)
                 .await;
             if !failures.is_empty() {
@@ -1261,6 +1300,8 @@ impl Session {
                     "required MCP servers failed to initialize: {details}"
                 ));
             }
+            let mut guard = sess.services.mcp_connection_manager.write().await;
+            *guard = initialized_manager;
         }
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
@@ -2260,9 +2301,13 @@ impl Session {
             }
         }
         if let Some(user_instructions) = turn_context.user_instructions.as_deref() {
+            let user_instructions = truncate_user_instructions_for_context(
+                user_instructions,
+                turn_context.model_context_window(),
+            );
             items.push(
                 UserInstructions {
-                    text: user_instructions.to_string(),
+                    text: user_instructions,
                     directory: turn_context.cwd.to_string_lossy().into_owned(),
                 }
                 .into(),
@@ -5464,6 +5509,29 @@ mod tests {
             phase: None,
             thought_signature: None,
         }
+    }
+
+    #[test]
+    fn truncate_user_instructions_for_small_context_window() {
+        let input = "a".repeat(SMALL_CONTEXT_MAX_USER_INSTRUCTIONS_BYTES + 128);
+        let expected = format!(
+            "{}{}",
+            "a".repeat(SMALL_CONTEXT_MAX_USER_INSTRUCTIONS_BYTES),
+            USER_INSTRUCTIONS_TRUNCATION_NOTICE
+        );
+        assert_eq!(
+            truncate_user_instructions_for_context(&input, Some(8_192)),
+            expected
+        );
+    }
+
+    #[test]
+    fn truncate_user_instructions_preserves_full_text_for_large_context_window() {
+        let input = "a".repeat(SMALL_CONTEXT_MAX_USER_INSTRUCTIONS_BYTES + 128);
+        assert_eq!(
+            truncate_user_instructions_for_context(&input, Some(32_768)),
+            input
+        );
     }
 
     fn make_connector(id: &str, name: &str) -> AppInfo {
