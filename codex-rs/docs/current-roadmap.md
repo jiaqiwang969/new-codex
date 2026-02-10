@@ -43,12 +43,12 @@
 
 - 深度上限目前较保守（仅 1 层），对复杂分治任务不够。
 - `memory_tool`、`sqlite` 仍为特性开关驱动，默认场景未完全“强制一致”。
-- 记忆回填能力（针对历史 rollout 的 bulk backfill）尚无一键命令。
+- 已有 thread memory 回填工具（debug CLI：`codex debug thread-memory backfill ...`），但尚未产品化（文档/安全阀/限流策略）。
 
 ### 1.4 路线图
 
 - **P0（1-2 周）**：统一 Context Packet 模板与字段契约，沉淀成可跨模型可扩展协议。
-- **P1（2-4 周）**：补齐 `thread_memory` 回填命令（历史线程重建）。
+- **P1（2-4 周）**：将 thread memory 回填能力产品化（把 debug CLI 补齐为可发现/可控/可观测的工具）。
 - **P2（4-8 周）**：放开可配置深度策略（按任务/模式动态限制），并增加协作质量评分。
 
 ---
@@ -259,7 +259,7 @@
 
 - Ralph Loop Core 下沉到 `core`
 - App-Server 暴露 loop start/status/stop
-- Thread memory backfill 命令落地
+- Thread memory backfill 命令产品化（当前已存在 debug CLI）
 
 ### M3（第 7-12 周）：规模化与治理
 
@@ -276,6 +276,8 @@
 3. 将 `RalphLoopState` 从 `tui` 迁移至 `core`（先不改 UI 行为）。  
 4. 为 Ralph Loop 增加结构化运行事件（start/iteration/error/complete/cancel）。  
 5. 提供 thread_memory backfill CLI（按 rollout 目录批处理）。  
+   - 现状：`codex debug thread-memory backfill --all --archived --force`
+   - 下一步：补齐 dry-run、并发/限流、敏感信息保护与可观测性
 6. 扩展 Context Packet 到 review 子流程。  
 7. 把 collab 关键事件统一打上 trace_id。  
 8. 在 `exec --json` 输出增加协作统计摘要。  

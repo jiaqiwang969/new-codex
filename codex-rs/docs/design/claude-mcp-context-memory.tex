@@ -164,6 +164,17 @@ Assistant: ...
 Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \texttt{CLAUDE.md} 作为局部指令。
 因此：\textbf{必须确保 MCP 工具默认在 Codex 的 session cwd 中运行}，否则 Claude 侧会漏掉本地约束。
 
+\subsection{指令文件统一：AGENTS.md 作为单一真相}
+在多 Agent/多模型协作中，如果 Codex 依赖 \texttt{AGENTS.md}，而 Claude Code 依赖 \texttt{CLAUDE.md}，
+就会形成“两套指令体系”的漂移风险。
+
+建议将 \texttt{AGENTS.md} 作为单一真相来源（包含工程规范、约束、测试要求等），
+并让 \texttt{CLAUDE.md} 仅承担“提示词工程/指针”角色：\textbf{引导 Claude 优先阅读并遵循 \texttt{AGENTS.md}}，
+而不再维护一份独立且可能过期的长指令文件。
+
+此外，我们在 Codex 侧的 \texttt{context} 注入已经会把 User instructions（含 \texttt{AGENTS.md}）一并传给 Claude，
+这使得 Claude 即使不主动读文件，也能获取同一套约束。
+
 \subsection{上下文抽取策略（不含推理链）}
 \begin{itemize}[nosep]
   \item 优先使用 compaction summary message（如果存在）；
@@ -255,7 +266,11 @@ Claude Code 通常会读取当前工作目录（或指定 work folder）中的 \
   \item M1（已完成）：接入 SQLite thread\_memory（如果存在则注入）。
   \item M2（已完成）：自动 summarization 并 upsert thread\_memory（官方 trace\_summarize + 回退策略）。
   \item M3（部分完成）：按 cwd 注入 project memories（同项目最近 N 条 thread\_memory 的 memory\_summary）；后续可做更智能的融合/去重/挑选策略。
-  \item M4（建议）：提供 backfill / rebuild 命令：从 rollout 重建并写入 thread\_memory（便于对历史 thread 补齐）。
+  \item M4（已具备工具，但仍需产品化）：已存在 debug CLI 用于回填历史线程记忆：
+    \begin{lstlisting}
+codex debug thread-memory backfill --all --archived --force
+    \end{lstlisting}
+    后续建议补齐更友好的文档、运行前检查与 dry-run/限流策略。
   \item M5（部分完成）：抽象可复用的 Context Packet Builder，并复用于 \texttt{claude\_code} 与 \texttt{spawn\_agent}；后续扩展到 Grok/Gemini/Review 等子 agent（多模型协作的一致性核心）。
 \end{enumerate}
 
