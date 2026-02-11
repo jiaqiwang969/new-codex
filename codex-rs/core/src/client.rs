@@ -1419,6 +1419,14 @@ fn sanitize_reasoning_effort_for_model(
     model_slug: &str,
 ) -> Option<ReasoningEffortConfig> {
     if effort.is_none() || model_supports_reasoning_effort(model_slug) {
+        // Many proxy/relay endpoints do not support the "xhigh" effort level.
+        // Downgrade to "high" so the request succeeds transparently.
+        if effort == Some(ReasoningEffortConfig::XHigh) {
+            warn!(
+                "downgrading reasoning effort from xhigh to high for model {model_slug} (proxy compatibility)"
+            );
+            return Some(ReasoningEffortConfig::High);
+        }
         return effort;
     }
 
