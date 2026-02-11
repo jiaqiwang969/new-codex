@@ -684,8 +684,10 @@ impl ModelClientSession {
         };
         let text = create_text_param_for_request(verbosity, &prompt.output_schema);
         let prompt_cache_key = Some(self.client.state.conversation_id.to_string());
+        let model_slug =
+            canonical_model_slug_for_provider(&self.client.state.provider, &model_info.slug);
         let request = ResponsesApiRequest {
-            model: model_info.slug.clone(),
+            model: model_slug.into_owned(),
             instructions: instructions.clone(),
             input,
             tools,
@@ -698,6 +700,11 @@ impl ModelClientSession {
             prompt_cache_key,
             text,
         };
+        debug!(
+            model = %request.model,
+            reasoning = ?request.reasoning,
+            "build_responses_request: outgoing request model and reasoning"
+        );
         Ok(request)
     }
 

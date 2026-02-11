@@ -342,7 +342,9 @@ pub(crate) fn build_gemini_tools(tools: &[ToolSpec], api_model: &str) -> Option<
             google_search: None,
         });
     }
-    if enable_google_search {
+    // Gemini API does not allow google_search and functionDeclarations in the
+    // same request.  Only add google_search when there are no function tools.
+    if enable_google_search && out.is_empty() {
         out.push(GeminiTool {
             function_declarations: None,
             google_search: Some(GeminiGoogleSearchTool::default()),
@@ -1021,7 +1023,10 @@ mod tests {
     }
 
     #[test]
-    fn gemini_tools_include_google_search_when_web_search_is_enabled() {
+    fn gemini_tools_do_not_include_google_search_when_function_tools_present() {
+        // With the gemini_web_search function-call approach, ToolSpec::WebSearch
+        // is replaced by a function tool in build_specs() for Gemini providers.
+        // build_gemini_tools() should NOT add google_search alongside functions.
         let tools = vec![
             function_tool("shell_command"),
             ToolSpec::WebSearch {
@@ -1033,8 +1038,8 @@ mod tests {
             .expect("gemini tools should be present");
 
         assert!(
-            gemini_tools.iter().any(|tool| tool.google_search.is_some()),
-            "expected google_search tool to be enabled when web_search is present"
+            gemini_tools.iter().all(|tool| tool.google_search.is_none()),
+            "google_search must not coexist with functionDeclarations"
         );
     }
 

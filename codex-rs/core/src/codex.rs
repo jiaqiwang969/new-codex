@@ -942,6 +942,8 @@ impl Session {
             model_info: &model_info,
             features: &per_turn_config.features,
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
+            is_gemini_wire_api: provider_for_context.wire_api
+                == crate::model_provider_info::WireApi::Gemini,
         });
 
         let cwd = session_configuration.cwd.clone();
@@ -3916,6 +3918,7 @@ async fn spawn_review_thread(
         model_info: &review_model_info,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
+        is_gemini_wire_api: false,
     });
 
     let review_prompt = resolved.prompt.clone();

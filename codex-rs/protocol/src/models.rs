@@ -146,8 +146,9 @@ pub enum ResponseItem {
         arguments: String,
         call_id: String,
         /// Gemini thought signature for this function call (preserved for round-tripping).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        /// Never serialized on the protocol wire — only used internally.
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
         thought_signature: Option<String>,
     },
     // NOTE: The `output` field for `function_call_output` uses a dedicated payload type with

@@ -41,12 +41,14 @@ pub(crate) struct ToolsConfig {
     pub collaboration_modes_tools: bool,
     pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
+    pub is_gemini_wire_api: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_info: &'a ModelInfo,
     pub(crate) features: &'a Features,
     pub(crate) web_search_mode: Option<WebSearchMode>,
+    pub(crate) is_gemini_wire_api: bool,
 }
 
 impl ToolsConfig {
@@ -55,6 +57,7 @@ impl ToolsConfig {
             model_info,
             features,
             web_search_mode,
+            is_gemini_wire_api,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_collab_tools = features.enabled(Feature::Collab);
@@ -102,6 +105,7 @@ impl ToolsConfig {
             collaboration_modes_tools: include_collaboration_modes_tools,
             request_rule_enabled,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
+            is_gemini_wire_api: *is_gemini_wire_api,
         }
     }
 }
@@ -435,6 +439,27 @@ Examples of valid command strings:
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["command".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_gemini_web_search_tool() -> ToolSpec {
+    let properties = BTreeMap::from([(
+        "query".to_string(),
+        JsonSchema::String {
+            description: Some("The search query to look up on the web".to_string()),
+        },
+    )]);
+    ToolSpec::Function(ResponsesApiTool {
+        name: "gemini_web_search".to_string(),
+        description:
+            "Search the web using Google Search. Use this tool to find current information about any topic."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["query".to_string()]),
             additional_properties: Some(false.into()),
         },
     })
@@ -1357,6 +1382,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::CollabHandler;
     use crate::tools::handlers::DynamicToolHandler;
+    use crate::tools::handlers::GeminiWebSearchHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
@@ -1495,19 +1521,33 @@ pub(crate) fn build_specs(
 
     if config.web_search_supported {
         match config.web_search_mode {
-            Some(WebSearchMode::Cached) => {
-                builder.push_spec(ToolSpec::WebSearch {
-                    external_web_access: config
-                        .web_search_supports_external_web_access
-                        .then_some(false),
-                });
-            }
-            Some(WebSearchMode::Live) => {
-                builder.push_spec(ToolSpec::WebSearch {
-                    external_web_access: config
-                        .web_search_supports_external_web_access
-                        .then_some(true),
-                });
+            Some(WebSearchMode::Cached) | Some(WebSearchMode::Live) => {
+                if config.is_gemini_wire_api {
+                    // Gemini API rejects google_search + functionDeclarations in the
+                    // same request. Instead, expose a function tool that makes a
+                    // separate Gemini API call with only google_search.
+                    builder.push_spec_with_parallel_support(
+                        create_gemini_web_search_tool(),
+                        true,
+                    );
+                    builder.register_handler(
+                        "gemini_web_search",
+                        Arc::new(GeminiWebSearchHandler),
+                    );
+                } else {
+                    let external = match config.web_search_mode {
+                        Some(WebSearchMode::Cached) => config
+                            .web_search_supports_external_web_access
+                            .then_some(false),
+                        Some(WebSearchMode::Live) => config
+                            .web_search_supports_external_web_access
+                            .then_some(true),
+                        _ => unreachable!(),
+                    };
+                    builder.push_spec(ToolSpec::WebSearch {
+                        external_web_access: external,
+                    });
+                }
             }
             Some(WebSearchMode::Disabled) | None => {}
         }
@@ -1730,6 +1770,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&config, None, &[]).build();
 
@@ -1794,6 +1835,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert_contains_tool_names(
@@ -1818,6 +1860,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert!(
@@ -1830,6 +1873,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert_contains_tool_names(&tools, &["request_user_input"]);
@@ -1846,6 +1890,7 @@ mod tests {
             model_info: &model_info,
             features,
             web_search_mode,
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -1878,6 +1923,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -1900,6 +1946,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -1922,6 +1969,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -1944,6 +1992,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -1966,6 +2015,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -1985,6 +2035,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -2184,6 +2235,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
 
@@ -2230,6 +2282,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
 
@@ -2252,6 +2305,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -2276,6 +2330,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -2307,6 +2362,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -2392,6 +2448,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -2436,6 +2493,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
 
         let (tools, _) = build_specs(
@@ -2488,6 +2546,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
 
         let (tools, _) = build_specs(
@@ -2537,6 +2596,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
 
         let (tools, _) = build_specs(
@@ -2588,6 +2648,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
 
         let (tools, _) = build_specs(
@@ -2697,6 +2758,7 @@ Examples of valid command strings:
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(
             &tools_config,
