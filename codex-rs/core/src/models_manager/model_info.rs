@@ -1,14 +1,14 @@
+use codex_protocol::config_types::Verbosity;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
-use codex_protocol::openai_models::TruncationMode;
-use codex_protocol::openai_models::TruncationPolicyConfig;
-use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::config_types::Verbosity;
+use codex_protocol::openai_models::TruncationMode;
+use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
@@ -116,7 +116,6 @@ pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> Mo
 
     model
 }
-
 
 /// Returns reasoning effort presets for Low, Medium, High.
 fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {

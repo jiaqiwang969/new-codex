@@ -46,9 +46,7 @@ impl ToolHandler for GeminiWebSearchHandler {
 
         let provider = &invocation.turn.provider;
         let base_url = provider.base_url.as_deref().ok_or_else(|| {
-            FunctionCallError::RespondToModel(
-                "Gemini provider must define a base_url".into(),
-            )
+            FunctionCallError::RespondToModel("Gemini provider must define a base_url".into())
         })?;
         let base_url = normalize_gemini_base_url(base_url);
 
@@ -120,11 +118,10 @@ impl ToolHandler for GeminiWebSearchHandler {
 
         debug!(query = %args.query, url = %url, "gemini_web_search: sending request");
 
-        let response = req_builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| FunctionCallError::RespondToModel(format!("HTTP request failed: {e}")))?;
+        let response =
+            req_builder.json(&request).send().await.map_err(|e| {
+                FunctionCallError::RespondToModel(format!("HTTP request failed: {e}"))
+            })?;
 
         let status = response.status();
         let body_text = response
@@ -258,6 +255,9 @@ mod tests {
             usage_metadata: None,
             error: None,
         };
-        assert_eq!(format_grounding_response(&resp), "No web search results found.");
+        assert_eq!(
+            format_grounding_response(&resp),
+            "No web search results found."
+        );
     }
 }

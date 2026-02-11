@@ -1404,7 +1404,7 @@ fn normalize_provider_account(account: &ModelProviderAccount) -> Option<ModelPro
     Some(ModelProviderAccount { base_url, env_key })
 }
 
-fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
+pub(crate) fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
     if provider.current_account().is_some() {
         return;
     }

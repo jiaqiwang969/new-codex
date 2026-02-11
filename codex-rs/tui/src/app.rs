@@ -484,7 +484,7 @@ async fn handle_model_migration_prompt_if_needed(
 
                 config.model = Some(target_model.clone());
                 config.model_reasoning_effort = mapped_effort;
-                app_event_tx.send(AppEvent::UpdateModel(target_model.clone()));
+                app_event_tx.send(AppEvent::UpdateModel(target_model.clone(), None));
                 app_event_tx.send(AppEvent::UpdateReasoningEffort(mapped_effort));
                 app_event_tx.send(AppEvent::PersistModelSelection {
                     model: target_model.clone(),
@@ -1746,8 +1746,9 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
-            AppEvent::UpdateModel(model) => {
-                self.chat_widget.set_model(&model);
+            AppEvent::UpdateModel(model, provider_label) => {
+                self.chat_widget
+                    .set_model(&model, provider_label.as_deref());
                 self.refresh_status_line();
             }
             AppEvent::UpdateCollaborationMode(mask) => {

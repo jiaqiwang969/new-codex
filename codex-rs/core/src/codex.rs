@@ -121,9 +121,9 @@ use crate::config::Config;
 use crate::config::Constrained;
 use crate::config::ConstraintResult;
 use crate::config::GhostSnapshotConfig;
+use crate::config::StartedNetworkProxy;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
-use crate::config::StartedNetworkProxy;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::config::types::McpServerConfig;
 use crate::config::types::ShellEnvironmentPolicy;
@@ -718,7 +718,13 @@ impl SessionConfiguration {
         }
     }
 
-    pub(crate) fn apply(&self, updates: &SessionSettingsUpdate) -> ConstraintResult<Self> {
+    /// Apply settings updates and return the new configuration plus an
+    /// optional provider-switch label (e.g. "Grok [key 1/2]") when the
+    /// provider was auto-switched for a different model family.
+    pub(crate) fn apply(
+        &self,
+        updates: &SessionSettingsUpdate,
+    ) -> ConstraintResult<(Self, Option<String>)> {
         let mut next_configuration = self.clone();
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
@@ -763,29 +769,85 @@ impl SessionConfiguration {
             == crate::model_provider_info::WireApi::Gemini
             || next_configuration.provider.is_grok();
 
+        tracing::info!(
+            new_model = %new_model,
+            target_provider_id = ?target_provider_id,
+            current_provider_id = %next_configuration.provider_id,
+            current_provider_name = %next_configuration.provider.name,
+            current_provider_base_url = ?next_configuration.provider.base_url,
+            current_wire_api = ?next_configuration.provider.wire_api,
+            current_is_grok = next_configuration.provider.is_grok(),
+            current_is_family_auto_switched = current_provider_is_family_auto_switched,
+            "apply() auto-switch check"
+        );
+
+        let mut provider_switch_label: Option<String> = None;
+
         if let Some(target_provider_id) = target_provider_id {
             if !provider_matches_builtin_family(&next_configuration.provider, target_provider_id) {
-                let providers = crate::model_provider_info::built_in_model_providers();
+                // Use the merged provider map (built-in + user-defined from config.toml)
+                // so that custom providers with account_pool, env_keys, etc. are preserved.
+                let providers = &next_configuration
+                    .original_config_do_not_use
+                    .model_providers;
+                let old_provider_id = next_configuration.provider_id.clone();
                 if let Some(provider) = providers.get(target_provider_id) {
                     next_configuration.provider_id = target_provider_id.to_string();
                     next_configuration.provider = provider.clone();
+                    crate::config::apply_primary_account_pool_selection(
+                        &mut next_configuration.provider,
+                    );
+                    let account_label = account_index_label(&next_configuration.provider);
+                    let base_url = next_configuration
+                        .provider
+                        .base_url
+                        .as_deref()
+                        .unwrap_or("(default)");
+                    provider_switch_label = Some(format!(
+                        "{} -> {} [{}] @ {} (model: {})",
+                        old_provider_id, target_provider_id, account_label, base_url, new_model
+                    ));
+                    tracing::info!(
+                        from_provider = %old_provider_id,
+                        to_provider = %target_provider_id,
+                        account = %account_label,
+                        base_url = %base_url,
+                        "auto-switching provider for model family"
+                    );
+                } else {
+                    tracing::warn!(
+                        target_provider_id,
+                        available_providers = ?providers.keys().collect::<Vec<_>>(),
+                        "auto-switch: target provider not found in merged provider map"
+                    );
                 }
             }
         } else if current_provider_is_family_auto_switched {
             // Switching FROM a family-specific provider back to a default
             // model family: restore the user's explicitly configured provider
             // (before auto-switching).
-            next_configuration.provider_id = next_configuration
-                .original_config_do_not_use
-                .model_provider_id
-                .clone();
-            next_configuration.provider = next_configuration
-                .original_config_do_not_use
-                .user_configured_provider
-                .clone();
+            let old_provider_id = next_configuration.provider_id.clone();
+            let original_config = &next_configuration.original_config_do_not_use;
+            let restored_provider = original_config.user_configured_provider.clone();
+            next_configuration.provider_id = resolve_provider_id_for_provider(
+                &original_config.model_providers,
+                &restored_provider,
+                &original_config.model_provider_id,
+            );
+            next_configuration.provider = restored_provider;
+            let account_label = account_index_label(&next_configuration.provider);
+            let base_url = next_configuration
+                .provider
+                .base_url
+                .as_deref()
+                .unwrap_or("(default)");
+            provider_switch_label = Some(format!(
+                "{} -> {} [{}] @ {} (model: {})",
+                old_provider_id, next_configuration.provider_id, account_label, base_url, new_model
+            ));
         }
 
-        Ok(next_configuration)
+        Ok((next_configuration, provider_switch_label))
     }
 }
 
@@ -814,6 +876,61 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
         crate::model_provider_info::GROK_PROVIDER_ID => provider.is_grok(),
         _ => false,
     }
+}
+
+fn resolve_provider_id_for_provider(
+    providers: &HashMap<String, ModelProviderInfo>,
+    provider: &ModelProviderInfo,
+    fallback_provider_id: &str,
+) -> String {
+    if let Some(candidate) = providers.get(fallback_provider_id)
+        && candidate == provider
+    {
+        return fallback_provider_id.to_string();
+    }
+
+    let mut matching_provider_ids = providers
+        .iter()
+        .filter_map(|(id, candidate)| (candidate == provider).then_some(id.clone()))
+        .collect::<Vec<_>>();
+    if matching_provider_ids.is_empty() {
+        return fallback_provider_id.to_string();
+    }
+    if matching_provider_ids.len() == 1 {
+        return matching_provider_ids.remove(0);
+    }
+
+    matching_provider_ids.sort();
+    if let Some(openai_id) = matching_provider_ids
+        .iter()
+        .find(|id| id.as_str() == "openai")
+    {
+        return openai_id.clone();
+    }
+    matching_provider_ids.remove(0)
+}
+
+fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> usize {
+    let snapshot = state.clone_history();
+    let original = snapshot.raw_items();
+    let filtered = original
+        .iter()
+        .filter(|item| {
+            !matches!(
+                item,
+                ResponseItem::Reasoning {
+                    encrypted_content: Some(_),
+                    ..
+                } | ResponseItem::Compaction { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_count = original.len().saturating_sub(filtered.len());
+    if removed_count > 0 {
+        state.replace_history(filtered);
+    }
+    removed_count
 }
 
 #[derive(Default, Clone)]
@@ -1611,25 +1728,55 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        let mut state = self.state.lock().await;
+        let (previous_cwd, next_cwd, codex_home, provider_label, dropped_items_count) = {
+            let mut state = self.state.lock().await;
 
-        match state.session_configuration.apply(&updates) {
-            Ok(updated) => {
-                let previous_cwd = state.session_configuration.cwd.clone();
-                let next_cwd = updated.cwd.clone();
-                let codex_home = updated.codex_home.clone();
-                state.session_configuration = updated;
-                drop(state);
-
-                self.maybe_refresh_shell_snapshot_for_cwd(&previous_cwd, &next_cwd, &codex_home);
-
-                Ok(())
+            match state.session_configuration.apply(&updates) {
+                Ok((updated, provider_label)) => {
+                    let previous_cwd = state.session_configuration.cwd.clone();
+                    let next_cwd = updated.cwd.clone();
+                    let codex_home = updated.codex_home.clone();
+                    state.session_configuration = updated;
+                    let dropped_items_count = if provider_label.is_some() {
+                        drop_provider_specific_encrypted_history_items(&mut state)
+                    } else {
+                        0
+                    };
+                    (
+                        previous_cwd,
+                        next_cwd,
+                        codex_home,
+                        provider_label,
+                        dropped_items_count,
+                    )
+                }
+                Err(err) => {
+                    warn!("rejected session settings update: {err}");
+                    return Err(err);
+                }
             }
-            Err(err) => {
-                warn!("rejected session settings update: {err}");
-                Err(err)
-            }
+        };
+
+        self.maybe_refresh_shell_snapshot_for_cwd(&previous_cwd, &next_cwd, &codex_home);
+
+        if dropped_items_count > 0 {
+            tracing::info!(
+                dropped_items_count,
+                "provider switch: dropped encrypted reasoning items from history"
+            );
         }
+
+        if let Some(label) = provider_label {
+            self.send_event_raw(Event {
+                id: self.next_internal_sub_id(),
+                msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
+                    message: format!("Provider: {label}"),
+                }),
+            })
+            .await;
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn new_turn_with_sub_id(
@@ -1637,16 +1784,35 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<Arc<TurnContext>> {
-        let (session_configuration, sandbox_policy_changed, previous_cwd, codex_home) = {
+        let (
+            session_configuration,
+            sandbox_policy_changed,
+            previous_cwd,
+            codex_home,
+            provider_label,
+            dropped_items_count,
+        ) = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
-                Ok(next) => {
+                Ok((next, provider_label)) => {
                     let previous_cwd = state.session_configuration.cwd.clone();
                     let sandbox_policy_changed =
                         state.session_configuration.sandbox_policy != next.sandbox_policy;
                     let codex_home = next.codex_home.clone();
                     state.session_configuration = next.clone();
-                    (next, sandbox_policy_changed, previous_cwd, codex_home)
+                    let dropped_items_count = if provider_label.is_some() {
+                        drop_provider_specific_encrypted_history_items(&mut state)
+                    } else {
+                        0
+                    };
+                    (
+                        next,
+                        sandbox_policy_changed,
+                        previous_cwd,
+                        codex_home,
+                        provider_label,
+                        dropped_items_count,
+                    )
                 }
                 Err(err) => {
                     drop(state);
@@ -1669,14 +1835,28 @@ impl Session {
             &codex_home,
         );
 
-        Ok(self
+        let turn_context = self
             .new_turn_from_configuration(
                 sub_id,
                 session_configuration,
                 updates.final_output_json_schema,
                 sandbox_policy_changed,
             )
-            .await)
+            .await;
+
+        if dropped_items_count > 0 {
+            tracing::info!(
+                dropped_items_count,
+                "provider switch: dropped encrypted reasoning items from history"
+            );
+        }
+
+        if let Some(label) = provider_label {
+            self.notify_background_event(&turn_context, format!("Provider: {label}"))
+                .await;
+        }
+
+        Ok(turn_context)
     }
 
     async fn new_turn_from_configuration(
@@ -3257,8 +3437,29 @@ mod handlers {
         };
         current_context.otel_manager.user_prompt(&items);
 
-        // Attempt to inject input into current task.
-        if let Err(SteerInputError::NoActiveTurn(items)) = sess.steer_input(items, None).await {
+        // If the new turn context changes model/provider, do not steer into the currently active
+        // task: start a fresh turn so requests use the updated provider endpoint.
+        let should_replace_active_turn = sess
+            .active_turn_context_and_cancellation_token()
+            .await
+            .is_some_and(|(active_turn_context, _)| {
+                active_turn_context.model_info.slug != current_context.model_info.slug
+                    || active_turn_context.provider != current_context.provider
+            });
+
+        let items_for_new_turn = if should_replace_active_turn {
+            Some(items)
+        } else {
+            match sess.steer_input(items, None).await {
+                Ok(_) => None,
+                Err(SteerInputError::NoActiveTurn(items)) => Some(items),
+                Err(SteerInputError::ExpectedTurnMismatch { .. } | SteerInputError::EmptyInput) => {
+                    None
+                }
+            }
+        };
+
+        if let Some(items) = items_for_new_turn {
             sess.seed_initial_context_if_needed(&current_context).await;
             let resumed_model = sess.take_pending_resume_previous_model().await;
             let update_items = sess.build_settings_update_items(
@@ -4193,13 +4394,23 @@ pub(crate) async fn run_turn(
     let turn_metadata_header = turn_context.resolve_turn_metadata_header().await;
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
-    // Use the turn-scoped provider so that runtime `/model` switches between
-    // GPT (Responses API) and Gemini route to the correct endpoint.
-    let mut client_session = prewarmed_client_session.unwrap_or_else(|| {
-        sess.services
+    // Startup prewarm is tied to the session-default provider. If the user changes model family
+    // before the first turn (e.g. Gemini -> GPT), discard that prewarmed session and create a
+    // provider-matched one so requests hit the right base URL/API.
+    let mut client_session = match prewarmed_client_session {
+        Some(client_session)
+            if sess
+                .services
+                .model_client
+                .session_provider_matches(&turn_context.provider) =>
+        {
+            client_session
+        }
+        _ => sess
+            .services
             .model_client
-            .new_session_for_provider(&turn_context.provider)
-    });
+            .new_session_for_provider(&turn_context.provider),
+    };
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -4357,7 +4568,10 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
 }
 
 fn should_switch_provider_account(err: &CodexErr, retries: u64, max_retries: u64) -> bool {
-    if matches!(err, CodexErr::EnvVar(_) | CodexErr::RetryLimit(_)) {
+    if matches!(
+        err,
+        CodexErr::EnvVar(_) | CodexErr::RetryLimit(_) | CodexErr::UsageLimitReached(_)
+    ) {
         return true;
     }
     if let Some(status) = err.http_status_code_value()
@@ -4372,18 +4586,30 @@ fn normalize_account_pool(
     provider_id: &str,
     provider: &ModelProviderInfo,
 ) -> Vec<ModelProviderAccount> {
+    let mut pool = normalize_account_pool_in_config_order(provider_id, provider);
+    if let Some(current_account) = provider.current_account() {
+        if let Some(index) = pool.iter().position(|account| account == &current_account) {
+            let current = pool.remove(index);
+            pool.insert(0, current);
+        } else {
+            pool.insert(0, current_account);
+        }
+    }
+    pool
+}
+
+fn normalize_account_pool_in_config_order(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> Vec<ModelProviderAccount> {
     if provider.account_pool.is_empty() {
         return Vec::new();
     }
-
-    let mut pool = Vec::new();
-    pool.extend(provider.account_pool.iter().cloned());
-    if let Some(current_account) = provider.current_account() {
-        pool.insert(0, current_account);
-    }
-
     let mut seen = HashSet::new();
-    pool.into_iter()
+    provider
+        .account_pool
+        .iter()
+        .cloned()
         .filter_map(|account| {
             let base_url = account
                 .base_url
@@ -4439,6 +4665,23 @@ fn next_account_from_pool(
     }
 
     None
+}
+
+/// Return a human-readable label like "key 1/3" indicating which account
+/// from the pool is currently active. Falls back to the env_key name when
+/// there is no pool.
+fn account_index_label(provider: &ModelProviderInfo) -> String {
+    if let Some(current) = provider.current_account() {
+        let pool = normalize_account_pool_in_config_order("", provider);
+        if pool.len() > 1
+            && let Some(idx) = pool.iter().position(|a| a == &current)
+        {
+            return format!("key {}/{}", idx + 1, pool.len());
+        }
+        current.env_key.unwrap_or_else(|| "<default>".to_string())
+    } else {
+        "<no account>".to_string()
+    }
 }
 
 async fn persist_provider_account_selection(
@@ -4534,13 +4777,14 @@ async fn maybe_switch_provider_account(
         &next_account,
     )
     .await;
-    let account_base_url = next_account
-        .base_url
-        .clone()
-        .unwrap_or_else(|| "<default>".to_string());
+    let next_provider = {
+        let state = sess.state.lock().await;
+        state.session_configuration.provider.clone()
+    };
+    let key_label = account_index_label(&next_provider);
     sess.notify_background_event(
         updated_context.as_ref(),
-        format!("Switched provider account for {provider_id} to {account_base_url} after {err}"),
+        format!("Switched provider account for {provider_id} to {key_label} after {err}"),
     )
     .await;
 
@@ -4780,7 +5024,28 @@ async fn run_sampling_request(
                 if let Some(rate_limits) = rate_limits {
                     sess.update_rate_limits(&turn_context, rate_limits).await;
                 }
-                return Err(CodexErr::UsageLimitReached(e));
+                // Try switching to the next account key before giving up.
+                let usage_err = CodexErr::UsageLimitReached(e);
+                let max_retries = turn_context.provider.stream_max_retries();
+                if let Some(updated_context) = maybe_switch_provider_account(
+                    &sess,
+                    &turn_context,
+                    &mut attempted_accounts,
+                    &usage_err,
+                    0, // always eligible for account switch
+                    max_retries,
+                )
+                .await
+                {
+                    turn_context = updated_context;
+                    *client_session = sess
+                        .services
+                        .model_client
+                        .new_session_for_provider(&turn_context.provider);
+                    retries = 0;
+                    continue;
+                }
+                return Err(usage_err);
             }
             Err(err) => err,
         };
@@ -5803,6 +6068,29 @@ mod tests {
     }
 
     #[test]
+    fn account_index_label_uses_configured_account_order() {
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.base_url = Some("https://b.example/v1".to_string());
+        provider.env_key = Some("KEY_B".to_string());
+        provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://a.example/v1".to_string()),
+                env_key: Some("KEY_A".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://c.example/v1".to_string()),
+                env_key: Some("KEY_C".to_string()),
+            },
+        ];
+
+        assert_eq!(account_index_label(&provider), "key 2/3");
+    }
+
+    #[test]
     fn next_account_from_pool_wraps_without_repeating_in_turn() {
         let mut provider = ModelProviderInfo::create_openai_provider();
         provider.base_url = Some("https://a.example/v1".to_string());
@@ -5842,6 +6130,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_switch_history_sanitizer_drops_encrypted_reasoning_items() {
+        let session_configuration = make_session_configuration_for_tests().await;
+        let mut state = SessionState::new(session_configuration);
+        state.replace_history(vec![
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "existing assistant output".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+                thought_signature: None,
+            },
+            ResponseItem::Reasoning {
+                id: "r-1".to_string(),
+                summary: Vec::new(),
+                content: None,
+                encrypted_content: Some("enc-blob-1".to_string()),
+            },
+            ResponseItem::Compaction {
+                encrypted_content: "enc-blob-2".to_string(),
+            },
+            ResponseItem::Reasoning {
+                id: "r-2".to_string(),
+                summary: Vec::new(),
+                content: None,
+                encrypted_content: None,
+            },
+            user_message("user turn"),
+        ]);
+
+        let removed = drop_provider_specific_encrypted_history_items(&mut state);
+        assert_eq!(removed, 2);
+
+        let filtered = state.clone_history().for_prompt();
+        assert_eq!(
+            filtered,
+            vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "existing assistant output".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                    thought_signature: None,
+                },
+                ResponseItem::Reasoning {
+                    id: "r-2".to_string(),
+                    summary: Vec::new(),
+                    content: None,
+                    encrypted_content: None,
+                },
+                user_message("user turn"),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn apply_switches_to_grok_provider_for_namespaced_grok_model() {
         let (session, _) = make_session_and_context().await;
         let session_configuration = {
@@ -5851,7 +6200,7 @@ mod tests {
 
         assert!(session_configuration.provider.is_openai());
 
-        let next = session_configuration
+        let (next, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("xai/grok-4-latest")),
                 ..Default::default()
@@ -5872,7 +6221,7 @@ mod tests {
 
         assert!(session_configuration.provider.is_openai());
 
-        let next = session_configuration
+        let (next, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("google/gemma-3n")),
                 ..Default::default()
@@ -5890,7 +6239,7 @@ mod tests {
             state.session_configuration.clone()
         };
 
-        let gemini = session_configuration
+        let (gemini, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemini-2.5-pro")),
                 ..Default::default()
@@ -5898,7 +6247,7 @@ mod tests {
             .expect("model switch to gemini should be valid");
         assert!(gemini.provider.is_gemini());
 
-        let grok = gemini
+        let (grok, _) = gemini
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("grok-4-latest")),
                 ..Default::default()
@@ -5918,7 +6267,7 @@ mod tests {
 
         assert!(session_configuration.provider.is_openai());
 
-        let next = session_configuration
+        let (next, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
                 ..Default::default()
@@ -5944,7 +6293,7 @@ mod tests {
             state.session_configuration.clone()
         };
 
-        let gemini = session_configuration
+        let (gemini, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemini-2.5-pro")),
                 ..Default::default()
@@ -5952,7 +6301,7 @@ mod tests {
             .expect("model switch to gemini should be valid");
         assert!(gemini.provider.is_gemini());
 
-        let gemma = gemini
+        let (gemma, _) = gemini
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
                 ..Default::default()
@@ -5979,7 +6328,7 @@ mod tests {
         custom_gemini_provider.supports_websockets = false;
         session_configuration.provider = custom_gemini_provider.clone();
 
-        let next = session_configuration
+        let (next, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemini-2.5-pro")),
                 ..Default::default()
@@ -6006,7 +6355,7 @@ mod tests {
         custom_gemini_provider.supports_websockets = false;
         session_configuration.provider = custom_gemini_provider.clone();
 
-        let next = session_configuration
+        let (next, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
                 ..Default::default()
@@ -6029,7 +6378,7 @@ mod tests {
             .user_configured_provider
             .clone();
 
-        let grok = session_configuration
+        let (grok, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("grok-4-latest")),
                 ..Default::default()
@@ -6037,7 +6386,7 @@ mod tests {
             .expect("model switch to grok should be valid");
         assert!(grok.provider.is_grok());
 
-        let restored = grok
+        let (restored, _) = grok
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gpt-5-codex")),
                 ..Default::default()
@@ -6060,7 +6409,7 @@ mod tests {
             .user_configured_provider
             .clone();
 
-        let gemma = session_configuration
+        let (gemma, _) = session_configuration
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gemma-3n")),
                 ..Default::default()
@@ -6068,7 +6417,7 @@ mod tests {
             .expect("model switch to gemma should be valid");
         assert!(gemma.provider.is_gemma());
 
-        let restored = gemma
+        let (restored, _) = gemma
             .apply(&SessionSettingsUpdate {
                 collaboration_mode: Some(collaboration_mode_for_model("gpt-5-codex")),
                 ..Default::default()
@@ -6078,6 +6427,49 @@ mod tests {
         assert_eq!(restored.provider, expected_user_provider);
     }
 
+    #[tokio::test]
+    async fn apply_restores_user_provider_id_when_startup_model_auto_switched_provider_id() {
+        let (session, _) = make_session_and_context().await;
+        let mut session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let mut config = (*session_configuration.original_config_do_not_use).clone();
+        let gemini_provider = config
+            .model_providers
+            .get(crate::model_provider_info::GEMINI_PROVIDER_ID)
+            .expect("gemini provider should exist")
+            .clone();
+        let openai_provider = config
+            .model_providers
+            .get("openai")
+            .expect("openai provider should exist")
+            .clone();
+
+        // Simulate startup state where model family auto-switch changed
+        // model_provider_id to `gemini` while preserving the user's original
+        // configured provider (`openai`) for later restoration.
+        config.model_provider_id = crate::model_provider_info::GEMINI_PROVIDER_ID.to_string();
+        config.model_provider = gemini_provider.clone();
+        config.user_configured_provider = openai_provider.clone();
+        session_configuration.original_config_do_not_use = Arc::new(config);
+        session_configuration.provider_id =
+            crate::model_provider_info::GEMINI_PROVIDER_ID.to_string();
+        session_configuration.provider = gemini_provider;
+
+        let (restored, label) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gpt-5-codex")),
+                ..Default::default()
+            })
+            .expect("switch back to default model family should restore user provider");
+
+        assert_eq!(restored.provider_id, "openai");
+        assert_eq!(restored.provider, openai_provider);
+        let label = label.expect("provider switch label should be present");
+        assert!(label.starts_with("gemini -> openai "));
+    }
 
     fn make_mcp_tool(
         server_name: &str,
@@ -7020,6 +7412,7 @@ mod tests {
         };
 
         SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -7606,6 +7999,70 @@ mod tests {
 
         assert_eq!(turn_id, tc.sub_id);
         assert!(sess.has_pending_input().await);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn user_turn_replaces_active_task_when_provider_changes() {
+        let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        let input = vec![UserInput::Text {
+            text: "hello".to_string(),
+            text_elements: Vec::new(),
+        }];
+        sess.spawn_task(
+            Arc::clone(&tc),
+            input,
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+        let mut previous_context = Some(Arc::clone(&tc));
+        handlers::user_input_or_turn(
+            &sess,
+            "replacement-turn".to_string(),
+            Op::UserTurn {
+                items: vec![UserInput::Text {
+                    text: "switch provider".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                cwd: tc.cwd.clone(),
+                approval_policy: tc.approval_policy,
+                sandbox_policy: tc.sandbox_policy.clone(),
+                model: "gemma-3n".to_string(),
+                effort: tc.reasoning_effort,
+                summary: tc.reasoning_summary,
+                final_output_json_schema: None,
+                collaboration_mode: None,
+                personality: tc.personality,
+            },
+            &mut previous_context,
+        )
+        .await;
+
+        let mut saw_replaced_abort = false;
+        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let event = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("timeout waiting for event")
+                .expect("event");
+            if let EventMsg::TurnAborted(turn_aborted) = event.msg
+                && turn_aborted.reason == TurnAbortReason::Replaced
+            {
+                saw_replaced_abort = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_replaced_abort,
+            "expected active task to be replaced when provider changes"
+        );
+
+        sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

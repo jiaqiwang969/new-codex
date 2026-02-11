@@ -134,7 +134,9 @@ pub(crate) enum AppEvent {
     },
 
     /// Update the current model slug in the running app and widget.
-    UpdateModel(String),
+    /// The optional second field carries a provider/account label for display
+    /// (e.g. "Grok [key 1/2]").
+    UpdateModel(String, Option<String>),
 
     /// Update the active collaboration mask in the running app and widget.
     UpdateCollaborationMode(CollaborationModeMask),

@@ -2137,6 +2137,14 @@ impl ChatWidget {
 
     fn on_background_event(&mut self, message: String) {
         debug!("BackgroundEvent: {message}");
+        if let Some(label) = message.strip_prefix("Provider: ") {
+            self.add_info_message(
+                "Provider auto-switched.".to_string(),
+                Some(label.to_string()),
+            );
+            self.request_redraw();
+            return;
+        }
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(true);
         self.set_status_header(message);
@@ -5690,7 +5698,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
             }));
-            tx.send(AppEvent::UpdateModel(switch_model.clone()));
+            tx.send(AppEvent::UpdateModel(switch_model.clone(), None));
             tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
         })];
 
@@ -6079,7 +6087,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
             }));
-            tx.send(AppEvent::UpdateModel(model_for_action.clone()));
+            tx.send(AppEvent::UpdateModel(model_for_action.clone(), None));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
             tx.send(AppEvent::PersistModelSelection {
                 model: model_for_action.clone(),
@@ -6253,7 +6261,8 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
             }));
-        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
+        self.app_event_tx
+            .send(AppEvent::UpdateModel(model.clone(), None));
         self.app_event_tx
             .send(AppEvent::UpdateReasoningEffort(effort));
         self.app_event_tx.send(AppEvent::PersistModelSelection {
@@ -7092,7 +7101,8 @@ impl ChatWidget {
     }
 
     /// Set the model in the widget's config copy and stored collaboration mode.
-    pub(crate) fn set_model(&mut self, model: &str) {
+    /// `provider_label` is an optional hint like "openai -> gemini [key 1/2] @ ...".
+    pub(crate) fn set_model(&mut self, model: &str, provider_label: Option<&str>) {
         self.current_collaboration_mode =
             self.current_collaboration_mode
                 .with_updates(Some(model.to_string()), None, None);
@@ -7102,6 +7112,13 @@ impl ChatWidget {
             mask.model = Some(model.to_string());
         }
         self.refresh_model_display();
+
+        if let Some(label) = provider_label {
+            self.add_info_message(
+                "Provider auto-switched for selected model.".to_string(),
+                Some(format!("Model: {model} | {label}")),
+            );
+        }
     }
 
     pub(crate) fn current_model(&self) -> &str {

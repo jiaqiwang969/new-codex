@@ -1526,14 +1526,8 @@ pub(crate) fn build_specs(
                     // Gemini API rejects google_search + functionDeclarations in the
                     // same request. Instead, expose a function tool that makes a
                     // separate Gemini API call with only google_search.
-                    builder.push_spec_with_parallel_support(
-                        create_gemini_web_search_tool(),
-                        true,
-                    );
-                    builder.register_handler(
-                        "gemini_web_search",
-                        Arc::new(GeminiWebSearchHandler),
-                    );
+                    builder.push_spec_with_parallel_support(create_gemini_web_search_tool(), true);
+                    builder.register_handler("gemini_web_search", Arc::new(GeminiWebSearchHandler));
                 } else {
                     let external = match config.web_search_mode {
                         Some(WebSearchMode::Cached) => config

@@ -1127,7 +1127,7 @@ async fn make_chatwidget_manual(
         next_generated_image_index: 0,
         last_generated_image_path: None,
     };
-    widget.set_model(&resolved_model);
+    widget.set_model(&resolved_model, None);
     (widget, rx, op_rx)
 }
 
@@ -3107,7 +3107,7 @@ async fn set_model_updates_active_collaboration_mask() {
             .expect("expected plan collaboration mask");
     chat.set_collaboration_mask(plan_mask);
 
-    chat.set_model("gpt-5.1-codex-mini");
+    chat.set_model("gpt-5.1-codex-mini", None);
 
     assert_eq!(chat.current_model(), "gpt-5.1-codex-mini");
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
@@ -3199,7 +3199,7 @@ async fn user_turn_includes_personality_from_config() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("bengalfox")).await;
     chat.set_feature_enabled(Feature::Personality, true);
     chat.thread_id = Some(ThreadId::new());
-    chat.set_model("bengalfox");
+    chat.set_model("bengalfox", None);
     chat.set_personality(Personality::Friendly);
 
     chat.bottom_pane
@@ -3894,7 +3894,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
 #[tokio::test]
 async fn model_cap_error_does_not_switch_models() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("boomslang")).await;
-    chat.set_model("boomslang");
+    chat.set_model("boomslang", None);
     while rx.try_recv().is_ok() {}
     while op_rx.try_recv().is_ok() {}
 
@@ -3910,7 +3910,7 @@ async fn model_cap_error_does_not_switch_models() {
     });
 
     while let Ok(event) = rx.try_recv() {
-        if let AppEvent::UpdateModel(model) = event {
+        if let AppEvent::UpdateModel(model, _provider_label) = event {
             assert_eq!(
                 model, "boomslang",
                 "did not expect model switch on model-cap error"
@@ -4934,6 +4934,27 @@ async fn background_event_updates_status_header() {
     assert!(chat.bottom_pane.status_indicator_visible());
     assert_eq!(chat.current_status_header, "Waiting for `vim`");
     assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn provider_background_event_emits_info_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let initial_status = chat.current_status_header.clone();
+
+    chat.handle_codex_event(Event {
+        id: "bg-provider-1".into(),
+        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
+            message: "Provider: gemini -> openai [key 1/2] @ https://api.openai.com/v1".to_string(),
+        }),
+    });
+
+    assert_eq!(chat.current_status_header, initial_status);
+    assert!(!chat.bottom_pane.status_indicator_visible());
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Provider auto-switched."));
+    assert!(rendered.contains("gemini -> openai [key 1/2]"));
 }
 
 #[tokio::test]

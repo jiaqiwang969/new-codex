@@ -64,6 +64,8 @@ use codex_api::error::ApiError;
 use codex_api::requests::responses::Compression;
 use codex_otel::OtelManager;
 
+use crate::turn_metadata::build_turn_metadata_header;
+use crate::turn_metadata::resolve_turn_metadata_header_with_timeout;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
@@ -80,16 +82,15 @@ use http::HeaderMap as ApiHeaderMap;
 use http::HeaderValue;
 use http::StatusCode as HttpStatusCode;
 use reqwest::StatusCode;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::warn;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 use tracing::debug;
-use crate::turn_metadata::{resolve_turn_metadata_header_with_timeout, build_turn_metadata_header};
+use tracing::warn;
 
 use crate::AuthManager;
 use crate::auth::CodexAuth;
@@ -102,6 +103,7 @@ use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
+use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::model_supports_data_url_input_images;
 use crate::model_compat::model_supports_input_images;
 use crate::model_compat::model_supports_memory_trace_summarize;
@@ -321,6 +323,10 @@ impl ModelClient {
         self.new_session_with_provider(provider.clone())
     }
 
+    pub fn session_provider_matches(&self, provider: &ModelProviderInfo) -> bool {
+        &self.state.provider == provider
+    }
+
     /// Spawns a best-effort task that warms a websocket for the first turn.
     ///
     /// This call performs only connection setup; it never sends prompt payloads.
@@ -393,7 +399,6 @@ impl ModelClient {
             }
         }
     }
-
 
     /// Stores the preconnect task handle so the first turn can await it.
     fn store_preconnect_task(&self, handle: JoinHandle<()>) {
@@ -1204,12 +1209,13 @@ impl ModelClientSession {
 
         let reasoning_effort = effort.or(model_info.default_reasoning_level);
         let thinking_config = build_gemini_thinking_config(api_model, reasoning_effort);
+        let max_output_tokens = resolve_gemini_max_output_tokens(&model_info.slug);
 
         let generation_config = Some(GeminiGenerationConfig {
             temperature: Some(1.0),
             top_k: Some(64),
             top_p: Some(0.95),
-            max_output_tokens: None,
+            max_output_tokens,
             thinking_config,
             media_resolution: None,
             response_modalities: if api_model.contains("image") {
@@ -1455,6 +1461,26 @@ fn canonical_model_slug_for_provider<'a>(
     Cow::Borrowed(canonical)
 }
 
+fn resolve_gemini_max_output_tokens(model_slug: &str) -> Option<i32> {
+    if let Ok(raw) = std::env::var("CODEX_GEMINI_MAX_OUTPUT_TOKENS") {
+        let trimmed = raw.trim();
+        if let Ok(parsed) = trimmed.parse::<i32>()
+            && parsed > 0
+        {
+            return Some(parsed);
+        }
+        warn!("Ignoring invalid CODEX_GEMINI_MAX_OUTPUT_TOKENS value: {trimmed}");
+    }
+
+    // Some local Gemma-compatible gateways default to tiny (or zero) output
+    // token budgets when the field is omitted.
+    if is_gemma_model_slug(model_slug) {
+        Some(8192)
+    } else {
+        None
+    }
+}
+
 fn prompt_contains_input_images(prompt: &Prompt) -> bool {
     prompt.input.iter().any(response_item_contains_input_image)
 }
@@ -1513,7 +1539,6 @@ fn is_data_url_image(url: &str) -> bool {
         .get(..11)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/"))
 }
-
 
 /// Parses per-turn metadata into an HTTP header value.
 ///
