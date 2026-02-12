@@ -375,6 +375,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
     let writable = TempDir::new().unwrap();
     let new_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![writable.path().try_into().unwrap()],
+        read_only_access: Default::default(),
         network_access: true,
         exclude_tmpdir_env_var: true,
         exclude_slash_tmp: true,
@@ -551,9 +552,11 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
         })
         .collect();
     assert!(
-        permissions_texts
-            .iter()
-            .any(|text| text.contains("`approval_policy` is `never`")),
+        permissions_texts.iter().any(|text| {
+            let lower = text.to_ascii_lowercase();
+            (lower.contains("approval policy") || lower.contains("approval_policy"))
+                && lower.contains("never")
+        }),
         "permissions message should reflect overridden approval policy: {permissions_texts:?}"
     );
 
@@ -616,6 +619,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
     let writable = TempDir::new().unwrap();
     let new_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![AbsolutePathBuf::try_from(writable.path()).unwrap()],
+        read_only_access: Default::default(),
         network_access: true,
         exclude_tmpdir_env_var: true,
         exclude_slash_tmp: true,

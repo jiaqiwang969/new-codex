@@ -4,6 +4,7 @@
 //! between user and agent.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::Path;
@@ -198,6 +199,9 @@ pub enum Op {
     ExecApproval {
         /// The id of the submission we are approving
         id: String,
+        /// Turn id associated with the approval event, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         /// The user's decision in response to the request.
         decision: ReviewDecision,
     },
@@ -285,6 +289,12 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+
+    /// Drop all persisted memory artifacts and memory-tracking DB rows.
+    DropMemories,
+
+    /// Trigger a single pass of the startup memory pipeline.
+    UpdateMemories,
 
     /// Set a user-facing thread name in the persisted rollout metadata.
     /// This is a local-only operation handled by codex-core; it does not
@@ -408,6 +418,107 @@ impl NetworkAccess {
     }
 }
 
+fn default_include_platform_defaults() -> bool {
+    true
+}
+
+/// Determines how read-only file access is granted inside a restricted
+/// sandbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Display, Default, JsonSchema, TS)]
+#[strum(serialize_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case")]
+#[ts(tag = "type")]
+pub enum ReadOnlyAccess {
+    /// Restrict reads to an explicit set of roots.
+    ///
+    /// When `include_platform_defaults` is `true`, platform defaults required
+    /// for basic execution are included in addition to `readable_roots`.
+    Restricted {
+        /// Include built-in platform read roots required for basic process
+        /// execution.
+        #[serde(default = "default_include_platform_defaults")]
+        include_platform_defaults: bool,
+        /// Additional absolute roots that should be readable.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        readable_roots: Vec<AbsolutePathBuf>,
+    },
+
+    /// Allow unrestricted file reads.
+    #[default]
+    FullAccess,
+}
+
+impl ReadOnlyAccess {
+    pub fn has_full_disk_read_access(&self) -> bool {
+        matches!(self, ReadOnlyAccess::FullAccess)
+    }
+
+    /// Returns the readable roots for restricted read access.
+    ///
+    /// For [`ReadOnlyAccess::FullAccess`], returns an empty list because
+    /// callers should grant blanket read access instead.
+    pub fn get_readable_roots_with_cwd(&self, cwd: &Path) -> Vec<AbsolutePathBuf> {
+        let mut roots: Vec<AbsolutePathBuf> = match self {
+            ReadOnlyAccess::FullAccess => return Vec::new(),
+            ReadOnlyAccess::Restricted {
+                include_platform_defaults,
+                readable_roots,
+            } => {
+                let mut roots = readable_roots.clone();
+                if *include_platform_defaults {
+                    #[cfg(target_os = "macos")]
+                    for platform_path in [
+                        "/bin", "/dev", "/etc", "/Library", "/private", "/sbin", "/System", "/tmp",
+                        "/usr",
+                    ] {
+                        #[allow(clippy::expect_used)]
+                        roots.push(
+                            AbsolutePathBuf::from_absolute_path(platform_path)
+                                .expect("platform defaults should be absolute"),
+                        );
+                    }
+
+                    #[cfg(target_os = "linux")]
+                    for platform_path in ["/bin", "/dev", "/etc", "/lib", "/lib64", "/tmp", "/usr"]
+                    {
+                        #[allow(clippy::expect_used)]
+                        roots.push(
+                            AbsolutePathBuf::from_absolute_path(platform_path)
+                                .expect("platform defaults should be absolute"),
+                        );
+                    }
+
+                    #[cfg(target_os = "windows")]
+                    for platform_path in [
+                        r"C:\Windows",
+                        r"C:\Program Files",
+                        r"C:\Program Files (x86)",
+                        r"C:\ProgramData",
+                    ] {
+                        #[allow(clippy::expect_used)]
+                        roots.push(
+                            AbsolutePathBuf::from_absolute_path(platform_path)
+                                .expect("platform defaults should be absolute"),
+                        );
+                    }
+
+                    match AbsolutePathBuf::from_absolute_path(cwd) {
+                        Ok(cwd_root) => roots.push(cwd_root),
+                        Err(err) => {
+                            error!("Ignoring invalid cwd {cwd:?} for sandbox readable root: {err}");
+                        }
+                    }
+                }
+                roots
+            }
+        };
+
+        let mut seen = HashSet::new();
+        roots.retain(|root| seen.insert(root.to_path_buf()));
+        roots
+    }
+}
+
 /// Determines execution restrictions for model shell commands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema, TS)]
 #[strum(serialize_all = "kebab-case")]
@@ -417,9 +528,16 @@ pub enum SandboxPolicy {
     #[serde(rename = "danger-full-access")]
     DangerFullAccess,
 
-    /// Read-only access to the entire file-system.
+    /// Read-only access configuration.
     #[serde(rename = "read-only")]
-    ReadOnly,
+    ReadOnly {
+        /// Read access granted while running under this policy.
+        #[serde(
+            default,
+            skip_serializing_if = "ReadOnlyAccess::has_full_disk_read_access"
+        )]
+        access: ReadOnlyAccess,
+    },
 
     /// Indicates the process is already in an external sandbox. Allows full
     /// disk access while honoring the provided network setting.
@@ -438,6 +556,13 @@ pub enum SandboxPolicy {
         /// writable from within the sandbox.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         writable_roots: Vec<AbsolutePathBuf>,
+
+        /// Read access granted while running under this policy.
+        #[serde(
+            default,
+            skip_serializing_if = "ReadOnlyAccess::has_full_disk_read_access"
+        )]
+        read_only_access: ReadOnlyAccess,
 
         /// When set to `true`, outbound network access is allowed. `false` by
         /// default.
@@ -499,7 +624,9 @@ impl FromStr for SandboxPolicy {
 impl SandboxPolicy {
     /// Returns a policy with read-only disk access and no network.
     pub fn new_read_only_policy() -> Self {
-        SandboxPolicy::ReadOnly
+        SandboxPolicy::ReadOnly {
+            access: ReadOnlyAccess::FullAccess,
+        }
     }
 
     /// Returns a policy that can read the entire disk, but can only write to
@@ -508,22 +635,29 @@ impl SandboxPolicy {
     pub fn new_workspace_write_policy() -> Self {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],
+            read_only_access: ReadOnlyAccess::FullAccess,
             network_access: false,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
         }
     }
 
-    /// Always returns `true`; restricting read access is not supported.
     pub fn has_full_disk_read_access(&self) -> bool {
-        true
+        match self {
+            SandboxPolicy::DangerFullAccess => true,
+            SandboxPolicy::ExternalSandbox { .. } => true,
+            SandboxPolicy::ReadOnly { access } => access.has_full_disk_read_access(),
+            SandboxPolicy::WorkspaceWrite {
+                read_only_access, ..
+            } => read_only_access.has_full_disk_read_access(),
+        }
     }
 
     pub fn has_full_disk_write_access(&self) -> bool {
         match self {
             SandboxPolicy::DangerFullAccess => true,
             SandboxPolicy::ExternalSandbox { .. } => true,
-            SandboxPolicy::ReadOnly => false,
+            SandboxPolicy::ReadOnly { .. } => false,
             SandboxPolicy::WorkspaceWrite { .. } => false,
         }
     }
@@ -532,9 +666,35 @@ impl SandboxPolicy {
         match self {
             SandboxPolicy::DangerFullAccess => true,
             SandboxPolicy::ExternalSandbox { network_access } => network_access.is_enabled(),
-            SandboxPolicy::ReadOnly => false,
+            SandboxPolicy::ReadOnly { .. } => false,
             SandboxPolicy::WorkspaceWrite { network_access, .. } => *network_access,
         }
+    }
+
+    /// Returns the list of readable roots (tailored to the current working
+    /// directory) when read access is restricted.
+    ///
+    /// For policies with full read access, this returns an empty list because
+    /// callers should grant blanket reads.
+    pub fn get_readable_roots_with_cwd(&self, cwd: &Path) -> Vec<AbsolutePathBuf> {
+        let mut roots = match self {
+            SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => Vec::new(),
+            SandboxPolicy::ReadOnly { access } => access.get_readable_roots_with_cwd(cwd),
+            SandboxPolicy::WorkspaceWrite {
+                read_only_access, ..
+            } => {
+                let mut roots = read_only_access.get_readable_roots_with_cwd(cwd);
+                roots.extend(
+                    self.get_writable_roots_with_cwd(cwd)
+                        .into_iter()
+                        .map(|root| root.root),
+                );
+                roots
+            }
+        };
+        let mut seen = HashSet::new();
+        roots.retain(|root| seen.insert(root.to_path_buf()));
+        roots
     }
 
     /// Returns the list of writable roots (tailored to the current working
@@ -544,9 +704,10 @@ impl SandboxPolicy {
         match self {
             SandboxPolicy::DangerFullAccess => Vec::new(),
             SandboxPolicy::ExternalSandbox { .. } => Vec::new(),
-            SandboxPolicy::ReadOnly => Vec::new(),
+            SandboxPolicy::ReadOnly { .. } => Vec::new(),
             SandboxPolicy::WorkspaceWrite {
                 writable_roots,
+                read_only_access: _,
                 exclude_tmpdir_env_var,
                 exclude_slash_tmp,
                 network_access: _,
@@ -1004,10 +1165,7 @@ pub enum AgentStatus {
 pub enum CodexErrorInfo {
     ContextWindowExceeded,
     UsageLimitExceeded,
-    ModelCap {
-        model: String,
-        reset_after_seconds: Option<u64>,
-    },
+    ServerOverloaded,
     HttpConnectionFailed {
         http_status_code: Option<u16>,
     },
@@ -1178,11 +1336,13 @@ pub struct ContextCompactedEvent;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {
+    pub turn_id: String,
     pub last_agent_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnStartedEvent {
+    pub turn_id: String,
     // TODO(aibrahim): make this not optional
     pub model_context_window: Option<i64>,
     #[serde(default)]
@@ -1233,6 +1393,9 @@ impl TokenUsageInfo {
         if let Some(last) = last {
             info.append_last_usage(last);
         }
+        if let Some(model_context_window) = model_context_window {
+            info.model_context_window = Some(model_context_window);
+        }
         Some(info)
     }
 
@@ -1275,6 +1438,8 @@ pub struct TokenCountEvent {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
 pub struct RateLimitSnapshot {
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
     pub primary: Option<RateLimitWindow>,
     pub secondary: Option<RateLimitWindow>,
     pub credits: Option<CreditsSnapshot>,
@@ -1767,6 +1932,8 @@ impl From<CompactedItem> for ResponseItem {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
 pub struct TurnContextItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub cwd: PathBuf,
     pub approval_policy: AskForApproval,
     pub sandbox_policy: SandboxPolicy,
@@ -2429,6 +2596,7 @@ pub struct Chunk {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnAbortedEvent {
+    pub turn_id: Option<String>,
     pub reason: TurnAbortReason,
 }
 
@@ -2618,6 +2786,38 @@ mod tests {
     }
 
     #[test]
+    fn workspace_write_restricted_read_access_includes_effective_writable_roots() {
+        let cwd = if cfg!(windows) {
+            Path::new(r"C:\workspace")
+        } else {
+            Path::new("/tmp/workspace")
+        };
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            read_only_access: ReadOnlyAccess::Restricted {
+                include_platform_defaults: false,
+                readable_roots: vec![],
+            },
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: false,
+        };
+
+        let readable_roots = policy.get_readable_roots_with_cwd(cwd);
+        let writable_roots = policy.get_writable_roots_with_cwd(cwd);
+
+        for writable_root in writable_roots {
+            assert!(
+                readable_roots
+                    .iter()
+                    .any(|root| root.as_path() == writable_root.root.as_path()),
+                "expected writable root {} to also be readable",
+                writable_root.root.as_path().display()
+            );
+        }
+    }
+
+    #[test]
     fn item_started_event_from_web_search_emits_begin_event() {
         let event = ItemStartedEvent {
             thread_id: ThreadId::new(),
@@ -2749,6 +2949,24 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn turn_aborted_event_deserializes_without_turn_id() -> Result<()> {
+        let event: EventMsg = serde_json::from_value(json!({
+            "type": "turn_aborted",
+            "reason": "interrupted",
+        }))?;
+
+        match event {
+            EventMsg::TurnAborted(TurnAbortedEvent { turn_id, reason }) => {
+                assert_eq!(turn_id, None);
+                assert_eq!(reason, TurnAbortReason::Interrupted);
+            }
+            _ => panic!("expected turn_aborted event"),
+        }
+
+        Ok(())
+    }
+
     /// Serialize Event to verify that its JSON representation has the expected
     /// amount of nesting.
     #[test]
@@ -2764,7 +2982,7 @@ mod tests {
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
                 approval_policy: AskForApproval::Never,
-                sandbox_policy: SandboxPolicy::ReadOnly,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 history_log_id: 0,
@@ -2856,5 +3074,47 @@ mod tests {
         assert_eq!(value["msg"]["failed"][0]["error"], "bad");
         assert_eq!(value["msg"]["cancelled"][0], "c");
         Ok(())
+    }
+
+    #[test]
+    fn token_usage_info_new_or_append_updates_context_window_when_provided() {
+        let initial = Some(TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            model_context_window: Some(258_400),
+        });
+        let last = Some(TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 10,
+        });
+
+        let info = TokenUsageInfo::new_or_append(&initial, &last, Some(128_000))
+            .expect("new_or_append should return info");
+
+        assert_eq!(info.model_context_window, Some(128_000));
+    }
+
+    #[test]
+    fn token_usage_info_new_or_append_preserves_context_window_when_not_provided() {
+        let initial = Some(TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            model_context_window: Some(258_400),
+        });
+        let last = Some(TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 10,
+        });
+
+        let info = TokenUsageInfo::new_or_append(&initial, &last, None)
+            .expect("new_or_append should return info");
+
+        assert_eq!(info.model_context_window, Some(258_400));
     }
 }

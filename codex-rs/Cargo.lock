@@ -1365,7 +1365,6 @@ dependencies = [
  "codex-backend-client",
  "codex-chatgpt",
  "codex-cloud-requirements",
- "codex-common",
  "codex-core",
  "codex-execpolicy",
  "codex-feedback",
@@ -1375,6 +1374,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
+ "codex-utils-cli",
  "codex-utils-json-to-toml",
  "core_test_support",
  "futures",
@@ -1501,10 +1501,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "codex-common",
  "codex-core",
  "codex-git",
  "codex-utils-cargo-bin",
+ "codex-utils-cli",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -1529,7 +1529,6 @@ dependencies = [
  "codex-arg0",
  "codex-chatgpt",
  "codex-cloud-tasks",
- "codex-common",
  "codex-core",
  "codex-exec",
  "codex-execpolicy",
@@ -1542,6 +1541,7 @@ dependencies = [
  "codex-stdio-to-uds",
  "codex-tui",
  "codex-utils-cargo-bin",
+ "codex-utils-cli",
  "codex-windows-sandbox",
  "libc",
  "owo-colors",
@@ -1585,13 +1585,18 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "codex-backend-client",
  "codex-core",
  "codex-otel",
  "codex-protocol",
+ "hmac",
  "pretty_assertions",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "toml 0.9.11+spec-1.1.0",
  "tracing",
@@ -1607,11 +1612,11 @@ dependencies = [
  "chrono",
  "clap",
  "codex-cloud-tasks-client",
- "codex-common",
  "codex-core",
  "codex-login",
  "codex-tui",
- "crossterm 0.28.1",
+ "codex-utils-cli",
+ "crossterm",
  "owo-colors",
  "pretty_assertions",
  "ratatui",
@@ -1642,17 +1647,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-common"
+name = "codex-config"
 version = "0.0.0"
 dependencies = [
- "clap",
- "codex-core",
- "codex-lmstudio",
- "codex-ollama",
+ "anyhow",
+ "codex-app-server-protocol",
+ "codex-execpolicy",
  "codex-protocol",
  "codex-utils-absolute-path",
+ "futures",
+ "multimap",
  "pretty_assertions",
  "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
  "toml 0.9.11+spec-1.1.0",
 ]
 
@@ -1679,7 +1689,7 @@ dependencies = [
  "codex-arg0",
  "codex-async-utils",
  "codex-client",
- "codex-core",
+ "codex-config",
  "codex-execpolicy",
  "codex-file-search",
  "codex-git",
@@ -1689,6 +1699,7 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-rmcp-client",
+ "codex-shell-command",
  "codex-state",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
@@ -1715,7 +1726,6 @@ dependencies = [
  "landlock",
  "libc",
  "maplit",
- "multimap",
  "notify",
  "once_cell",
  "openssl-sys",
@@ -1752,8 +1762,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
- "tree-sitter",
- "tree-sitter-bash",
  "url",
  "uuid",
  "walkdir",
@@ -1786,11 +1794,14 @@ dependencies = [
  "clap",
  "codex-arg0",
  "codex-cloud-requirements",
- "codex-common",
  "codex-core",
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
+ "codex-utils-cli",
+ "codex-utils-elapsed",
+ "codex-utils-oss",
+ "codex-utils-sandbox-summary",
  "core_test_support",
  "libc",
  "owo-colors",
@@ -2011,9 +2022,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "codex-arg0",
- "codex-common",
  "codex-core",
  "codex-protocol",
+ "codex-utils-cli",
  "codex-utils-json-to-toml",
  "core_test_support",
  "mcp_test_support",
@@ -2210,6 +2221,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-shell-command"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "codex-protocol",
+ "codex-utils-absolute-path",
+ "once_cell",
+ "pretty_assertions",
+ "regex",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "url",
+ "which",
+]
+
+[[package]]
 name = "codex-state"
 version = "0.0.0"
 dependencies = [
@@ -2260,7 +2291,6 @@ dependencies = [
  "codex-chatgpt",
  "codex-cli",
  "codex-cloud-requirements",
- "codex-common",
  "codex-core",
  "codex-feedback",
  "codex-file-search",
@@ -2269,8 +2299,14 @@ dependencies = [
  "codex-protocol",
  "codex-state",
  "codex-utils-absolute-path",
+ "codex-utils-approval-presets",
  "codex-utils-cargo-bin",
+ "codex-utils-cli",
+ "codex-utils-elapsed",
+ "codex-utils-fuzzy-match",
+ "codex-utils-oss",
  "codex-utils-pty",
+ "codex-utils-sandbox-summary",
  "codex-windows-sandbox",
  "color-eyre",
  "crossterm 0.28.1",
@@ -2317,6 +2353,7 @@ dependencies = [
  "url",
  "uuid",
  "vt100",
+ "webbrowser",
  "which",
  "windows-sys 0.52.0",
  "winsplit",
@@ -2337,6 +2374,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-utils-approval-presets"
+version = "0.0.0"
+dependencies = [
+ "codex-core",
+]
+
+[[package]]
 name = "codex-utils-cache"
 version = "0.0.0"
 dependencies = [
@@ -2353,6 +2397,26 @@ dependencies = [
  "runfiles",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "codex-utils-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "codex-core",
+ "codex-protocol",
+ "pretty_assertions",
+ "serde",
+ "toml 0.9.11+spec-1.1.0",
+]
+
+[[package]]
+name = "codex-utils-elapsed"
+version = "0.0.0"
+
+[[package]]
+name = "codex-utils-fuzzy-match"
+version = "0.0.0"
 
 [[package]]
 name = "codex-utils-home-dir"
@@ -2382,6 +2446,15 @@ dependencies = [
  "pretty_assertions",
  "serde_json",
  "toml 0.9.11+spec-1.1.0",
+]
+
+[[package]]
+name = "codex-utils-oss"
+version = "0.0.0"
+dependencies = [
+ "codex-core",
+ "codex-lmstudio",
+ "codex-ollama",
 ]
 
 [[package]]
@@ -2416,6 +2489,15 @@ name = "codex-utils-rustls-provider"
 version = "0.0.0"
 dependencies = [
  "rustls",
+]
+
+[[package]]
+name = "codex-utils-sandbox-summary"
+version = "0.0.0"
+dependencies = [
+ "codex-core",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
 ]
 
 [[package]]
@@ -2639,6 +2721,7 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
+ "ctor 0.6.3",
  "futures",
  "notify",
  "pretty_assertions",
@@ -7464,9 +7547,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a621b37a548ff6ab6292d57841eb25785a7f146d89391a19c9f199414bd13da"
+checksum = "1bef41ebc9ebed2c1b1d90203e9d1756091e8a00bbc3107676151f39868ca0ee"
 dependencies = [
  "async-trait",
  "axum",
@@ -7500,9 +7583,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b79ed92303f9262db79575aa8c3652581668e9d136be6fd0b9ededa78954c95"
+checksum = "0e88ad84b8b6237a934534a62b379a5be6388915663c0cc598ceb9b3292bbbfe"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",

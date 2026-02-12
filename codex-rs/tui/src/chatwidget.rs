@@ -25,6 +25,7 @@
 //! the final answer. During streaming we hide the status row to avoid duplicate
 //! progress indicators; once commentary completes and stream queues drain, we
 //! re-show it so users still see turn-in-progress state between output bursts.
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -41,6 +42,7 @@ use crate::bottom_pane::StatusLineSetupView;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::format_directory_display;
 use crate::status::format_tokens_compact;
+use crate::status::rate_limit_snapshot_display_for_limit;
 use crate::text_formatting::proper_join;
 use crate::version::CODEX_CLI_VERSION;
 use base64::Engine;
@@ -51,6 +53,7 @@ use codex_chatgpt::connectors;
 use codex_core::config::Config;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
+use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::FEATURES;
 use codex_core::features::Feature;
@@ -231,8 +234,6 @@ use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
 use chrono::Local;
-use codex_common::approval_presets::ApprovalPreset;
-use codex_common::approval_presets::builtin_approval_presets;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
@@ -243,6 +244,8 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_utils_approval_presets::ApprovalPreset;
+use codex_utils_approval_presets::builtin_approval_presets;
 use strum::IntoEnumIterator;
 
 const USER_SHELL_COMMAND_HELP_TITLE: &str = "Prefix a command with ! to run it locally";
@@ -440,23 +443,14 @@ enum ConnectorsCacheState {
 
 #[derive(Debug)]
 enum RateLimitErrorKind {
-    ModelCap {
-        model: String,
-        reset_after_seconds: Option<u64>,
-    },
+    ServerOverloaded,
     UsageLimit,
     Generic,
 }
 
 fn rate_limit_error_kind(info: &CodexErrorInfo) -> Option<RateLimitErrorKind> {
     match info {
-        CodexErrorInfo::ModelCap {
-            model,
-            reset_after_seconds,
-        } => Some(RateLimitErrorKind::ModelCap {
-            model: model.clone(),
-            reset_after_seconds: *reset_after_seconds,
-        }),
+        CodexErrorInfo::ServerOverloaded => Some(RateLimitErrorKind::ServerOverloaded),
         CodexErrorInfo::UsageLimitExceeded => Some(RateLimitErrorKind::UsageLimit),
         CodexErrorInfo::ResponseTooManyFailedAttempts {
             http_status_code: Some(429),
@@ -513,7 +507,7 @@ pub(crate) struct ChatWidget {
     session_header: SessionHeader,
     initial_user_message: Option<UserMessage>,
     token_info: Option<TokenUsageInfo>,
-    rate_limit_snapshot: Option<RateLimitSnapshotDisplay>,
+    rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     plan_type: Option<PlanType>,
     rate_limit_warnings: RateLimitWarningState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
@@ -1176,6 +1170,7 @@ impl ChatWidget {
             instructions,
             url,
             is_installed,
+            self.app_event_tx.clone(),
         );
         self.bottom_pane.show_view(Box::new(view));
         self.request_redraw();
@@ -1519,10 +1514,18 @@ impl ChatWidget {
 
     pub(crate) fn on_rate_limit_snapshot(&mut self, snapshot: Option<RateLimitSnapshot>) {
         if let Some(mut snapshot) = snapshot {
+            let limit_id = snapshot
+                .limit_id
+                .clone()
+                .unwrap_or_else(|| "codex".to_string());
+            let limit_label = snapshot
+                .limit_name
+                .clone()
+                .unwrap_or_else(|| limit_id.clone());
             if snapshot.credits.is_none() {
                 snapshot.credits = self
-                    .rate_limit_snapshot
-                    .as_ref()
+                    .rate_limit_snapshots_by_limit_id
+                    .get(&limit_id)
                     .and_then(|display| display.credits.as_ref())
                     .map(|credits| CreditsSnapshot {
                         has_credits: credits.has_credits,
@@ -1533,32 +1536,38 @@ impl ChatWidget {
 
             self.plan_type = snapshot.plan_type.or(self.plan_type);
 
-            let warnings = self.rate_limit_warnings.take_warnings(
-                snapshot
-                    .secondary
-                    .as_ref()
-                    .map(|window| window.used_percent),
-                snapshot
-                    .secondary
-                    .as_ref()
-                    .and_then(|window| window.window_minutes),
-                snapshot.primary.as_ref().map(|window| window.used_percent),
-                snapshot
-                    .primary
-                    .as_ref()
-                    .and_then(|window| window.window_minutes),
-            );
+            let is_codex_limit = limit_id.eq_ignore_ascii_case("codex");
+            let warnings = if is_codex_limit {
+                self.rate_limit_warnings.take_warnings(
+                    snapshot
+                        .secondary
+                        .as_ref()
+                        .map(|window| window.used_percent),
+                    snapshot
+                        .secondary
+                        .as_ref()
+                        .and_then(|window| window.window_minutes),
+                    snapshot.primary.as_ref().map(|window| window.used_percent),
+                    snapshot
+                        .primary
+                        .as_ref()
+                        .and_then(|window| window.window_minutes),
+                )
+            } else {
+                vec![]
+            };
 
-            let high_usage = snapshot
-                .secondary
-                .as_ref()
-                .map(|w| w.used_percent >= RATE_LIMIT_SWITCH_PROMPT_THRESHOLD)
-                .unwrap_or(false)
-                || snapshot
-                    .primary
+            let high_usage = is_codex_limit
+                && (snapshot
+                    .secondary
                     .as_ref()
                     .map(|w| w.used_percent >= RATE_LIMIT_SWITCH_PROMPT_THRESHOLD)
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    || snapshot
+                        .primary
+                        .as_ref()
+                        .map(|w| w.used_percent >= RATE_LIMIT_SWITCH_PROMPT_THRESHOLD)
+                        .unwrap_or(false));
 
             if high_usage
                 && !self.rate_limit_switch_prompt_hidden()
@@ -1571,8 +1580,10 @@ impl ChatWidget {
                 self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
             }
 
-            let display = crate::status::rate_limit_snapshot_display(&snapshot, Local::now());
-            self.rate_limit_snapshot = Some(display);
+            let display =
+                rate_limit_snapshot_display_for_limit(&snapshot, limit_label, Local::now());
+            self.rate_limit_snapshots_by_limit_id
+                .insert(limit_id, display);
 
             if !warnings.is_empty() {
                 for warning in warnings {
@@ -1581,7 +1592,7 @@ impl ChatWidget {
                 self.request_redraw();
             }
         } else {
-            self.rate_limit_snapshot = None;
+            self.rate_limit_snapshots_by_limit_id.clear();
         }
         self.refresh_status_line();
     }
@@ -1607,18 +1618,14 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
-    fn on_model_cap_error(&mut self, model: String, reset_after_seconds: Option<u64>) {
+    fn on_server_overloaded_error(&mut self, message: String) {
         self.finalize_turn();
 
-        let mut message = format!("Model {model} is at capacity. Please try a different model.");
-        if let Some(seconds) = reset_after_seconds {
-            message.push_str(&format!(
-                " Try again in {}.",
-                format_duration_short(seconds)
-            ));
+        let message = if message.trim().is_empty() {
+            "Codex is currently experiencing high load.".to_string()
         } else {
-            message.push_str(" Try again later.");
-        }
+            message
+        };
 
         self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
@@ -1809,21 +1816,19 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_plan_update(update));
     }
 
-    fn on_exec_approval_request(&mut self, id: String, ev: ExecApprovalRequestEvent) {
-        let id2 = id.clone();
+    fn on_exec_approval_request(&mut self, _id: String, ev: ExecApprovalRequestEvent) {
         let ev2 = ev.clone();
         self.defer_or_handle(
-            |q| q.push_exec_approval(id, ev),
-            |s| s.handle_exec_approval_now(id2, ev2),
+            |q| q.push_exec_approval(ev),
+            |s| s.handle_exec_approval_now(ev2),
         );
     }
 
-    fn on_apply_patch_approval_request(&mut self, id: String, ev: ApplyPatchApprovalRequestEvent) {
-        let id2 = id.clone();
+    fn on_apply_patch_approval_request(&mut self, _id: String, ev: ApplyPatchApprovalRequestEvent) {
         let ev2 = ev.clone();
         self.defer_or_handle(
-            |q| q.push_apply_patch_approval(id, ev),
-            |s| s.handle_apply_patch_approval_now(id2, ev2),
+            |q| q.push_apply_patch_approval(ev),
+            |s| s.handle_apply_patch_approval_now(ev2),
         );
     }
 
@@ -2396,14 +2401,14 @@ impl ChatWidget {
         self.had_work_activity = true;
     }
 
-    pub(crate) fn handle_exec_approval_now(&mut self, id: String, ev: ExecApprovalRequestEvent) {
+    pub(crate) fn handle_exec_approval_now(&mut self, ev: ExecApprovalRequestEvent) {
         self.flush_answer_stream_with_separator();
         let command = shlex::try_join(ev.command.iter().map(String::as_str))
             .unwrap_or_else(|_| ev.command.join(" "));
         self.notify(Notification::ExecApprovalRequested { command });
 
         let request = ApprovalRequest::Exec {
-            id,
+            id: ev.call_id,
             command: ev.command,
             reason: ev.reason,
             proposed_execpolicy_amendment: ev.proposed_execpolicy_amendment,
@@ -2413,15 +2418,11 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(crate) fn handle_apply_patch_approval_now(
-        &mut self,
-        id: String,
-        ev: ApplyPatchApprovalRequestEvent,
-    ) {
+    pub(crate) fn handle_apply_patch_approval_now(&mut self, ev: ApplyPatchApprovalRequestEvent) {
         self.flush_answer_stream_with_separator();
 
         let request = ApprovalRequest::ApplyPatch {
-            id,
+            id: ev.call_id,
             reason: ev.reason,
             changes: ev.changes.clone(),
             cwd: self.config.cwd.clone(),
@@ -2644,7 +2645,7 @@ impl ChatWidget {
             session_header: SessionHeader::new(header_model),
             initial_user_message,
             token_info: None,
-            rate_limit_snapshot: None,
+            rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             plan_type: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
@@ -2816,7 +2817,7 @@ impl ChatWidget {
             session_header: SessionHeader::new(header_model),
             initial_user_message,
             token_info: None,
-            rate_limit_snapshot: None,
+            rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             plan_type: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
@@ -2977,7 +2978,7 @@ impl ChatWidget {
             session_header: SessionHeader::new(header_model),
             initial_user_message,
             token_info: None,
-            rate_limit_snapshot: None,
+            rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             plan_type: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
@@ -3449,6 +3450,12 @@ impl ChatWidget {
             }
             SlashCommand::Clean => {
                 self.clean_background_terminals();
+            }
+            SlashCommand::MemoryDrop => {
+                self.submit_op(Op::DropMemories);
+            }
+            SlashCommand::MemoryUpdate => {
+                self.submit_op(Op::UpdateMemories);
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -4995,9 +5002,9 @@ impl ChatWidget {
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TurnStarted(_) => self.on_task_started(),
-            EventMsg::TurnComplete(TurnCompleteEvent { last_agent_message }) => {
-                self.on_task_complete(last_agent_message, from_replay)
-            }
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                last_agent_message, ..
+            }) => self.on_task_complete(last_agent_message, from_replay),
             EventMsg::TokenCount(ev) => {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);
@@ -5011,10 +5018,9 @@ impl ChatWidget {
                     && let Some(kind) = rate_limit_error_kind(&info)
                 {
                     match kind {
-                        RateLimitErrorKind::ModelCap {
-                            model,
-                            reset_after_seconds,
-                        } => self.on_model_cap_error(model, reset_after_seconds),
+                        RateLimitErrorKind::ServerOverloaded => {
+                            self.on_server_overloaded_error(message)
+                        }
                         RateLimitErrorKind::UsageLimit | RateLimitErrorKind::Generic => {
                             self.on_error(message)
                         }
@@ -5107,9 +5113,15 @@ impl ChatWidget {
             EventMsg::CollabCloseEnd(ev) => self.on_collab_event(collab::close_end(ev)),
             EventMsg::CollabResumeBegin(ev) => self.on_collab_event(collab::resume_begin(ev)),
             EventMsg::CollabResumeEnd(ev) => self.on_collab_event(collab::resume_end(ev)),
-            EventMsg::ThreadRolledBack(_) => {}
-            EventMsg::RawResponseItem(ev) => self.on_raw_response_item(ev),
-            EventMsg::ItemStarted(_)
+            EventMsg::ThreadRolledBack(rollback) => {
+                if from_replay {
+                    self.app_event_tx.send(AppEvent::ApplyThreadRollback {
+                        num_turns: rollback.num_turns,
+                    });
+                }
+            }
+            EventMsg::RawResponseItem(_)
+            | EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
@@ -5288,7 +5300,12 @@ impl ChatWidget {
             .unwrap_or(&default_usage);
         let collaboration_mode = self.collaboration_mode_label();
         let reasoning_effort_override = Some(self.effective_reasoning_effort());
-        self.add_to_history(crate::status::new_status_output(
+        let rate_limit_snapshots: Vec<RateLimitSnapshotDisplay> = self
+            .rate_limit_snapshots_by_limit_id
+            .values()
+            .cloned()
+            .collect();
+        self.add_to_history(crate::status::new_status_output_with_rate_limits(
             &self.config,
             self.auth_manager.as_ref(),
             token_info,
@@ -5296,7 +5313,7 @@ impl ChatWidget {
             &self.thread_id,
             self.thread_name.clone(),
             self.forked_from,
-            self.rate_limit_snapshot.as_ref(),
+            rate_limit_snapshots.as_slice(),
             self.plan_type,
             Local::now(),
             self.model_display_name(),
@@ -5442,8 +5459,8 @@ impl ChatWidget {
                 .map(|used| format!("{used}% used")),
             StatusLineItem::FiveHourLimit => {
                 let window = self
-                    .rate_limit_snapshot
-                    .as_ref()
+                    .rate_limit_snapshots_by_limit_id
+                    .get("codex")
                     .and_then(|s| s.primary.as_ref());
                 let label = window
                     .and_then(|window| window.window_minutes)
@@ -5453,8 +5470,8 @@ impl ChatWidget {
             }
             StatusLineItem::WeeklyLimit => {
                 let window = self
-                    .rate_limit_snapshot
-                    .as_ref()
+                    .rate_limit_snapshots_by_limit_id
+                    .get("codex")
                     .and_then(|s| s.secondary.as_ref());
                 let label = window
                     .and_then(|window| window.window_minutes)
@@ -5558,7 +5575,15 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn refresh_connectors(&mut self, force_refetch: bool) {
+        self.prefetch_connectors_with_options(force_refetch);
+    }
+
     fn prefetch_connectors(&mut self) {
+        self.prefetch_connectors_with_options(false);
+    }
+
+    fn prefetch_connectors_with_options(&mut self, force_refetch: bool) {
         if !self.connectors_enabled() || self.connectors_prefetch_in_flight {
             return;
         }
@@ -5572,7 +5597,12 @@ impl ChatWidget {
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let accessible_connectors =
-                match connectors::list_accessible_connectors_from_mcp_tools(&config).await {
+                match connectors::list_accessible_connectors_from_mcp_tools_with_options(
+                    &config,
+                    force_refetch,
+                )
+                .await
+                {
                     Ok(connectors) => connectors,
                     Err(err) => {
                         app_event_tx.send(AppEvent::ConnectorsLoaded {
@@ -5625,9 +5655,10 @@ impl ChatWidget {
             loop {
                 if let Some(auth) = auth_manager.auth().await
                     && auth.is_chatgpt_auth()
-                    && let Some(snapshot) = fetch_rate_limits(base_url.clone(), auth).await
                 {
-                    app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
+                    for snapshot in fetch_rate_limits(base_url.clone(), auth).await {
+                        app_event_tx.send(AppEvent::RateLimitSnapshotFetched(snapshot));
+                    }
                 }
                 interval.tick().await;
             }
@@ -5682,8 +5713,8 @@ impl ChatWidget {
     }
 
     fn open_rate_limit_switch_prompt(&mut self, preset: ModelPreset) {
-        let switch_model = preset.model.to_string();
-        let display_name = preset.display_name.to_string();
+        let switch_model = preset.model;
+        let switch_model_for_events = switch_model.clone();
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
 
         let switch_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
@@ -5692,13 +5723,13 @@ impl ChatWidget {
                 approval_policy: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
-                model: Some(switch_model.clone()),
+                model: Some(switch_model_for_events.clone()),
                 effort: Some(Some(default_effort)),
                 summary: None,
                 collaboration_mode: None,
                 personality: None,
             }));
-            tx.send(AppEvent::UpdateModel(switch_model.clone(), None));
+            tx.send(AppEvent::UpdateModel(switch_model_for_events.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
         })];
 
@@ -5715,7 +5746,7 @@ impl ChatWidget {
 
         let items = vec![
             SelectionItem {
-                name: format!("Switch to {display_name}"),
+                name: format!("Switch to {switch_model}"),
                 description,
                 selected_description: None,
                 is_current: false,
@@ -5747,7 +5778,7 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             title: Some("Approaching rate limits".to_string()),
-            subtitle: Some(format!("Switch to {display_name} for lower credit usage?")),
+            subtitle: Some(format!("Switch to {switch_model} for lower credit usage?")),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
@@ -5894,7 +5925,7 @@ impl ChatWidget {
         let current_label = presets
             .iter()
             .find(|preset| preset.model.as_str() == current_model)
-            .map(|preset| preset.display_name.to_string())
+            .map(|preset| preset.model.to_string())
             .unwrap_or_else(|| self.model_display_name().to_string());
 
         let (mut auto_presets, other_presets): (Vec<ModelPreset>, Vec<ModelPreset>) = presets
@@ -5919,7 +5950,7 @@ impl ChatWidget {
                     Some(preset.default_reasoning_effort),
                 );
                 SelectionItem {
-                    name: preset.display_name.clone(),
+                    name: model.clone(),
                     description,
                     is_current: model.as_str() == current_model,
                     is_default: preset.is_default,
@@ -6001,7 +6032,7 @@ impl ChatWidget {
                 });
             })];
             items.push(SelectionItem {
-                name: preset.display_name.clone(),
+                name: preset.model.clone(),
                 description,
                 is_current,
                 is_default: preset.is_default,
@@ -6310,7 +6341,7 @@ impl ChatWidget {
             let is_current =
                 Self::preset_matches_current(current_approval, current_sandbox, &preset);
             let name = if preset.id == "auto" && windows_degraded_sandbox_enabled {
-                "Default (non-elevated sandbox)".to_string()
+                "Default (non-admin sandbox)".to_string()
             } else {
                 preset.label.to_string()
             };
@@ -6394,8 +6425,8 @@ impl ChatWidget {
 
         let footer_note = show_elevate_sandbox_hint.then(|| {
             vec![
-                "The non-elevated sandbox protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected. To upgrade to the elevated sandbox, run ".dim(),
-                "/setup-elevated-sandbox".cyan(),
+                "The non-admin sandbox protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected. To upgrade to the default sandbox, run ".dim(),
+                "/setup-default-sandbox".cyan(),
                 ".".dim(),
             ]
             .into()
@@ -6457,21 +6488,7 @@ impl ChatWidget {
         current_sandbox: &SandboxPolicy,
         preset: &ApprovalPreset,
     ) -> bool {
-        if current_approval != preset.approval {
-            return false;
-        }
-        matches!(
-            (&preset.sandbox, current_sandbox),
-            (SandboxPolicy::ReadOnly, SandboxPolicy::ReadOnly)
-                | (
-                    SandboxPolicy::DangerFullAccess,
-                    SandboxPolicy::DangerFullAccess
-                )
-                | (
-                    SandboxPolicy::WorkspaceWrite { .. },
-                    SandboxPolicy::WorkspaceWrite { .. }
-                )
-        )
+        current_approval == preset.approval && *current_sandbox == preset.sandbox
     }
 
     #[cfg(target_os = "windows")]
@@ -6591,7 +6608,7 @@ impl ChatWidget {
         let mut header_children: Vec<Box<dyn Renderable>> = Vec::new();
         let describe_policy = |policy: &SandboxPolicy| match policy {
             SandboxPolicy::WorkspaceWrite { .. } => "Agent mode",
-            SandboxPolicy::ReadOnly => "Read-Only mode",
+            SandboxPolicy::ReadOnly { .. } => "Read-Only mode",
             _ => "Agent mode",
         };
         let mode_label = preset
@@ -6738,59 +6755,24 @@ impl ChatWidget {
             return;
         }
 
-        let current_approval = self.config.approval_policy.value();
-        let current_sandbox = self.config.sandbox_policy.get();
-        let presets = builtin_approval_presets();
-        let stay_full_access = presets
-            .iter()
-            .find(|preset| preset.id == "full-access")
-            .is_some_and(|preset| {
-                Self::preset_matches_current(current_approval, current_sandbox, preset)
-            });
         self.otel_manager
             .counter("codex.windows_sandbox.elevated_prompt_shown", 1, &[]);
 
         let mut header = ColumnRenderable::new();
         header.push(*Box::new(
             Paragraph::new(vec![
-                line!["Set Up Agent Sandbox".bold()],
-                line![""],
-                line!["Agent mode uses an experimental Windows sandbox that protects your files and prevents network access by default."],
-                line!["Learn more: https://developers.openai.com/codex/windows"],
+                line!["Set up the Codex agent sandbox to protect your files and control network access. Learn more <https://developers.openai.com/codex/windows>"],
             ])
             .wrap(Wrap { trim: false }),
         ));
 
-        let stay_label = if stay_full_access {
-            "Stay in Agent Full Access".to_string()
-        } else {
-            "Stay in Read-Only".to_string()
-        };
-        let mut stay_actions = if stay_full_access {
-            Vec::new()
-        } else {
-            presets
-                .iter()
-                .find(|preset| preset.id == "read-only")
-                .map(|preset| {
-                    Self::approval_preset_actions(preset.approval, preset.sandbox.clone())
-                })
-                .unwrap_or_default()
-        };
-        stay_actions.insert(
-            0,
-            Box::new({
-                let otel = self.otel_manager.clone();
-                move |_tx| {
-                    otel.counter("codex.windows_sandbox.elevated_prompt_decline", 1, &[]);
-                }
-            }),
-        );
-
         let accept_otel = self.otel_manager.clone();
+        let legacy_otel = self.otel_manager.clone();
+        let legacy_preset = preset.clone();
+        let quit_otel = self.otel_manager.clone();
         let items = vec![
             SelectionItem {
-                name: "Set up agent sandbox (requires elevation)".to_string(),
+                name: "Set up default sandbox (requires Administrator permissions)".to_string(),
                 description: None,
                 actions: vec![Box::new(move |tx| {
                     accept_otel.counter("codex.windows_sandbox.elevated_prompt_accept", 1, &[]);
@@ -6802,9 +6784,24 @@ impl ChatWidget {
                 ..Default::default()
             },
             SelectionItem {
-                name: stay_label,
+                name: "Use non-admin sandbox (higher risk if prompt injected)".to_string(),
                 description: None,
-                actions: stay_actions,
+                actions: vec![Box::new(move |tx| {
+                    legacy_otel.counter("codex.windows_sandbox.fallback_use_legacy", 1, &[]);
+                    tx.send(AppEvent::BeginWindowsSandboxLegacySetup {
+                        preset: legacy_preset.clone(),
+                    });
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Quit".to_string(),
+                description: None,
+                actions: vec![Box::new(move |tx| {
+                    quit_otel.counter("codex.windows_sandbox.elevated_prompt_decline", 1, &[]);
+                    tx.send(AppEvent::Exit(ExitMode::ShutdownFirst));
+                })],
                 dismiss_on_select: true,
                 ..Default::default()
             },
@@ -6832,23 +6829,16 @@ impl ChatWidget {
 
         let _ = reason;
 
-        let current_approval = self.config.approval_policy.value();
-        let current_sandbox = self.config.sandbox_policy.get();
-        let presets = builtin_approval_presets();
-        let stay_full_access = presets
-            .iter()
-            .find(|preset| preset.id == "full-access")
-            .is_some_and(|preset| {
-                Self::preset_matches_current(current_approval, current_sandbox, preset)
-            });
         let mut lines = Vec::new();
-        lines.push(line!["Use Non-Elevated Sandbox?".bold()]);
+        lines.push(line![
+            "Couldn't set up your sandbox with Administrator permissions".bold()
+        ]);
         lines.push(line![""]);
         lines.push(line![
-            "Elevation failed. You can also use a non-elevated sandbox, which protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected."
+            "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected."
         ]);
         lines.push(line![
-            "Learn more: https://developers.openai.com/codex/windows"
+            "Learn more <https://developers.openai.com/codex/windows>"
         ]);
 
         let mut header = ColumnRenderable::new();
@@ -6856,34 +6846,10 @@ impl ChatWidget {
 
         let elevated_preset = preset.clone();
         let legacy_preset = preset;
-        let stay_label = if stay_full_access {
-            "Stay in Agent Full Access".to_string()
-        } else {
-            "Stay in Read-Only".to_string()
-        };
-        let mut stay_actions = if stay_full_access {
-            Vec::new()
-        } else {
-            presets
-                .iter()
-                .find(|preset| preset.id == "read-only")
-                .map(|preset| {
-                    Self::approval_preset_actions(preset.approval, preset.sandbox.clone())
-                })
-                .unwrap_or_default()
-        };
-        stay_actions.insert(
-            0,
-            Box::new({
-                let otel = self.otel_manager.clone();
-                move |_tx| {
-                    otel.counter("codex.windows_sandbox.fallback_stay_current", 1, &[]);
-                }
-            }),
-        );
+        let quit_otel = self.otel_manager.clone();
         let items = vec![
             SelectionItem {
-                name: "Try elevated agent sandbox setup again".to_string(),
+                name: "Try setting up admin sandbox again".to_string(),
                 description: None,
                 actions: vec![Box::new({
                     let otel = self.otel_manager.clone();
@@ -6899,16 +6865,15 @@ impl ChatWidget {
                 ..Default::default()
             },
             SelectionItem {
-                name: "Use non-elevated agent sandbox".to_string(),
+                name: "Use Codex with non-admin sandbox".to_string(),
                 description: None,
                 actions: vec![Box::new({
                     let otel = self.otel_manager.clone();
                     let preset = legacy_preset;
                     move |tx| {
                         otel.counter("codex.windows_sandbox.fallback_use_legacy", 1, &[]);
-                        tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
+                        tx.send(AppEvent::BeginWindowsSandboxLegacySetup {
                             preset: preset.clone(),
-                            mode: WindowsSandboxEnableMode::Legacy,
                         });
                     }
                 })],
@@ -6916,9 +6881,12 @@ impl ChatWidget {
                 ..Default::default()
             },
             SelectionItem {
-                name: stay_label,
+                name: "Quit".to_string(),
                 description: None,
-                actions: stay_actions,
+                actions: vec![Box::new(move |tx| {
+                    quit_otel.counter("codex.windows_sandbox.fallback_stay_current", 1, &[]);
+                    tx.send(AppEvent::Exit(ExitMode::ShutdownFirst));
+                })],
                 dismiss_on_select: true,
                 ..Default::default()
             },
@@ -6942,8 +6910,8 @@ impl ChatWidget {
     }
 
     #[cfg(target_os = "windows")]
-    pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self) {
-        if self.config.forced_auto_mode_downgraded_on_windows
+    pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, show_now: bool) {
+        if show_now
             && WindowsSandboxLevel::from_config(&self.config) == WindowsSandboxLevel::Disabled
             && let Some(preset) = builtin_approval_presets()
                 .into_iter()
@@ -6954,7 +6922,7 @@ impl ChatWidget {
     }
 
     #[cfg(not(target_os = "windows"))]
-    pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self) {}
+    pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, _show_now: bool) {}
 
     #[cfg(target_os = "windows")]
     pub(crate) fn show_windows_sandbox_setup_status(&mut self) {
@@ -6966,7 +6934,10 @@ impl ChatWidget {
         );
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(false);
-        self.set_status_header("Setting up agent sandbox. This can take a minute.".to_string());
+        self.set_status(
+            "Setting up sandbox...".to_string(),
+            Some("Hang tight, this may take a few minutes".to_string()),
+        );
         self.request_redraw();
     }
 
@@ -6984,15 +6955,6 @@ impl ChatWidget {
     #[cfg(not(target_os = "windows"))]
     pub(crate) fn clear_windows_sandbox_setup_status(&mut self) {}
 
-    #[cfg(target_os = "windows")]
-    pub(crate) fn clear_forced_auto_mode_downgrade(&mut self) {
-        self.config.forced_auto_mode_downgraded_on_windows = false;
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[allow(dead_code)]
-    pub(crate) fn clear_forced_auto_mode_downgrade(&mut self) {}
-
     /// Set the approval policy in the widget's config copy.
     pub(crate) fn set_approval_policy(&mut self, policy: AskForApproval) {
         if let Err(err) = self.config.approval_policy.set(policy) {
@@ -7001,19 +6963,23 @@ impl ChatWidget {
     }
 
     /// Set the sandbox policy in the widget's config copy.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) -> ConstraintResult<()> {
-        #[cfg(target_os = "windows")]
-        let should_clear_downgrade = !matches!(&policy, SandboxPolicy::ReadOnly)
-            || WindowsSandboxLevel::from_config(&self.config) != WindowsSandboxLevel::Disabled;
-
         self.config.sandbox_policy.set(policy)?;
-
-        #[cfg(target_os = "windows")]
-        if should_clear_downgrade {
-            self.config.forced_auto_mode_downgraded_on_windows = false;
-        }
-
         Ok(())
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn set_windows_sandbox_mode(&mut self, mode: Option<WindowsSandboxModeToml>) {
+        self.config.windows_sandbox_mode = mode;
+        #[cfg(target_os = "windows")]
+        self.bottom_pane.set_windows_degraded_sandbox_active(
+            codex_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
+                && matches!(
+                    WindowsSandboxLevel::from_config(&self.config),
+                    WindowsSandboxLevel::RestrictedToken
+                ),
+        );
     }
 
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -7436,7 +7402,10 @@ impl ChatWidget {
             return;
         }
 
-        match self.connectors_cache.clone() {
+        let connectors_cache = self.connectors_cache.clone();
+        self.prefetch_connectors_with_options(true);
+
+        match connectors_cache {
             ConnectorsCacheState::Ready(snapshot) => {
                 if snapshot.connectors.is_empty() {
                     self.add_info_message("No apps available.".to_string(), None);
@@ -7446,8 +7415,6 @@ impl ChatWidget {
             }
             ConnectorsCacheState::Failed(err) => {
                 self.add_to_history(history_cell::new_error_event(err));
-                // Retry on demand so `/apps` can recover after transient failures.
-                self.prefetch_connectors();
             }
             ConnectorsCacheState::Loading => {
                 self.add_to_history(history_cell::new_info_event(
@@ -7456,7 +7423,6 @@ impl ChatWidget {
                 ));
             }
             ConnectorsCacheState::Uninitialized => {
-                self.prefetch_connectors();
                 self.add_to_history(history_cell::new_info_event(
                     "Apps are still loading.".to_string(),
                     Some("Try again in a moment.".to_string()),
@@ -7806,7 +7772,9 @@ impl ChatWidget {
         match result {
             Ok(snapshot) => {
                 self.refresh_connectors_popup_if_open(&snapshot.connectors);
-                self.connectors_cache = ConnectorsCacheState::Ready(snapshot.clone());
+                if is_final || !matches!(self.connectors_cache, ConnectorsCacheState::Ready(_)) {
+                    self.connectors_cache = ConnectorsCacheState::Ready(snapshot.clone());
+                }
                 self.bottom_pane.set_connectors_snapshot(Some(snapshot));
             }
             Err(err) => {
@@ -8200,18 +8168,18 @@ fn extract_first_bold(s: &str) -> Option<String> {
     None
 }
 
-async fn fetch_rate_limits(base_url: String, auth: CodexAuth) -> Option<RateLimitSnapshot> {
+async fn fetch_rate_limits(base_url: String, auth: CodexAuth) -> Vec<RateLimitSnapshot> {
     match BackendClient::from_auth(base_url, &auth) {
-        Ok(client) => match client.get_rate_limits().await {
-            Ok(snapshot) => Some(snapshot),
+        Ok(client) => match client.get_rate_limits_many().await {
+            Ok(snapshots) => snapshots,
             Err(err) => {
                 debug!(error = ?err, "failed to fetch rate limits from /usage");
-                None
+                Vec::new()
             }
         },
         Err(err) => {
             debug!(error = ?err, "failed to construct backend client for rate limits");
-            None
+            Vec::new()
         }
     }
 }
@@ -8254,18 +8222,6 @@ pub(crate) fn show_review_commit_picker_with_entries(
         search_placeholder: Some("Type to search commits".to_string()),
         ..Default::default()
     });
-}
-
-fn format_duration_short(seconds: u64) -> String {
-    if seconds < 60 {
-        "less than a minute".to_string()
-    } else if seconds < 3600 {
-        format!("{}m", seconds / 60)
-    } else if seconds < 86_400 {
-        format!("{}h", seconds / 3600)
-    } else {
-        format!("{}d", seconds / 86_400)
-    }
 }
 
 #[cfg(test)]

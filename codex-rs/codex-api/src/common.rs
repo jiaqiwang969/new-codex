@@ -63,6 +63,8 @@ pub enum ResponseEvent {
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,
+        /// Whether the client can append more items to a long-running websocket response.
+        can_append: bool,
     },
     OutputTextDelta(String),
     ReasoningSummaryDelta {
@@ -80,7 +82,7 @@ pub enum ResponseEvent {
     ModelsEtag(String),
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct Reasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
@@ -88,14 +90,14 @@ pub struct Reasoning {
     pub summary: Option<ReasoningSummaryConfig>,
 }
 
-#[derive(Debug, Serialize, Default, Clone)]
+#[derive(Debug, Serialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFormatType {
     #[default]
     JsonSchema,
 }
 
-#[derive(Debug, Serialize, Default, Clone)]
+#[derive(Debug, Serialize, Default, Clone, PartialEq)]
 pub struct TextFormat {
     /// Format type used by the OpenAI text controls.
     pub r#type: TextFormatType,
@@ -109,7 +111,7 @@ pub struct TextFormat {
 
 /// Controls the `text` field for the Responses API, combining verbosity and
 /// optional JSON schema output formatting.
-#[derive(Debug, Serialize, Default, Clone)]
+#[derive(Debug, Serialize, Default, Clone, PartialEq)]
 pub struct TextControls {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verbosity: Option<OpenAiVerbosity>,
@@ -117,7 +119,7 @@ pub struct TextControls {
     pub format: Option<TextFormat>,
 }
 
-#[derive(Debug, Serialize, Default, Clone)]
+#[derive(Debug, Serialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum OpenAiVerbosity {
     Low,
@@ -136,7 +138,7 @@ impl From<VerbosityConfig> for OpenAiVerbosity {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct ResponsesApiRequest {
     pub model: String,
     pub instructions: String,

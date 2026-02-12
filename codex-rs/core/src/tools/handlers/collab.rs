@@ -1346,10 +1346,7 @@ fn build_agent_shared_config(
     config.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
     config.cwd = turn.cwd.clone();
-    // Sub-agents cannot ask for approvals; the parent orchestrator owns approvals.
-    config.approval_policy =
-        Constrained::normalized(AskForApproval::Never, |_| AskForApproval::Never)
-            .expect("approval policy normalizer should be valid");
+    config.approval_policy = Constrained::allow_only(AskForApproval::Never);
     config
         .sandbox_policy
         .set(turn.sandbox_policy.clone())
@@ -1420,7 +1417,7 @@ mod tests {
     }
 
     fn thread_manager() -> ThreadManager {
-        ThreadManager::with_models_provider(
+        ThreadManager::with_models_provider_for_tests(
             CodexAuth::from_api_key("dummy"),
             built_in_model_providers()["openai"].clone(),
         )

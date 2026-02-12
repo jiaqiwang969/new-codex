@@ -274,40 +274,20 @@ fn apply_notify_env(command: &mut Command, payload: &HookPayload) {
 }
 
 pub fn legacy_notify_json(hook_event: &HookEvent, cwd: &Path) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&match hook_event {
-        HookEvent::AfterAgent { event } => UserNotification::AgentTurnComplete {
-            thread_id: event.thread_id.to_string(),
-            turn_id: event.turn_id.clone(),
-            cwd: cwd.display().to_string(),
-            input_messages: event.input_messages.clone(),
-            last_assistant_message: event.last_assistant_message.clone(),
-            provider_name: event.provider_name.clone(),
-            model_slug: event.model_slug.clone(),
-            memory_scope_version: event.memory_scope_version.clone(),
-            memory_scope_kind: event.memory_scope_kind.clone(),
-            memory_summary_sha256: event.memory_summary_sha256.clone(),
-            memory_binding_key: event.memory_binding_key.clone(),
-            memory_context: legacy_memory_context(&event.memory_context),
-        },
-        HookEvent::AfterMcpToolCall { event } => UserNotification::McpToolCallComplete {
-            thread_id: event.thread_id.to_string(),
-            turn_id: event.turn_id.clone(),
-            call_id: event.call_id.clone(),
-            server: event.server.clone(),
-            tool_name: event.tool_name.clone(),
-            duration_ms: event.duration_ms,
-            status: mcp_tool_call_status_label(&event.status).to_string(),
-            error_message: event.error_message.clone(),
-            provider_name: event.provider_name.clone(),
-            model_slug: event.model_slug.clone(),
-            agent_name: event.agent_name.clone(),
-            memory_scope_version: event.memory_scope_version.clone(),
-            memory_scope_kind: event.memory_scope_kind.clone(),
-            memory_summary_sha256: event.memory_summary_sha256.clone(),
-            memory_binding_key: event.memory_binding_key.clone(),
-            memory_context: legacy_memory_context(&event.memory_context),
-        },
-    })
+    match hook_event {
+        HookEvent::AfterAgent { event } => {
+            serde_json::to_string(&UserNotification::AgentTurnComplete {
+                thread_id: event.thread_id.to_string(),
+                turn_id: event.turn_id.clone(),
+                cwd: cwd.display().to_string(),
+                input_messages: event.input_messages.clone(),
+                last_assistant_message: event.last_assistant_message.clone(),
+            })
+        }
+        _ => Err(serde_json::Error::io(std::io::Error::other(
+            "legacy notify payload is only supported for after_agent",
+        ))),
+    }
 }
 
 pub fn notify_hook(argv: Vec<String>) -> Hook {

@@ -44,7 +44,9 @@ use futures::future::BoxFuture;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use rmcp::model::ClientCapabilities;
+use rmcp::model::CreateElicitationRequestParams;
 use rmcp::model::ElicitationCapability;
+use rmcp::model::FormElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::ListResourceTemplatesResult;
@@ -225,7 +227,16 @@ impl ElicitationRequestManager {
                                     ProtocolRequestId::Integer(value)
                                 }
                             },
-                            message: elicitation.message,
+                            message: match elicitation {
+                                CreateElicitationRequestParams::FormElicitationParams {
+                                    message,
+                                    ..
+                                }
+                                | CreateElicitationRequestParams::UrlElicitationParams {
+                                    message,
+                                    ..
+                                } => message,
+                            },
                         }),
                     })
                     .await;
@@ -549,6 +560,33 @@ impl McpConnectionManager {
             tools.extend(qualify_tools(filter_tools(server_tools, tool_filter)));
         }
         tools
+    }
+
+    /// Force-refresh codex apps tools by bypassing the in-process cache.
+    ///
+    /// On success, the refreshed tools replace the cache contents. On failure,
+    /// the existing cache remains unchanged.
+    pub async fn hard_refresh_codex_apps_tools_cache(&self) -> Result<()> {
+        let managed_client = self
+            .clients
+            .get(CODEX_APPS_MCP_SERVER_NAME)
+            .ok_or_else(|| anyhow!("unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"))?
+            .client()
+            .await
+            .context("failed to get client")?;
+
+        let tools = list_tools_for_client_uncached(
+            CODEX_APPS_MCP_SERVER_NAME,
+            &managed_client.client,
+            managed_client.tool_timeout,
+        )
+        .await
+        .with_context(|| {
+            format!("failed to refresh tools for MCP server '{CODEX_APPS_MCP_SERVER_NAME}'")
+        })?;
+
+        write_cached_codex_apps_tools(&tools);
+        Ok(())
     }
 
     /// Returns a single map that contains all resources. Each key is the
@@ -987,12 +1025,16 @@ async fn start_server_task(
         meta: None,
         capabilities: ClientCapabilities {
             experimental: None,
+            extensions: None,
             roots: None,
             sampling: None,
             // https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation#capabilities
             // indicates this should be an empty object.
             elicitation: Some(ElicitationCapability {
-                schema_validation: None,
+                form: Some(FormElicitationCapability {
+                    schema_validation: None,
+                }),
+                url: None,
             }),
             tasks: None,
         },
@@ -1000,6 +1042,7 @@ async fn start_server_task(
             name: "codex-mcp-client".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             title: Some("Codex".into()),
+            description: None,
             icons: None,
             website_url: None,
         },
@@ -1249,6 +1292,7 @@ mod tests {
                 input_schema: Arc::new(JsonObject::default()),
                 output_schema: None,
                 annotations: None,
+                execution: None,
                 icons: None,
                 meta: None,
             },
