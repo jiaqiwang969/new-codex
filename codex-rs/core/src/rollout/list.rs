@@ -1185,7 +1185,7 @@ async fn find_thread_path_by_id_str_in_subdir(
         if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
             return Ok(Some(db_path));
         }
-        tracing::error!(
+        tracing::warn!(
             "state db returned stale rollout path for thread {id_str}: {}",
             db_path.display()
         );
@@ -1211,16 +1211,55 @@ async fn find_thread_path_by_id_str_in_subdir(
         .map_err(|e| io::Error::other(format!("file search failed: {e}")))?;
 
     let found = results.matches.into_iter().next().map(|m| m.full_path());
-    if let Some(found_path) = found.as_ref() {
-        tracing::error!("state db missing rollout path for thread {id_str}");
+    if let Some(found_path) = found.as_ref()
+        && state_db_ctx.is_some()
+        && let Some(thread_id) = thread_id
+    {
+        tracing::warn!(
+            "state db missing rollout path for thread {id_str}; repairing with filesystem result: {}",
+            found_path.display()
+        );
         state_db::record_discrepancy("find_thread_path_by_id_str_in_subdir", "falling_back");
         state_db::read_repair_rollout_path(
             state_db_ctx.as_deref(),
-            thread_id,
+            Some(thread_id),
             archived_only,
             found_path.as_path(),
         )
         .await;
+        let repaired_path = state_db::find_rollout_path_by_id(
+            state_db_ctx.as_deref(),
+            thread_id,
+            archived_only,
+            "find_path_read_repair_verify",
+        )
+        .await;
+        if let Some(repaired_path) = repaired_path {
+            if repaired_path == *found_path {
+                tracing::info!(
+                    "state db read-repair succeeded for thread {id_str}: {}",
+                    found_path.display()
+                );
+            } else {
+                tracing::warn!(
+                    "state db read-repair did not match filesystem fallback for thread {id_str}; db: {}, fs: {}",
+                    repaired_path.display(),
+                    found_path.display()
+                );
+                state_db::record_discrepancy(
+                    "find_thread_path_by_id_str_in_subdir",
+                    "read_repair_mismatch",
+                );
+            }
+        } else {
+            tracing::warn!(
+                "state db read-repair verification failed for thread {id_str}: no db path after repair"
+            );
+            state_db::record_discrepancy(
+                "find_thread_path_by_id_str_in_subdir",
+                "read_repair_missing",
+            );
+        }
     }
 
     Ok(found)

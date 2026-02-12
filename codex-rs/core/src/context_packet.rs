@@ -39,6 +39,22 @@ pub(crate) const CLAUDE_CODE_CONTEXT_PACKET_CONFIG: ContextPacketConfig = Contex
     max_project_memory_summary_bytes: 800,
 };
 
+fn render_active_memory_scope_section(
+    scope_kind: &str,
+    scope_version: &str,
+    summary_sha256: &str,
+    binding_key: &str,
+    memory_root: &std::path::Path,
+    memory_summary: &str,
+    max_memory_summary_bytes: usize,
+) -> String {
+    let memory_root = memory_root.display();
+    let memory_summary = truncate_text_bytes(memory_summary.trim(), max_memory_summary_bytes);
+    format!(
+        "Active memory scope: {scope_kind}\nActive memory scope version: {scope_version}\nActive memory summary sha256: {summary_sha256}\nActive memory binding key: {binding_key}\nActive memory root: {memory_root}\nActive memory summary:\n{memory_summary}"
+    )
+}
+
 pub(crate) async fn build_context_packet(
     sess: &Session,
     turn_context: &TurnContext,
@@ -60,6 +76,20 @@ pub(crate) async fn build_context_packet(
         if !user_instructions.is_empty() {
             sections.push(format!("User instructions:\n{user_instructions}"));
         }
+    }
+
+    if turn_context.features.enabled(Feature::MemoryTool)
+        && let Some(active_memory_source) = turn_context.resolve_memory_read_path_source().await
+    {
+        sections.push(render_active_memory_scope_section(
+            active_memory_source.scope_kind,
+            &active_memory_source.memory_scope_version,
+            &active_memory_source.memory_summary_sha256,
+            &active_memory_source.memory_binding_key,
+            active_memory_source.memory_root.as_path(),
+            &active_memory_source.memory_summary,
+            config.max_memory_summary_bytes,
+        ));
     }
 
     let include_memory_sections =
@@ -262,6 +292,7 @@ mod tests {
     use super::*;
     use codex_protocol::models::ContentItem;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
 
     #[test]
     fn collect_history_context_prefers_last_summary_and_only_keeps_messages_after_it() {
@@ -327,5 +358,53 @@ mod tests {
         assert_eq!(ctx.recent.len(), 1);
         assert_eq!(ctx.recent[0].0, "user".to_string());
         assert_eq!(ctx.recent[0].1, "after second summary".to_string());
+    }
+
+    #[test]
+    fn render_active_memory_scope_section_includes_scope_version_and_root() {
+        let summary_sha256 = "a".repeat(64);
+        let section = render_active_memory_scope_section(
+            "user",
+            "user:123456789abc",
+            &summary_sha256,
+            "user:123456789abc:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Path::new("/tmp/.codex/memories/user/memory"),
+            "memory summary text",
+            1_000,
+        );
+
+        let expected = "Active memory scope: user\n\
+Active memory scope version: user:123456789abc\n\
+Active memory summary sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+Active memory binding key: user:123456789abc:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+Active memory root: /tmp/.codex/memories/user/memory\n\
+Active memory summary:\n\
+memory summary text";
+        assert_eq!(section, expected);
+    }
+
+    #[test]
+    fn render_active_memory_scope_section_truncates_summary() {
+        let summary_sha256 = "a".repeat(64);
+        let section = render_active_memory_scope_section(
+            "cwd",
+            "cwd:aaaaaaaaaaaa",
+            &summary_sha256,
+            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Path::new("/tmp/project/.codex/memory"),
+            "abcdef",
+            4,
+        );
+
+        assert_eq!(
+            section,
+            "Active memory scope: cwd\n\
+Active memory scope version: cwd:aaaaaaaaaaaa\n\
+Active memory summary sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+Active memory binding key: cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+Active memory root: /tmp/project/.codex/memory\n\
+Active memory summary:\n\
+abcd..."
+        );
     }
 }

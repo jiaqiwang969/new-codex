@@ -11,6 +11,7 @@ import type { FileUpdateChange } from "./FileUpdateChange";
 import type { McpToolCallError } from "./McpToolCallError";
 import type { McpToolCallResult } from "./McpToolCallResult";
 import type { McpToolCallStatus } from "./McpToolCallStatus";
+import type { MemoryLink } from "./MemoryLink";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
 import type { UserInput } from "./UserInput";
 import type { WebSearchAction } from "./WebSearchAction";
@@ -47,6 +48,10 @@ exitCode: number | null,
  */
 durationMs: number | null, } | { "type": "fileChange", id: string, changes: Array<FileUpdateChange>, status: PatchApplyStatus, } | { "type": "mcpToolCall", id: string, server: string, tool: string, status: McpToolCallStatus, arguments: JsonValue, result: McpToolCallResult | null, error: McpToolCallError | null, 
 /**
+ * Memory continuity metadata when available from the originating tool call.
+ */
+memory: MemoryLink | null, 
+/**
  * The duration of the MCP tool call in milliseconds.
  */
 durationMs: number | null, } | { "type": "collabAgentToolCall", 
@@ -78,4 +83,8 @@ prompt: string | null,
 /**
  * Last known status of the target agents, when available.
  */
-agentsStates: { [key in string]?: CollabAgentState }, } | { "type": "webSearch", id: string, query: string, action: WebSearchAction | null, } | { "type": "imageView", id: string, path: string, } | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };
+agentsStates: { [key in string]?: CollabAgentState }, 
+/**
+ * Memory continuity metadata when available from the originating collab call.
+ */
+memory: MemoryLink | null, } | { "type": "webSearch", id: string, query: string, action: WebSearchAction | null, } | { "type": "imageView", id: string, path: string, } | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };

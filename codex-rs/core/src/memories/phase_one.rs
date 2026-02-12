@@ -124,6 +124,10 @@ fn normalize_stage_one_output(mut output: StageOneOutput) -> Result<StageOneOutp
     output.raw_memory = output.raw_memory.trim().to_string();
     output.summary = output.summary.trim().to_string();
 
+    if output.raw_memory.is_empty() && output.summary.is_empty() {
+        return Ok(output);
+    }
+
     if output.raw_memory.is_empty() {
         return Err(CodexErr::InvalidRequest(
             "stage-1 memory output missing rawMemory".to_string(),
@@ -241,6 +245,19 @@ mod tests {
         assert!(normalized.raw_memory.contains("[REDACTED_SECRET]"));
         assert!(!normalized.summary.contains("mysecret123456"));
         assert_eq!(normalized.summary, "password = [REDACTED_SECRET] small");
+    }
+
+    #[test]
+    fn normalize_stage_one_output_allows_noop_empty_fields() {
+        let output = StageOneOutput {
+            raw_memory: "".to_string(),
+            summary: "".to_string(),
+        };
+
+        let normalized = normalize_stage_one_output(output).expect("normalized");
+
+        assert_eq!(normalized.raw_memory, "");
+        assert_eq!(normalized.summary, "");
     }
 
     #[test]

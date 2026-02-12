@@ -4113,6 +4113,35 @@
       ],
       "type": "string"
     },
+    "MemoryLink": {
+      "properties": {
+        "bindingKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopeKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopeVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summarySha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "MessagePhase": {
       "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
       "oneOf": [
@@ -5033,11 +5062,12 @@
               "type": "string"
             },
             "thought_signature": {
-              "description": "Gemini thought signature for this function call (preserved for round-tripping).",
+              "description": "Gemini thought signature for this function call (preserved for round-tripping). Never serialized on the protocol wire — only used internally.",
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "writeOnly": true
             },
             "type": {
               "enum": [
@@ -6339,6 +6369,17 @@
             "id": {
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Memory continuity metadata when available from the originating tool call."
+            },
             "result": {
               "anyOf": [
                 {
@@ -6389,6 +6430,17 @@
             "id": {
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Memory continuity metadata when available from the originating collab call."
             },
             "prompt": {
               "description": "Prompt text sent as part of the collab tool call, when available.",

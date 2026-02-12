@@ -3,6 +3,7 @@ use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
+use crate::config::Constrained;
 use crate::error::CodexErr;
 use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
@@ -16,6 +17,7 @@ use async_trait::async_trait;
 use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CollabAgentInteractionBeginEvent;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
@@ -26,6 +28,7 @@ use codex_protocol::protocol::CollabResumeBeginEvent;
 use codex_protocol::protocol::CollabResumeEndEvent;
 use codex_protocol::protocol::CollabWaitingBeginEvent;
 use codex_protocol::protocol::CollabWaitingEndEvent;
+use codex_protocol::protocol::MemoryLink;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
@@ -108,6 +111,10 @@ mod spawn {
         agent_id: String,
         worktree_path: Option<String>,
         branch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -118,7 +125,7 @@ mod spawn {
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
         let agent_role = args.agent_type.unwrap_or(AgentRole::Default);
-        let input_items = parse_collab_input(args.message, args.items)?;
+        let mut input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
         let prompt_for_events = prompt.clone();
         let session_source = turn.session_source.clone();
@@ -128,12 +135,14 @@ mod spawn {
                 "Agent depth limit reached. Solve the task yourself.".to_string(),
             ));
         }
+        let memory = super::active_memory_link(turn.as_ref()).await;
         session
             .send_event(
                 &turn,
                 CollabAgentSpawnBeginEvent {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     prompt: prompt_for_events.clone(),
                 }
                 .into(),
@@ -165,13 +174,16 @@ mod spawn {
             }
         }
 
-        let _prompt_for_agent = build_spawn_agent_prompt_with_context(
+        let prompt_for_agent = build_spawn_agent_prompt_with_context(
             session.as_ref(),
             turn.as_ref(),
             &prompt,
             worktree.as_ref(),
         )
         .await;
+        if prompt_for_agent != prompt {
+            apply_spawn_agent_context_prompt(&mut input_items, prompt_for_agent);
+        }
 
         let result = session
             .services
@@ -201,6 +213,7 @@ mod spawn {
                 CollabAgentSpawnEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     new_thread_id,
                     prompt: prompt_for_events,
                     status,
@@ -219,12 +232,16 @@ mod spawn {
             let _ = agent_worktree::write_lease(&lease);
         }
 
+        let (memory_scope_version, memory_binding_key) = super::binding_fields_from_memory(&memory);
+
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             worktree_path: worktree
                 .as_ref()
                 .map(|worktree| worktree.path.display().to_string()),
             branch: worktree.as_ref().map(|worktree| worktree.branch.clone()),
+            memory_scope_version,
+            memory_binding_key,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -271,13 +288,161 @@ mod spawn {
         )
     }
 
+    fn apply_spawn_agent_context_prompt(
+        input_items: &mut Vec<UserInput>,
+        prompt_for_agent: String,
+    ) {
+        if let [
+            UserInput::Text {
+                text,
+                text_elements,
+            },
+        ] = input_items.as_mut_slice()
+            && text_elements.is_empty()
+        {
+            *text = prompt_for_agent;
+            return;
+        }
+
+        input_items.insert(
+            0,
+            UserInput::Text {
+                text: prompt_for_agent,
+                text_elements: Vec::new(),
+            },
+        );
+    }
+
     fn prompt_already_has_context_packet(prompt: &str) -> bool {
         let lower = prompt.to_ascii_lowercase();
         lower.contains("context packet")
             || lower.contains("working directory:")
+            || lower.contains("active memory scope:")
+            || lower.contains("active memory binding key:")
             || lower.contains("session summary:")
             || lower.contains("saved thread memory:")
             || lower.contains("recent chat excerpt:")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pretty_assertions::assert_eq;
+        use serde_json::json;
+
+        #[test]
+        fn apply_spawn_agent_context_prompt_replaces_single_plain_text_item() {
+            let mut items = vec![UserInput::Text {
+                text: "original".to_string(),
+                text_elements: Vec::new(),
+            }];
+
+            apply_spawn_agent_context_prompt(&mut items, "wrapped".to_string());
+
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "wrapped".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+
+        #[test]
+        fn apply_spawn_agent_context_prompt_prepends_when_items_are_rich() {
+            let mut items = vec![
+                UserInput::Text {
+                    text: "original".to_string(),
+                    text_elements: vec![codex_protocol::user_input::TextElement::new(
+                        (0..8).into(),
+                        Some("original".to_string()),
+                    )],
+                },
+                UserInput::Mention {
+                    name: "drive".to_string(),
+                    path: "app://drive".to_string(),
+                },
+            ];
+
+            apply_spawn_agent_context_prompt(&mut items, "wrapped".to_string());
+
+            assert_eq!(
+                items,
+                vec![
+                    UserInput::Text {
+                        text: "wrapped".to_string(),
+                        text_elements: Vec::new(),
+                    },
+                    UserInput::Text {
+                        text: "original".to_string(),
+                        text_elements: vec![codex_protocol::user_input::TextElement::new(
+                            (0..8).into(),
+                            Some("original".to_string()),
+                        )],
+                    },
+                    UserInput::Mention {
+                        name: "drive".to_string(),
+                        path: "app://drive".to_string(),
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn prompt_already_has_context_packet_detects_memory_markers() {
+            assert!(prompt_already_has_context_packet(
+                "Active memory binding key: cwd:abc:123"
+            ));
+            assert!(prompt_already_has_context_packet(
+                "active memory scope: user"
+            ));
+            assert!(!prompt_already_has_context_packet("just do this task"));
+        }
+
+        #[test]
+        fn spawn_agent_result_serialization_includes_memory_keys_when_available() {
+            let result = SpawnAgentResult {
+                agent_id: "agent-1".to_string(),
+                worktree_path: Some("/tmp/worktree".to_string()),
+                branch: Some("agent/branch".to_string()),
+                memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                memory_binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            };
+
+            let actual =
+                serde_json::to_value(result).expect("spawn agent result to serialize to value");
+            let expected = json!({
+                "agent_id": "agent-1",
+                "worktree_path": "/tmp/worktree",
+                "branch": "agent/branch",
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            });
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn spawn_agent_result_serialization_omits_memory_keys_when_unavailable() {
+            let result = SpawnAgentResult {
+                agent_id: "agent-1".to_string(),
+                worktree_path: None,
+                branch: None,
+                memory_scope_version: None,
+                memory_binding_key: None,
+            };
+
+            let actual =
+                serde_json::to_value(result).expect("spawn agent result to serialize to value");
+            let expected = json!({
+                "agent_id": "agent-1",
+                "worktree_path": null,
+                "branch": null
+            });
+            assert_eq!(actual, expected);
+        }
     }
 }
 
@@ -297,6 +462,10 @@ mod send_input {
     #[derive(Debug, Serialize)]
     struct SendInputResult {
         submission_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -317,12 +486,14 @@ mod send_input {
                 .await
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         }
+        let memory = super::active_memory_link(turn.as_ref()).await;
         session
             .send_event(
                 &turn,
                 CollabAgentInteractionBeginEvent {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_id,
                     prompt: prompt.clone(),
                 }
@@ -346,6 +517,7 @@ mod send_input {
                 CollabAgentInteractionEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_id,
                     prompt,
                     status,
@@ -354,8 +526,14 @@ mod send_input {
             )
             .await;
         let submission_id = result?;
+        let (memory_scope_version, memory_binding_key) = super::binding_fields_from_memory(&memory);
 
-        let content = serde_json::to_string(&SendInputResult { submission_id }).map_err(|err| {
+        let content = serde_json::to_string(&SendInputResult {
+            submission_id,
+            memory_scope_version,
+            memory_binding_key,
+        })
+        .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize send_input result: {err}"))
         })?;
 
@@ -363,6 +541,50 @@ mod send_input {
             body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pretty_assertions::assert_eq;
+        use serde_json::json;
+
+        #[test]
+        fn send_input_result_serialization_includes_memory_keys_when_available() {
+            let result = SendInputResult {
+                submission_id: "sub-1".to_string(),
+                memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                memory_binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            };
+
+            let actual =
+                serde_json::to_value(result).expect("send input result to serialize to value");
+            let expected = json!({
+                "submission_id": "sub-1",
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            });
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn send_input_result_serialization_omits_memory_keys_when_unavailable() {
+            let result = SendInputResult {
+                submission_id: "sub-1".to_string(),
+                memory_scope_version: None,
+                memory_binding_key: None,
+            };
+
+            let actual =
+                serde_json::to_value(result).expect("send input result to serialize to value");
+            let expected = json!({
+                "submission_id": "sub-1"
+            });
+            assert_eq!(actual, expected);
+        }
     }
 }
 
@@ -380,6 +602,10 @@ mod resume_agent {
     #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
     pub(super) struct ResumeAgentResult {
         pub(super) status: AgentStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -396,6 +622,7 @@ mod resume_agent {
                 "Agent depth limit reached. Solve the task yourself.".to_string(),
             ));
         }
+        let memory = super::active_memory_link(turn.as_ref()).await;
 
         session
             .send_event(
@@ -403,6 +630,7 @@ mod resume_agent {
                 CollabResumeBeginEvent {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_id,
                 }
                 .into(),
@@ -448,6 +676,7 @@ mod resume_agent {
                 CollabResumeEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_id,
                     status: status.clone(),
                 }
@@ -459,7 +688,13 @@ mod resume_agent {
             return Err(err);
         }
 
-        let content = serde_json::to_string(&ResumeAgentResult { status }).map_err(|err| {
+        let (memory_scope_version, memory_binding_key) = super::binding_fields_from_memory(&memory);
+        let content = serde_json::to_string(&ResumeAgentResult {
+            status,
+            memory_scope_version,
+            memory_binding_key,
+        })
+        .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize resume_agent result: {err}"))
         })?;
 
@@ -510,6 +745,48 @@ mod resume_agent {
             .get_status(resumed_thread_id)
             .await)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pretty_assertions::assert_eq;
+        use serde_json::json;
+
+        #[test]
+        fn resume_agent_result_serialization_includes_memory_keys_when_available() {
+            let result = ResumeAgentResult {
+                status: AgentStatus::Running,
+                memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                memory_binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            };
+
+            let actual = serde_json::to_value(result).expect("resume result to serialize to value");
+            let expected = json!({
+                "status": "running",
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            });
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn resume_agent_result_serialization_omits_memory_keys_when_unavailable() {
+            let result = ResumeAgentResult {
+                status: AgentStatus::NotFound,
+                memory_scope_version: None,
+                memory_binding_key: None,
+            };
+
+            let actual = serde_json::to_value(result).expect("resume result to serialize to value");
+            let expected = json!({
+                "status": "not_found"
+            });
+            assert_eq!(actual, expected);
+        }
+    }
 }
 
 mod wait {
@@ -536,6 +813,10 @@ mod wait {
     struct WaitResult {
         status: HashMap<ThreadId, AgentStatus>,
         timed_out: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -568,12 +849,14 @@ mod wait {
             }
             ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
         };
+        let memory = super::active_memory_link(turn.as_ref()).await;
 
         session
             .send_event(
                 &turn,
                 CollabWaitingBeginEvent {
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     call_id: call_id.clone(),
                 }
@@ -603,6 +886,7 @@ mod wait {
                             &turn,
                             CollabWaitingEndEvent {
                                 sender_thread_id: session.conversation_id,
+                                memory: memory.clone(),
                                 call_id: call_id.clone(),
                                 statuses,
                             }
@@ -649,10 +933,13 @@ mod wait {
         };
 
         // Convert payload.
+        let (memory_scope_version, memory_binding_key) = super::binding_fields_from_memory(&memory);
         let statuses_map = statuses.clone().into_iter().collect::<HashMap<_, _>>();
         let result = WaitResult {
             status: statuses_map.clone(),
             timed_out: statuses.is_empty(),
+            memory_scope_version,
+            memory_binding_key,
         };
 
         // Final event emission.
@@ -661,6 +948,7 @@ mod wait {
                 &turn,
                 CollabWaitingEndEvent {
                     sender_thread_id: session.conversation_id,
+                    memory,
                     call_id,
                     statuses: statuses_map,
                 }
@@ -699,6 +987,57 @@ mod wait {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pretty_assertions::assert_eq;
+        use serde_json::json;
+        use std::collections::HashMap;
+
+        #[test]
+        fn wait_result_serialization_includes_memory_keys_when_available() {
+            let thread_id =
+                ThreadId::from_string("b5f6c1c2-1111-2222-3333-444455556666").expect("thread id");
+            let result = WaitResult {
+                status: HashMap::from([(thread_id, AgentStatus::Shutdown)]),
+                timed_out: false,
+                memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                memory_binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            };
+
+            let actual = serde_json::to_value(result).expect("wait result to serialize to value");
+            let expected = json!({
+                "status": {
+                    "b5f6c1c2-1111-2222-3333-444455556666": "shutdown"
+                },
+                "timed_out": false,
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            });
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn wait_result_serialization_omits_memory_keys_when_unavailable() {
+            let result = WaitResult {
+                status: HashMap::new(),
+                timed_out: true,
+                memory_scope_version: None,
+                memory_binding_key: None,
+            };
+
+            let actual = serde_json::to_value(result).expect("wait result to serialize to value");
+            let expected = json!({
+                "status": {},
+                "timed_out": true
+            });
+            assert_eq!(actual, expected);
+        }
+    }
 }
 
 pub mod close_agent {
@@ -708,6 +1047,10 @@ pub mod close_agent {
     #[derive(Debug, Deserialize, Serialize)]
     pub(super) struct CloseAgentResult {
         pub(super) status: AgentStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -718,12 +1061,14 @@ pub mod close_agent {
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: CloseAgentArgs = parse_arguments(&arguments)?;
         let agent_id = agent_id(&args.id)?;
+        let memory = super::active_memory_link(turn.as_ref()).await;
         session
             .send_event(
                 &turn,
                 CollabCloseBeginEvent {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_id: agent_id,
                 }
                 .into(),
@@ -744,6 +1089,7 @@ pub mod close_agent {
                         CollabCloseEndEvent {
                             call_id: call_id.clone(),
                             sender_thread_id: session.conversation_id,
+                            memory: memory.clone(),
                             receiver_thread_id: agent_id,
                             status,
                         }
@@ -770,6 +1116,7 @@ pub mod close_agent {
                 CollabCloseEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
+                    memory: memory.clone(),
                     receiver_thread_id: agent_id,
                     status: status.clone(),
                 }
@@ -778,7 +1125,13 @@ pub mod close_agent {
             .await;
         result?;
 
-        let content = serde_json::to_string(&CloseAgentResult { status }).map_err(|err| {
+        let (memory_scope_version, memory_binding_key) = super::binding_fields_from_memory(&memory);
+        let content = serde_json::to_string(&CloseAgentResult {
+            status,
+            memory_scope_version,
+            memory_binding_key,
+        })
+        .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize close_agent result: {err}"))
         })?;
 
@@ -786,6 +1139,48 @@ pub mod close_agent {
             body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use pretty_assertions::assert_eq;
+        use serde_json::json;
+
+        #[test]
+        fn close_agent_result_serialization_includes_memory_keys_when_available() {
+            let result = CloseAgentResult {
+                status: AgentStatus::Shutdown,
+                memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                memory_binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            };
+
+            let actual = serde_json::to_value(result).expect("close result to serialize to value");
+            let expected = json!({
+                "status": "shutdown",
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            });
+            assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn close_agent_result_serialization_omits_memory_keys_when_unavailable() {
+            let result = CloseAgentResult {
+                status: AgentStatus::NotFound,
+                memory_scope_version: None,
+                memory_binding_key: None,
+            };
+
+            let actual = serde_json::to_value(result).expect("close result to serialize to value");
+            let expected = json!({
+                "status": "not_found"
+            });
+            assert_eq!(actual, expected);
+        }
     }
 }
 
@@ -896,6 +1291,46 @@ fn build_agent_resume_config(
     Ok(config)
 }
 
+async fn active_memory_link(turn: &TurnContext) -> Option<MemoryLink> {
+    let memory_context = turn.resolve_hook_memory_context().await;
+    let scope_version = memory_context
+        .as_ref()
+        .and_then(|memory_context| memory_context.active_memory_scope_version.clone());
+    let scope_kind = memory_context
+        .as_ref()
+        .and_then(|memory_context| memory_context.active_scope_kind.clone());
+    let summary_sha256 = memory_context
+        .as_ref()
+        .and_then(|memory_context| memory_context.active_memory_summary_sha256.clone());
+    let binding_key = memory_context
+        .as_ref()
+        .and_then(|memory_context| memory_context.active_memory_binding_key.clone());
+    if scope_version.is_none()
+        && scope_kind.is_none()
+        && summary_sha256.is_none()
+        && binding_key.is_none()
+    {
+        None
+    } else {
+        Some(MemoryLink {
+            scope_version,
+            scope_kind,
+            summary_sha256,
+            binding_key,
+        })
+    }
+}
+
+fn binding_fields_from_memory(memory: &Option<MemoryLink>) -> (Option<String>, Option<String>) {
+    let memory_scope_version = memory
+        .as_ref()
+        .and_then(|memory| memory.scope_version.clone());
+    let memory_binding_key = memory
+        .as_ref()
+        .and_then(|memory| memory.binding_key.clone());
+    (memory_scope_version, memory_binding_key)
+}
+
 fn build_agent_shared_config(
     turn: &TurnContext,
     child_depth: i32,
@@ -911,12 +1346,10 @@ fn build_agent_shared_config(
     config.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
     config.cwd = turn.cwd.clone();
-    config
-        .approval_policy
-        .set(turn.approval_policy)
-        .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("approval_policy is invalid: {err}"))
-        })?;
+    // Sub-agents cannot ask for approvals; the parent orchestrator owns approvals.
+    config.approval_policy =
+        Constrained::normalized(AskForApproval::Never, |_| AskForApproval::Never)
+            .expect("approval policy normalizer should be valid");
     config
         .sandbox_policy
         .set(turn.sandbox_policy.clone())
@@ -1394,6 +1827,7 @@ mod tests {
                     }],
                     end_turn: None,
                     phase: None,
+                    thought_signature: None,
                 })]),
                 AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
             )
@@ -1501,6 +1935,8 @@ mod tests {
     struct WaitResult {
         status: HashMap<ThreadId, AgentStatus>,
         timed_out: bool,
+        memory_scope_version: Option<String>,
+        memory_binding_key: Option<String>,
     }
 
     #[tokio::test]
@@ -1597,7 +2033,9 @@ mod tests {
                     (id_a, AgentStatus::NotFound),
                     (id_b, AgentStatus::NotFound),
                 ]),
-                timed_out: false
+                timed_out: false,
+                memory_scope_version: None,
+                memory_binding_key: None,
             }
         );
         assert_eq!(success, None);
@@ -1638,7 +2076,9 @@ mod tests {
             result,
             WaitResult {
                 status: HashMap::new(),
-                timed_out: true
+                timed_out: true,
+                memory_scope_version: None,
+                memory_binding_key: None,
             }
         );
         assert_eq!(success, None);
@@ -1731,7 +2171,9 @@ mod tests {
             result,
             WaitResult {
                 status: HashMap::from([(agent_id, AgentStatus::Shutdown)]),
-                timed_out: false
+                timed_out: false,
+                memory_scope_version: None,
+                memory_binding_key: None,
             }
         );
         assert_eq!(success, None);
@@ -1768,6 +2210,8 @@ mod tests {
         let result: close_agent::CloseAgentResult =
             serde_json::from_str(&content).expect("close_agent result should be json");
         assert_eq!(result.status, status_before);
+        assert_eq!(result.memory_scope_version, None);
+        assert_eq!(result.memory_binding_key, None);
         assert_eq!(success, Some(true));
 
         let ops = manager.captured_ops();
@@ -1782,22 +2226,6 @@ mod tests {
 
     #[tokio::test]
     async fn build_agent_spawn_config_uses_turn_context_values() {
-        fn pick_allowed_approval_policy(
-            constraint: &crate::config::Constrained<AskForApproval>,
-            base: AskForApproval,
-        ) -> AskForApproval {
-            let candidates = [
-                AskForApproval::Never,
-                AskForApproval::UnlessTrusted,
-                AskForApproval::OnRequest,
-                AskForApproval::OnFailure,
-            ];
-            candidates
-                .into_iter()
-                .find(|candidate| *candidate != base && constraint.can_set(candidate).is_ok())
-                .unwrap_or(base)
-        }
-
         fn pick_allowed_sandbox_policy(
             constraint: &crate::config::Constrained<SandboxPolicy>,
             base: SandboxPolicy,
@@ -1826,10 +2254,6 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         turn.cwd = temp_dir.path().to_path_buf();
         turn.codex_linux_sandbox_exe = Some(PathBuf::from("/bin/echo"));
-        turn.approval_policy = pick_allowed_approval_policy(
-            &turn.config.approval_policy,
-            *turn.config.approval_policy.get(),
-        );
         turn.sandbox_policy = pick_allowed_sandbox_policy(
             &turn.config.sandbox_policy,
             turn.config.sandbox_policy.get().clone(),
@@ -1849,7 +2273,7 @@ mod tests {
         expected.cwd = turn.cwd.clone();
         expected
             .approval_policy
-            .set(turn.approval_policy)
+            .set(AskForApproval::Never)
             .expect("approval policy set");
         expected
             .sandbox_policy
@@ -1896,7 +2320,7 @@ mod tests {
         expected.cwd = turn.cwd.clone();
         expected
             .approval_policy
-            .set(turn.approval_policy)
+            .set(AskForApproval::Never)
             .expect("approval policy set");
         expected
             .sandbox_policy

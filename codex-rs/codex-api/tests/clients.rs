@@ -298,6 +298,7 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
             content: vec![ContentItem::InputText { text: "hi".into() }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }],
         tools: Vec::new(),
         tool_choice: "auto".into(),

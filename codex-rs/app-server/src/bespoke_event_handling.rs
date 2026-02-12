@@ -42,6 +42,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpToolCallError;
 use codex_app_server_protocol::McpToolCallResult;
 use codex_app_server_protocol::McpToolCallStatus;
+use codex_app_server_protocol::MemoryLink;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind as V2PatchChangeKind;
 use codex_app_server_protocol::PlanDeltaNotification;
@@ -81,6 +82,7 @@ use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::FileChange as CoreFileChange;
 use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
+use codex_core::protocol::MemoryLink as CoreMemoryLink;
 use codex_core::protocol::Op;
 use codex_core::protocol::ReviewDecision;
 use codex_core::protocol::TokenCountEvent;
@@ -102,6 +104,64 @@ use tokio::sync::oneshot;
 use tracing::error;
 
 type JsonValue = serde_json::Value;
+
+const MEMORY_SCOPE_VERSION_KEYS: &[&str] = &["memoryScopeVersion", "memory_scope_version"];
+const MEMORY_SCOPE_KIND_KEYS: &[&str] = &["memoryScopeKind", "memory_scope_kind"];
+const MEMORY_SUMMARY_SHA256_KEYS: &[&str] = &["memorySummarySha256", "memory_summary_sha256"];
+const MEMORY_BINDING_KEY_KEYS: &[&str] = &["memoryBindingKey", "memory_binding_key"];
+
+fn get_json_string(
+    arguments: &serde_json::Map<String, JsonValue>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter().find_map(|key| {
+        arguments
+            .get(*key)
+            .and_then(JsonValue::as_str)
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn memory_link_from_arguments(arguments: Option<&JsonValue>) -> Option<MemoryLink> {
+    let object = arguments.and_then(JsonValue::as_object)?;
+    let scope_version = get_json_string(object, MEMORY_SCOPE_VERSION_KEYS);
+    let scope_kind = get_json_string(object, MEMORY_SCOPE_KIND_KEYS);
+    let summary_sha256 = get_json_string(object, MEMORY_SUMMARY_SHA256_KEYS);
+    let binding_key = get_json_string(object, MEMORY_BINDING_KEY_KEYS);
+
+    if scope_version.is_none()
+        && scope_kind.is_none()
+        && summary_sha256.is_none()
+        && binding_key.is_none()
+    {
+        None
+    } else {
+        Some(MemoryLink {
+            scope_version,
+            scope_kind,
+            summary_sha256,
+            binding_key,
+        })
+    }
+}
+
+fn memory_link_from_core(memory: Option<CoreMemoryLink>) -> Option<MemoryLink> {
+    let memory = memory?;
+    if memory.scope_version.is_none()
+        && memory.scope_kind.is_none()
+        && memory.summary_sha256.is_none()
+        && memory.binding_key.is_none()
+    {
+        None
+    } else {
+        Some(MemoryLink {
+            scope_version: memory.scope_version,
+            scope_kind: memory.scope_kind,
+            summary_sha256: memory.summary_sha256,
+            binding_key: memory.binding_key,
+        })
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_bespoke_event_handling(
@@ -385,6 +445,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
+            let memory = memory_link_from_core(begin_event.memory);
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -393,6 +454,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids: Vec::new(),
                 prompt: Some(begin_event.prompt),
                 agents_states: HashMap::new(),
+                memory,
             };
             let notification = ItemStartedNotification {
                 thread_id: conversation_id.to_string(),
@@ -404,6 +466,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabAgentSpawnEnd(end_event) => {
+            let memory = memory_link_from_core(end_event.memory.clone());
             let has_receiver = end_event.new_thread_id.is_some();
             let status = match &end_event.status {
                 codex_protocol::protocol::AgentStatus::Errored(_)
@@ -430,6 +493,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids,
                 prompt: Some(end_event.prompt),
                 agents_states,
+                memory,
             };
             let notification = ItemCompletedNotification {
                 thread_id: conversation_id.to_string(),
@@ -441,6 +505,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabAgentInteractionBegin(begin_event) => {
+            let memory = memory_link_from_core(begin_event.memory);
             let receiver_thread_ids = vec![begin_event.receiver_thread_id.to_string()];
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
@@ -450,6 +515,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids,
                 prompt: Some(begin_event.prompt),
                 agents_states: HashMap::new(),
+                memory,
             };
             let notification = ItemStartedNotification {
                 thread_id: conversation_id.to_string(),
@@ -461,6 +527,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabAgentInteractionEnd(end_event) => {
+            let memory = memory_link_from_core(end_event.memory.clone());
             let status = match &end_event.status {
                 codex_protocol::protocol::AgentStatus::Errored(_)
                 | codex_protocol::protocol::AgentStatus::NotFound => V2CollabToolCallStatus::Failed,
@@ -476,6 +543,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids: vec![receiver_id.clone()],
                 prompt: Some(end_event.prompt),
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
+                memory,
             };
             let notification = ItemCompletedNotification {
                 thread_id: conversation_id.to_string(),
@@ -487,6 +555,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabWaitingBegin(begin_event) => {
+            let memory = memory_link_from_core(begin_event.memory);
             let receiver_thread_ids = begin_event
                 .receiver_thread_ids
                 .iter()
@@ -500,6 +569,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids,
                 prompt: None,
                 agents_states: HashMap::new(),
+                memory,
             };
             let notification = ItemStartedNotification {
                 thread_id: conversation_id.to_string(),
@@ -511,6 +581,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabWaitingEnd(end_event) => {
+            let memory = memory_link_from_core(end_event.memory.clone());
             let status = if end_event.statuses.values().any(|status| {
                 matches!(
                     status,
@@ -536,6 +607,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids,
                 prompt: None,
                 agents_states,
+                memory,
             };
             let notification = ItemCompletedNotification {
                 thread_id: conversation_id.to_string(),
@@ -547,6 +619,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabCloseBegin(begin_event) => {
+            let memory = memory_link_from_core(begin_event.memory);
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::CloseAgent,
@@ -555,6 +628,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
                 prompt: None,
                 agents_states: HashMap::new(),
+                memory,
             };
             let notification = ItemStartedNotification {
                 thread_id: conversation_id.to_string(),
@@ -566,6 +640,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::CollabCloseEnd(end_event) => {
+            let memory = memory_link_from_core(end_event.memory.clone());
             let status = match &end_event.status {
                 codex_protocol::protocol::AgentStatus::Errored(_)
                 | codex_protocol::protocol::AgentStatus::NotFound => V2CollabToolCallStatus::Failed,
@@ -586,6 +661,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids: vec![receiver_id],
                 prompt: None,
                 agents_states,
+                memory,
             };
             let notification = ItemCompletedNotification {
                 thread_id: conversation_id.to_string(),
@@ -1783,6 +1859,7 @@ async fn on_command_execution_request_approval_response(
 fn collab_resume_begin_item(
     begin_event: codex_core::protocol::CollabResumeBeginEvent,
 ) -> ThreadItem {
+    let memory = memory_link_from_core(begin_event.memory);
     ThreadItem::CollabAgentToolCall {
         id: begin_event.call_id,
         tool: CollabAgentTool::ResumeAgent,
@@ -1791,10 +1868,12 @@ fn collab_resume_begin_item(
         receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
         prompt: None,
         agents_states: HashMap::new(),
+        memory,
     }
 }
 
 fn collab_resume_end_item(end_event: codex_core::protocol::CollabResumeEndEvent) -> ThreadItem {
+    let memory = memory_link_from_core(end_event.memory.clone());
     let status = match &end_event.status {
         codex_protocol::protocol::AgentStatus::Errored(_)
         | codex_protocol::protocol::AgentStatus::NotFound => V2CollabToolCallStatus::Failed,
@@ -1815,6 +1894,7 @@ fn collab_resume_end_item(end_event: codex_core::protocol::CollabResumeEndEvent)
         receiver_thread_ids: vec![receiver_id],
         prompt: None,
         agents_states,
+        memory,
     }
 }
 
@@ -1824,6 +1904,7 @@ async fn construct_mcp_tool_call_notification(
     thread_id: String,
     turn_id: String,
 ) -> ItemStartedNotification {
+    let memory = memory_link_from_arguments(begin_event.invocation.arguments.as_ref());
     let item = ThreadItem::McpToolCall {
         id: begin_event.call_id,
         server: begin_event.invocation.server,
@@ -1832,6 +1913,7 @@ async fn construct_mcp_tool_call_notification(
         arguments: begin_event.invocation.arguments.unwrap_or(JsonValue::Null),
         result: None,
         error: None,
+        memory,
         duration_ms: None,
     };
     ItemStartedNotification {
@@ -1869,6 +1951,7 @@ async fn construct_mcp_tool_call_end_notification(
             }),
         ),
     };
+    let memory = memory_link_from_arguments(end_event.invocation.arguments.as_ref());
 
     let item = ThreadItem::McpToolCall {
         id: end_event.call_id,
@@ -1878,6 +1961,7 @@ async fn construct_mcp_tool_call_end_notification(
         arguments: end_event.invocation.arguments.unwrap_or(JsonValue::Null),
         result,
         error,
+        memory,
         duration_ms,
     };
     ItemCompletedNotification {
@@ -1949,6 +2033,17 @@ mod tests {
         let event = CollabResumeBeginEvent {
             call_id: "call-1".to_string(),
             sender_thread_id: ThreadId::new(),
+            memory: Some(CoreMemoryLink {
+                scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                scope_kind: Some("cwd".to_string()),
+                summary_sha256: Some(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                ),
+                binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            }),
             receiver_thread_id: ThreadId::new(),
         };
 
@@ -1961,6 +2056,17 @@ mod tests {
             receiver_thread_ids: vec![event.receiver_thread_id.to_string()],
             prompt: None,
             agents_states: HashMap::new(),
+            memory: Some(MemoryLink {
+                scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                scope_kind: Some("cwd".to_string()),
+                summary_sha256: Some(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                ),
+                binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                ),
+            }),
         };
         assert_eq!(item, expected);
     }
@@ -1970,6 +2076,17 @@ mod tests {
         let event = CollabResumeEndEvent {
             call_id: "call-2".to_string(),
             sender_thread_id: ThreadId::new(),
+            memory: Some(CoreMemoryLink {
+                scope_version: Some("user:bbbbbbbbbbbb".to_string()),
+                scope_kind: Some("user".to_string()),
+                summary_sha256: Some(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                ),
+                binding_key: Some(
+                    "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_string(),
+                ),
+            }),
             receiver_thread_id: ThreadId::new(),
             status: codex_protocol::protocol::AgentStatus::NotFound,
         };
@@ -1989,6 +2106,17 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            memory: Some(MemoryLink {
+                scope_version: Some("user:bbbbbbbbbbbb".to_string()),
+                scope_kind: Some("user".to_string()),
+                summary_sha256: Some(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                ),
+                binding_key: Some(
+                    "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_string(),
+                ),
+            }),
         };
         assert_eq!(item, expected);
     }
@@ -2317,6 +2445,7 @@ mod tests {
                 arguments: serde_json::json!({"server": ""}),
                 result: None,
                 error: None,
+                memory: None,
                 duration_ms: None,
             },
         };
@@ -2466,11 +2595,55 @@ mod tests {
                 arguments: JsonValue::Null,
                 result: None,
                 error: None,
+                memory: None,
                 duration_ms: None,
             },
         };
 
         assert_eq!(notification, expected);
+    }
+
+    #[tokio::test]
+    async fn test_construct_mcp_tool_call_begin_notification_with_memory_link() {
+        let begin_event = McpToolCallBeginEvent {
+            call_id: "call_mem_begin".to_string(),
+            invocation: McpInvocation {
+                server: "codex".to_string(),
+                tool: "custom_tool".to_string(),
+                arguments: Some(serde_json::json!({
+                    "memoryScopeVersion": "cwd:aaaaaaaaaaaa",
+                    "memoryScopeKind": "cwd",
+                    "memorySummarySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "memoryBindingKey": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                })),
+            },
+        };
+
+        let notification = construct_mcp_tool_call_notification(
+            begin_event,
+            ThreadId::new().to_string(),
+            "turn_memory_begin".to_string(),
+        )
+        .await;
+
+        let ThreadItem::McpToolCall { memory, .. } = notification.item else {
+            panic!("expected mcp tool call item");
+        };
+
+        assert_eq!(
+            memory,
+            Some(MemoryLink {
+                scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                scope_kind: Some("cwd".to_string()),
+                summary_sha256: Some(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()
+                ),
+                binding_key: Some(
+                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string()
+                ),
+            })
+        );
     }
 
     #[tokio::test]
@@ -2520,6 +2693,7 @@ mod tests {
                     structured_content: None,
                 }),
                 error: None,
+                memory: None,
                 duration_ms: Some(0),
             },
         };
@@ -2562,11 +2736,57 @@ mod tests {
                 error: Some(McpToolCallError {
                     message: "boom".to_string(),
                 }),
+                memory: None,
                 duration_ms: Some(1),
             },
         };
 
         assert_eq!(notification, expected);
+    }
+
+    #[tokio::test]
+    async fn test_construct_mcp_tool_call_end_notification_with_memory_link_in_snake_case() {
+        let end_event = McpToolCallEndEvent {
+            call_id: "call_mem_end".to_string(),
+            invocation: McpInvocation {
+                server: "codex".to_string(),
+                tool: "custom_tool".to_string(),
+                arguments: Some(serde_json::json!({
+                    "memory_scope_version": "user:bbbbbbbbbbbb",
+                    "memory_scope_kind": "user",
+                    "memory_summary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "memory_binding_key": "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                })),
+            },
+            duration: Duration::from_millis(2),
+            result: Err("boom".to_string()),
+        };
+
+        let notification = construct_mcp_tool_call_end_notification(
+            end_event,
+            ThreadId::new().to_string(),
+            "turn_memory_end".to_string(),
+        )
+        .await;
+
+        let ThreadItem::McpToolCall { memory, .. } = notification.item else {
+            panic!("expected mcp tool call item");
+        };
+
+        assert_eq!(
+            memory,
+            Some(MemoryLink {
+                scope_version: Some("user:bbbbbbbbbbbb".to_string()),
+                scope_kind: Some("user".to_string()),
+                summary_sha256: Some(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()
+                ),
+                binding_key: Some(
+                    "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_string()
+                ),
+            })
+        );
     }
 
     #[tokio::test]

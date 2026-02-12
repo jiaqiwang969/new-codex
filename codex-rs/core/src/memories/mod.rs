@@ -45,8 +45,11 @@ const CWD_MEMORY_BUCKET_HEX_LEN: usize = 16;
 pub(crate) use phase_one::RAW_MEMORY_PROMPT;
 pub(crate) use phase_one::parse_stage_one_output;
 pub(crate) use phase_one::stage_one_output_schema;
+pub(crate) use prompts::MemoryReadPathSource;
 pub(crate) use prompts::build_consolidation_prompt;
 pub(crate) use prompts::build_stage_one_input_message;
+pub(crate) use prompts::render_memory_tool_developer_instructions;
+pub(crate) use prompts::select_memory_read_path_source;
 #[cfg(test)]
 pub(crate) use rollout::StageOneResponseItemKinds;
 pub(crate) use rollout::StageOneRolloutFilter;
@@ -82,11 +85,26 @@ pub(crate) fn memory_root_for_user(codex_home: &Path) -> PathBuf {
         .join(MEMORY_SUBDIR)
 }
 
+pub(crate) fn memory_summary_sha256(memory_summary: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(memory_summary.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn memory_scope_version(scope_kind: &str, summary_sha256: &str) -> String {
+    let short_hash = summary_sha256.get(..12).unwrap_or(summary_sha256);
+    format!("{scope_kind}:{short_hash}")
+}
+
+pub(crate) fn memory_binding_key(scope_version: &str, summary_sha256: &str) -> String {
+    format!("{scope_version}:{summary_sha256}")
+}
+
 fn raw_memories_dir(root: &Path) -> PathBuf {
     root.join(RAW_MEMORIES_SUBDIR)
 }
 
-fn memory_summary_file(root: &Path) -> PathBuf {
+pub(crate) fn memory_summary_file(root: &Path) -> PathBuf {
     root.join(MEMORY_SUMMARY_FILENAME)
 }
 

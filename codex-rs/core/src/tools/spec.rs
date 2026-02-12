@@ -565,7 +565,7 @@ fn create_spawn_agent_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
         description:
-            "Spawn a sub-agent for a well-scoped task. Returns the agent id to use to communicate with this agent."
+            "Spawn a sub-agent for a well-scoped task. Returns the agent id and, when memory is active, memory_scope_version + memory_binding_key so orchestrators can preserve memory continuity."
                 .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -608,7 +608,7 @@ fn create_send_input_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "send_input".to_string(),
         description:
-            "Send a message to an existing agent. Use interrupt=true to redirect work immediately."
+            "Send a message to an existing agent. Use interrupt=true to redirect work immediately. Returns submission_id and, when memory is active, memory_scope_version + memory_binding_key."
                 .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -631,7 +631,7 @@ fn create_resume_agent_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "resume_agent".to_string(),
         description:
-            "Resume a previously closed agent by id so it can receive send_input and wait calls."
+            "Resume a previously closed agent by id so it can receive send_input and wait calls. Returns status and, when memory is active, memory_scope_version + memory_binding_key."
                 .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -665,7 +665,7 @@ fn create_wait_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "wait".to_string(),
-        description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out."
+        description: "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. When memory is active, also includes memory_scope_version + memory_binding_key."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -768,7 +768,7 @@ fn create_close_agent_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "close_agent".to_string(),
-        description: "Close an agent when it is no longer needed and return its last known status."
+        description: "Close an agent when it is no longer needed and return its last known status. When memory is active, also includes memory_scope_version + memory_binding_key."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -1565,6 +1565,11 @@ pub(crate) fn build_specs(
         builder.register_handler("wait", collab_handler.clone());
         builder.register_handler("close_agent", collab_handler);
     }
+
+    // Keep a dedicated MCP handler registered even when no MCP tools were available at
+    // startup. This allows late-arriving `mcp__<server>__<tool>` calls to route through
+    // ToolPayload::Mcp fallback dispatch instead of failing as "unsupported call".
+    builder.register_handler("__mcp_fallback_handler", mcp_handler.clone());
 
     if let Some(mcp_tools) = mcp_tools {
         let mut entries: Vec<(String, rmcp::model::Tool)> = mcp_tools.into_iter().collect();

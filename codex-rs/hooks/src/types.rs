@@ -47,6 +47,80 @@ pub struct HookEventAfterAgent {
     pub turn_id: String,
     pub input_messages: Vec<String>,
     pub last_assistant_message: Option<String>,
+    pub provider_name: String,
+    pub model_slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_scope_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_scope_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_summary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_binding_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_context: Option<HookEventMemoryContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEventMcpToolCallStatus {
+    Ok,
+    ToolError,
+    TransportError,
+    Declined,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HookEventAfterMcpToolCall {
+    pub thread_id: ThreadId,
+    pub turn_id: String,
+    pub call_id: String,
+    pub server: String,
+    pub tool_name: String,
+    pub duration_ms: u64,
+    pub status: HookEventMcpToolCallStatus,
+    pub error_message: Option<String>,
+    pub provider_name: String,
+    pub model_slug: String,
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_scope_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_scope_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_summary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_binding_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_context: Option<HookEventMemoryContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HookEventMemoryContext {
+    pub cwd_scope_key: String,
+    pub cwd_memory_root: String,
+    pub cwd_memory_summary_path: String,
+    pub cwd_memory_summary_exists: bool,
+    pub user_memory_root: String,
+    pub user_memory_summary_path: String,
+    pub user_memory_summary_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_scope_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_memory_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_memory_summary_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_memory_summary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_memory_summary_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_memory_scope_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_memory_binding_key: Option<String>,
 }
 
 fn serialize_triggered_at<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
@@ -62,6 +136,10 @@ pub enum HookEvent {
     AfterAgent {
         #[serde(flatten)]
         event: HookEventAfterAgent,
+    },
+    AfterMcpToolCall {
+        #[serde(flatten)]
+        event: HookEventAfterMcpToolCall,
     },
 }
 
@@ -84,6 +162,9 @@ mod tests {
 
     use super::HookEvent;
     use super::HookEventAfterAgent;
+    use super::HookEventAfterMcpToolCall;
+    use super::HookEventMcpToolCallStatus;
+    use super::HookEventMemoryContext;
     use super::HookPayload;
 
     #[test]
@@ -103,6 +184,44 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     input_messages: vec!["hello".to_string()],
                     last_assistant_message: Some("hi".to_string()),
+                    provider_name: "Gemini".to_string(),
+                    model_slug: "gemini-2.5-pro".to_string(),
+                    memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                    memory_scope_kind: Some("cwd".to_string()),
+                    memory_summary_sha256: Some("a".repeat(64)),
+                    memory_binding_key: Some(
+                        "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    ),
+                    memory_context: Some(HookEventMemoryContext {
+                        cwd_scope_key: "/tmp/work".to_string(),
+                        cwd_memory_root: "/Users/example/.codex/memories/cwd-bucket/memory"
+                            .to_string(),
+                        cwd_memory_summary_path:
+                            "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
+                                .to_string(),
+                        cwd_memory_summary_exists: true,
+                        user_memory_root: "/Users/example/.codex/memories/user/memory".to_string(),
+                        user_memory_summary_path:
+                            "/Users/example/.codex/memories/user/memory/memory_summary.md"
+                                .to_string(),
+                        user_memory_summary_exists: false,
+                        active_scope_kind: Some("cwd".to_string()),
+                        active_memory_root: Some(
+                            "/Users/example/.codex/memories/cwd-bucket/memory".to_string(),
+                        ),
+                        active_memory_summary_path: Some(
+                            "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
+                                .to_string(),
+                        ),
+                        active_memory_summary_sha256: Some("a".repeat(64)),
+                        active_memory_summary_bytes: Some(123),
+                        active_memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                        active_memory_binding_key: Some(
+                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                        ),
+                    }),
                 },
             },
         };
@@ -118,6 +237,136 @@ mod tests {
                 "turn_id": "turn-1",
                 "input_messages": ["hello"],
                 "last_assistant_message": "hi",
+                "provider_name": "Gemini",
+                "model_slug": "gemini-2.5-pro",
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_scope_kind": "cwd",
+                "memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "memory_context": {
+                    "cwd_scope_key": "/tmp/work",
+                    "cwd_memory_root": "/Users/example/.codex/memories/cwd-bucket/memory",
+                    "cwd_memory_summary_path": "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md",
+                    "cwd_memory_summary_exists": true,
+                    "user_memory_root": "/Users/example/.codex/memories/user/memory",
+                    "user_memory_summary_path": "/Users/example/.codex/memories/user/memory/memory_summary.md",
+                    "user_memory_summary_exists": false,
+                    "active_scope_kind": "cwd",
+                    "active_memory_root": "/Users/example/.codex/memories/cwd-bucket/memory",
+                    "active_memory_summary_path": "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md",
+                    "active_memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "active_memory_summary_bytes": 123,
+                    "active_memory_scope_version": "cwd:aaaaaaaaaaaa",
+                    "active_memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+            },
+        });
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn mcp_hook_payload_serializes_stable_wire_shape() {
+        let session_id = ThreadId::new();
+        let thread_id = ThreadId::new();
+        let payload = HookPayload {
+            session_id,
+            cwd: PathBuf::from("tmp"),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::AfterMcpToolCall {
+                event: HookEventAfterMcpToolCall {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    call_id: "call-1".to_string(),
+                    server: "claude-code".to_string(),
+                    tool_name: "claude_code".to_string(),
+                    duration_ms: 120,
+                    status: HookEventMcpToolCallStatus::Ok,
+                    error_message: None,
+                    provider_name: "OpenAI".to_string(),
+                    model_slug: "gpt-5".to_string(),
+                    agent_name: Some("claude-code".to_string()),
+                    memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                    memory_scope_kind: Some("cwd".to_string()),
+                    memory_summary_sha256: Some("a".repeat(64)),
+                    memory_binding_key: Some(
+                        "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    ),
+                    memory_context: Some(HookEventMemoryContext {
+                        cwd_scope_key: "/tmp/work".to_string(),
+                        cwd_memory_root: "/Users/example/.codex/memories/cwd-bucket/memory"
+                            .to_string(),
+                        cwd_memory_summary_path:
+                            "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
+                                .to_string(),
+                        cwd_memory_summary_exists: true,
+                        user_memory_root: "/Users/example/.codex/memories/user/memory".to_string(),
+                        user_memory_summary_path:
+                            "/Users/example/.codex/memories/user/memory/memory_summary.md"
+                                .to_string(),
+                        user_memory_summary_exists: false,
+                        active_scope_kind: Some("cwd".to_string()),
+                        active_memory_root: Some(
+                            "/Users/example/.codex/memories/cwd-bucket/memory".to_string(),
+                        ),
+                        active_memory_summary_path: Some(
+                            "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
+                                .to_string(),
+                        ),
+                        active_memory_summary_sha256: Some("a".repeat(64)),
+                        active_memory_summary_bytes: Some(123),
+                        active_memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                        active_memory_binding_key: Some(
+                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                        ),
+                    }),
+                },
+            },
+        };
+
+        let actual = serde_json::to_value(payload).expect("serialize hook payload");
+        let expected = json!({
+            "session_id": session_id.to_string(),
+            "cwd": "tmp",
+            "triggered_at": "2025-01-01T00:00:00Z",
+            "hook_event": {
+                "event_type": "after_mcp_tool_call",
+                "thread_id": thread_id.to_string(),
+                "turn_id": "turn-1",
+                "call_id": "call-1",
+                "server": "claude-code",
+                "tool_name": "claude_code",
+                "duration_ms": 120,
+                "status": "ok",
+                "error_message": null,
+                "provider_name": "OpenAI",
+                "model_slug": "gpt-5",
+                "agent_name": "claude-code",
+                "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                "memory_scope_kind": "cwd",
+                "memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "memory_context": {
+                    "cwd_scope_key": "/tmp/work",
+                    "cwd_memory_root": "/Users/example/.codex/memories/cwd-bucket/memory",
+                    "cwd_memory_summary_path": "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md",
+                    "cwd_memory_summary_exists": true,
+                    "user_memory_root": "/Users/example/.codex/memories/user/memory",
+                    "user_memory_summary_path": "/Users/example/.codex/memories/user/memory/memory_summary.md",
+                    "user_memory_summary_exists": false,
+                    "active_scope_kind": "cwd",
+                    "active_memory_root": "/Users/example/.codex/memories/cwd-bucket/memory",
+                    "active_memory_summary_path": "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md",
+                    "active_memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "active_memory_summary_bytes": 123,
+                    "active_memory_scope_version": "cwd:aaaaaaaaaaaa",
+                    "active_memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
             },
         });
 

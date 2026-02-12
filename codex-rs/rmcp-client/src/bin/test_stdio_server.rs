@@ -22,6 +22,7 @@ use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
+use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::task;
@@ -36,6 +37,8 @@ struct TestToolServer {
 const MEMO_URI: &str = "memo://codex/example-note";
 const MEMO_CONTENT: &str = "This is a sample MCP resource served by the rmcp test server.";
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+const SOFT_ERROR_TOOL_ENV_VAR: &str = "MCP_TEST_ENABLE_SOFT_ERROR_TOOL";
+const APPROVAL_TOOL_ENV_VAR: &str = "MCP_TEST_ENABLE_APPROVAL_TOOL";
 
 pub fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
     (tokio::io::stdin(), tokio::io::stdout())
@@ -43,12 +46,20 @@ pub fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
 
 impl TestToolServer {
     fn new() -> Self {
-        let tools = vec![
+        let mut tools = vec![
             Self::echo_tool(),
             Self::image_tool(),
             Self::image_scenario_tool(),
             Self::claude_code_tool(),
+            Self::agent_context_echo_tool(),
+            Self::agent_context_echo_snake_tool(),
         ];
+        if env_flag(SOFT_ERROR_TOOL_ENV_VAR) {
+            tools.push(Self::soft_error_tool());
+        }
+        if env_flag(APPROVAL_TOOL_ENV_VAR) {
+            tools.push(Self::dangerous_write_tool());
+        }
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
         Self {
@@ -91,6 +102,44 @@ impl TestToolServer {
             Cow::Borrowed("image"),
             Cow::Borrowed("Return a single image content block."),
             Arc::new(schema),
+        )
+    }
+
+    fn soft_error_tool() -> Tool {
+        #[expect(clippy::expect_used)]
+        let schema: JsonObject = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }))
+        .expect("soft_error tool schema should deserialize");
+
+        Tool::new(
+            Cow::Borrowed("soft_error"),
+            Cow::Borrowed("Return a successful MCP response with is_error=true for tests."),
+            Arc::new(schema),
+        )
+    }
+
+    fn dangerous_write_tool() -> Tool {
+        #[expect(clippy::expect_used)]
+        let schema: JsonObject = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }))
+        .expect("dangerous_write tool schema should deserialize");
+
+        Tool::new(
+            Cow::Borrowed("dangerous_write"),
+            Cow::Borrowed("Synthetic tool marked as destructive/open-world for approval tests."),
+            Arc::new(schema),
+        )
+        .annotate(
+            ToolAnnotations::new()
+                .read_only(false)
+                .destructive(true)
+                .open_world(true),
         )
     }
 
@@ -156,7 +205,11 @@ impl TestToolServer {
             "properties": {
                 "prompt": { "type": "string" },
                 "context": { "type": "string" },
-                "workFolder": { "type": "string" }
+                "workFolder": { "type": "string" },
+                "memoryScopeVersion": { "type": "string" },
+                "memoryScopeKind": { "type": "string" },
+                "memorySummarySha256": { "type": "string" },
+                "memoryBindingKey": { "type": "string" }
             },
             "required": ["prompt"],
             "additionalProperties": false
@@ -166,6 +219,56 @@ impl TestToolServer {
         Tool::new(
             Cow::Borrowed("claude_code"),
             Cow::Borrowed("Echo back args for testing context/workFolder injection."),
+            Arc::new(schema),
+        )
+    }
+
+    fn agent_context_echo_tool() -> Tool {
+        #[expect(clippy::expect_used)]
+        let schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" },
+                "context": { "type": "string" },
+                "workFolder": { "type": "string" },
+                "memoryScopeVersion": { "type": "string" },
+                "memoryScopeKind": { "type": "string" },
+                "memorySummarySha256": { "type": "string" },
+                "memoryBindingKey": { "type": "string" }
+            },
+            "required": ["message"],
+            "additionalProperties": false
+        }))
+        .expect("agent_context_echo tool schema should deserialize");
+
+        Tool::new(
+            Cow::Borrowed("agent_context_echo"),
+            Cow::Borrowed("Echo args for generic MCP agent context injection tests."),
+            Arc::new(schema),
+        )
+    }
+
+    fn agent_context_echo_snake_tool() -> Tool {
+        #[expect(clippy::expect_used)]
+        let schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" },
+                "context": { "type": "string" },
+                "workdir": { "type": "string" },
+                "memory_scope_version": { "type": "string" },
+                "memory_scope_kind": { "type": "string" },
+                "memory_summary_sha256": { "type": "string" },
+                "memory_binding_key": { "type": "string" }
+            },
+            "required": ["message"],
+            "additionalProperties": false
+        }))
+        .expect("agent_context_echo_snake tool schema should deserialize");
+
+        Tool::new(
+            Cow::Borrowed("agent_context_echo_snake"),
+            Cow::Borrowed("Echo args for snake_case MCP agent context injection tests."),
             Arc::new(schema),
         )
     }
@@ -218,6 +321,49 @@ struct ClaudeCodeArgs {
     context: Option<String>,
     #[serde(default)]
     work_folder: Option<String>,
+    #[serde(default)]
+    memory_scope_version: Option<String>,
+    #[serde(default)]
+    memory_scope_kind: Option<String>,
+    #[serde(default)]
+    memory_summary_sha256: Option<String>,
+    #[serde(default)]
+    memory_binding_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentContextEchoArgs {
+    message: String,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    work_folder: Option<String>,
+    #[serde(default)]
+    memory_scope_version: Option<String>,
+    #[serde(default)]
+    memory_scope_kind: Option<String>,
+    #[serde(default)]
+    memory_summary_sha256: Option<String>,
+    #[serde(default)]
+    memory_binding_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AgentContextEchoSnakeArgs {
+    message: String,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    memory_scope_version: Option<String>,
+    #[serde(default)]
+    memory_scope_kind: Option<String>,
+    #[serde(default)]
+    memory_summary_sha256: Option<String>,
+    #[serde(default)]
+    memory_binding_key: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -376,6 +522,22 @@ impl ServerHandler for TestToolServer {
                     data_b64, mime_type,
                 )]))
             }
+            "soft_error" => Ok(CallToolResult {
+                content: Vec::new(),
+                structured_content: Some(json!({
+                    "error": "synthetic tool error for testing",
+                })),
+                is_error: Some(true),
+                meta: None,
+            }),
+            "dangerous_write" => Ok(CallToolResult {
+                content: Vec::new(),
+                structured_content: Some(json!({
+                    "ok": true,
+                })),
+                is_error: Some(false),
+                meta: None,
+            }),
             "image_scenario" => {
                 let args = Self::parse_call_args::<ImageScenarioArgs>(&request, "image_scenario")?;
                 Self::image_scenario_result(args)
@@ -386,6 +548,52 @@ impl ServerHandler for TestToolServer {
                     "prompt": args.prompt,
                     "context": args.context,
                     "workFolder": args.work_folder,
+                    "memoryScopeVersion": args.memory_scope_version,
+                    "memoryScopeKind": args.memory_scope_kind,
+                    "memorySummarySha256": args.memory_summary_sha256,
+                    "memoryBindingKey": args.memory_binding_key,
+                });
+
+                Ok(CallToolResult {
+                    content: Vec::new(),
+                    structured_content: Some(structured_content),
+                    is_error: Some(false),
+                    meta: None,
+                })
+            }
+            "agent_context_echo" => {
+                let args =
+                    Self::parse_call_args::<AgentContextEchoArgs>(&request, "agent_context_echo")?;
+                let structured_content = json!({
+                    "message": args.message,
+                    "context": args.context,
+                    "workFolder": args.work_folder,
+                    "memoryScopeVersion": args.memory_scope_version,
+                    "memoryScopeKind": args.memory_scope_kind,
+                    "memorySummarySha256": args.memory_summary_sha256,
+                    "memoryBindingKey": args.memory_binding_key,
+                });
+
+                Ok(CallToolResult {
+                    content: Vec::new(),
+                    structured_content: Some(structured_content),
+                    is_error: Some(false),
+                    meta: None,
+                })
+            }
+            "agent_context_echo_snake" => {
+                let args = Self::parse_call_args::<AgentContextEchoSnakeArgs>(
+                    &request,
+                    "agent_context_echo_snake",
+                )?;
+                let structured_content = json!({
+                    "message": args.message,
+                    "context": args.context,
+                    "workdir": args.workdir,
+                    "memory_scope_version": args.memory_scope_version,
+                    "memory_scope_kind": args.memory_scope_kind,
+                    "memory_summary_sha256": args.memory_summary_sha256,
+                    "memory_binding_key": args.memory_binding_key,
                 });
 
                 Ok(CallToolResult {
@@ -400,6 +608,16 @@ impl ServerHandler for TestToolServer {
                 None,
             )),
         }
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true"
+        }
+        Err(_) => false,
     }
 }
 

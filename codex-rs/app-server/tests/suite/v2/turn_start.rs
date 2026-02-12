@@ -319,18 +319,34 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
     )
     .await??;
 
-    let completed_notif: JSONRPCNotification = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
-    let completed: TurnCompletedNotification = serde_json::from_value(
-        completed_notif
-            .params
-            .expect("turn/completed params must be present"),
-    )?;
-    assert_eq!(completed.thread_id, thread.id);
-    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    let mut saw_second_turn_completed = false;
+    for _ in 0..3 {
+        let completed_notif: JSONRPCNotification = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("turn/completed"),
+        )
+        .await??;
+        let completed: TurnCompletedNotification = serde_json::from_value(
+            completed_notif
+                .params
+                .expect("turn/completed params must be present"),
+        )?;
+        assert_eq!(completed.thread_id, thread.id);
+
+        if completed.turn.id == turn2.id {
+            assert_eq!(completed.turn.status, TurnStatus::Completed);
+            saw_second_turn_completed = true;
+            break;
+        }
+
+        assert_eq!(completed.turn.id, turn.id);
+        assert_eq!(completed.turn.status, TurnStatus::Interrupted);
+    }
+    assert!(
+        saw_second_turn_completed,
+        "expected turn/completed for second turn {}",
+        turn2.id
+    );
 
     Ok(())
 }

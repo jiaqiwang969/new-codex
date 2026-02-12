@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::auth::McpAuthStatusEntry;
+use crate::mcp::split_qualified_tool_name;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -775,10 +776,17 @@ impl McpConnectionManager {
     }
 
     pub async fn parse_tool_name(&self, tool_name: &str) -> Option<(String, String)> {
-        self.list_all_tools()
-            .await
-            .get(tool_name)
-            .map(|tool| (tool.server_name.clone(), tool.tool_name.clone()))
+        if let Some(tool) = self.list_all_tools().await.get(tool_name) {
+            return Some((tool.server_name.clone(), tool.tool_name.clone()));
+        }
+
+        if let Some((server_name, server_tool_name)) = split_qualified_tool_name(tool_name)
+            && self.clients.contains_key(&server_name)
+        {
+            return Some((server_name, server_tool_name));
+        }
+
+        None
     }
 
     pub async fn notify_sandbox_state_change(&self, sandbox_state: &SandboxState) -> Result<()> {

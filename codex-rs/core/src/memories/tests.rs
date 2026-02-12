@@ -135,6 +135,7 @@ fn serialize_filtered_rollout_response_items_keeps_response_and_compacted() {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }),
         RolloutItem::Compacted(CompactedItem {
             message: "compacted summary".to_string(),
@@ -165,6 +166,7 @@ fn serialize_filtered_rollout_response_items_supports_response_only_filter() {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }),
         RolloutItem::Compacted(CompactedItem {
             message: "compacted summary".to_string(),
@@ -199,12 +201,14 @@ fn serialize_filtered_rollout_response_items_filters_by_response_item_kind() {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }),
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
             name: "shell".to_string(),
             arguments: "{\"cmd\":\"pwd\"}".to_string(),
             call_id: "call-1".to_string(),
+            thought_signature: None,
         }),
     ];
 

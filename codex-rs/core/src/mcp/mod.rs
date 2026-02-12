@@ -116,12 +116,12 @@ pub(crate) fn with_codex_apps_mcp(
     config: &Config,
 ) -> HashMap<String, McpServerConfig> {
     if connectors_enabled {
-        servers.insert(
-            CODEX_APPS_MCP_SERVER_NAME.to_string(),
-            codex_apps_mcp_server_config(config, auth),
-        );
-    } else {
-        servers.remove(CODEX_APPS_MCP_SERVER_NAME);
+        // Respect an explicitly configured `codex_apps` entry (e.g. tests or
+        // custom deployments) and only insert the default ChatGPT Apps MCP
+        // server when missing.
+        servers
+            .entry(CODEX_APPS_MCP_SERVER_NAME.to_string())
+            .or_insert_with(|| codex_apps_mcp_server_config(config, auth));
     }
     servers
 }

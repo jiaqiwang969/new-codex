@@ -11,6 +11,10 @@ use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
+use codex_hooks::HookEvent;
+use codex_hooks::HookEventAfterMcpToolCall;
+use codex_hooks::HookEventMcpToolCallStatus;
+use codex_hooks::HookPayload;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -28,8 +32,41 @@ use serde_json::Value;
 use std::sync::Arc;
 
 const CLAUDE_CODE_TOOL_NAME: &str = "claude_code";
-const CLAUDE_CODE_CONTEXT_KEY: &str = "context";
-const CLAUDE_CODE_WORK_FOLDER_KEY: &str = "workFolder";
+const CLAUDE_CODE_SERVER_NAME: &str = "claude-code";
+const GEMINI_SERVER_NAME: &str = "gemini";
+const GROK_SERVER_NAME: &str = "grok";
+const GOOFISH_SERVER_NAME: &str = "goofish";
+const MCP_AGENT_CONTEXT_KEY: &str = "context";
+const MCP_AGENT_WORK_FOLDER_KEY: &str = "workFolder";
+const MCP_AGENT_WORKDIR_KEY: &str = "workdir";
+const MCP_AGENT_MEMORY_SCOPE_VERSION_KEY: &str = "memoryScopeVersion";
+const MCP_AGENT_MEMORY_SCOPE_VERSION_SNAKE_KEY: &str = "memory_scope_version";
+const MCP_AGENT_MEMORY_SCOPE_KIND_KEY: &str = "memoryScopeKind";
+const MCP_AGENT_MEMORY_SCOPE_KIND_SNAKE_KEY: &str = "memory_scope_kind";
+const MCP_AGENT_MEMORY_SUMMARY_SHA256_KEY: &str = "memorySummarySha256";
+const MCP_AGENT_MEMORY_SUMMARY_SHA256_SNAKE_KEY: &str = "memory_summary_sha256";
+const MCP_AGENT_MEMORY_BINDING_KEY: &str = "memoryBindingKey";
+const MCP_AGENT_MEMORY_BINDING_SNAKE_KEY: &str = "memory_binding_key";
+const MCP_AGENT_CONTEXT_KEYS: &[&str] = &[MCP_AGENT_CONTEXT_KEY];
+const MCP_AGENT_WORK_FOLDER_KEYS: &[&str] = &[MCP_AGENT_WORK_FOLDER_KEY, MCP_AGENT_WORKDIR_KEY];
+const MCP_AGENT_MEMORY_SCOPE_VERSION_KEYS: &[&str] = &[
+    MCP_AGENT_MEMORY_SCOPE_VERSION_KEY,
+    MCP_AGENT_MEMORY_SCOPE_VERSION_SNAKE_KEY,
+];
+const MCP_AGENT_MEMORY_SCOPE_KIND_KEYS: &[&str] = &[
+    MCP_AGENT_MEMORY_SCOPE_KIND_KEY,
+    MCP_AGENT_MEMORY_SCOPE_KIND_SNAKE_KEY,
+];
+const MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS: &[&str] = &[
+    MCP_AGENT_MEMORY_SUMMARY_SHA256_KEY,
+    MCP_AGENT_MEMORY_SUMMARY_SHA256_SNAKE_KEY,
+];
+const MCP_AGENT_MEMORY_BINDING_KEYS: &[&str] = &[
+    MCP_AGENT_MEMORY_BINDING_KEY,
+    MCP_AGENT_MEMORY_BINDING_SNAKE_KEY,
+];
+const USER_REJECTED_MCP_TOOL_CALL_MESSAGE: &str = "user rejected MCP tool call";
+const USER_CANCELLED_MCP_TOOL_CALL_MESSAGE: &str = "user cancelled MCP tool call";
 
 /// Handles the specified tool call dispatches the appropriate
 /// `McpToolCallBegin` and `McpToolCallEnd` events to the `Session`.
@@ -61,11 +98,14 @@ pub(crate) async fn handle_mcp_tool_call(
         }
     };
 
-    let call_tool_arguments_value = if tool_name == CLAUDE_CODE_TOOL_NAME {
-        maybe_inject_claude_code_context(sess.as_ref(), turn_context, arguments_value.clone()).await
-    } else {
-        arguments_value.clone()
-    };
+    let call_tool_arguments_value = maybe_inject_mcp_agent_context(
+        sess.as_ref(),
+        turn_context,
+        server.as_str(),
+        tool_name.as_str(),
+        arguments_value.clone(),
+    )
+    .await;
 
     let invocation = McpInvocation {
         server: server.clone(),
@@ -109,7 +149,7 @@ pub(crate) async fn handle_mcp_tool_call(
                 result
             }
             McpToolApprovalDecision::Decline => {
-                let message = "user rejected MCP tool call".to_string();
+                let message = USER_REJECTED_MCP_TOOL_CALL_MESSAGE.to_string();
                 notify_mcp_tool_call_skip(
                     sess.as_ref(),
                     turn_context,
@@ -120,7 +160,7 @@ pub(crate) async fn handle_mcp_tool_call(
                 .await
             }
             McpToolApprovalDecision::Cancel => {
-                let message = "user cancelled MCP tool call".to_string();
+                let message = USER_CANCELLED_MCP_TOOL_CALL_MESSAGE.to_string();
                 notify_mcp_tool_call_skip(
                     sess.as_ref(),
                     turn_context,
@@ -172,36 +212,45 @@ pub(crate) async fn handle_mcp_tool_call(
     ResponseInputItem::McpToolCallOutput { call_id, result }
 }
 
-async fn maybe_inject_claude_code_context(
+async fn maybe_inject_mcp_agent_context(
     sess: &Session,
     turn_context: &TurnContext,
+    server: &str,
+    tool_name: &str,
     arguments: Option<Value>,
 ) -> Option<Value> {
     let Some(Value::Object(mut args)) = arguments else {
         return arguments;
     };
 
-    // Ensure Claude Code runs in the session's working directory so it can
-    // pick up repo-local instructions like CLAUDE.md.
-    let should_inject_work_folder = match args.get(CLAUDE_CODE_WORK_FOLDER_KEY) {
-        None | Some(Value::Null) => true,
-        Some(Value::String(text)) => text.trim().is_empty(),
-        Some(_) => false,
-    };
-    if should_inject_work_folder {
+    let tool_properties = sess
+        .services
+        .mcp_connection_manager
+        .read()
+        .await
+        .list_all_tools()
+        .await
+        .into_values()
+        .find(|tool_info| tool_info.server_name == server && tool_info.tool_name == tool_name)
+        .and_then(|tool_info| tool_info.tool.input_schema.get("properties").cloned())
+        .and_then(|properties| properties.as_object().cloned());
+    let has_context_fallback = tool_name == CLAUDE_CODE_TOOL_NAME;
+    let work_folder_key = supported_schema_key(&tool_properties, MCP_AGENT_WORK_FOLDER_KEYS)
+        .or_else(|| has_context_fallback.then_some(MCP_AGENT_WORK_FOLDER_KEY));
+    if let Some(work_folder_key) = work_folder_key
+        && should_inject_string_argument(&args, work_folder_key)
+    {
         args.insert(
-            CLAUDE_CODE_WORK_FOLDER_KEY.to_string(),
+            work_folder_key.to_string(),
             Value::String(turn_context.cwd.to_string_lossy().into_owned()),
         );
     }
 
-    let should_inject_context = match args.get(CLAUDE_CODE_CONTEXT_KEY) {
-        None | Some(Value::Null) => true,
-        Some(Value::String(text)) => text.trim().is_empty(),
-        Some(_) => false,
-    };
-
-    if should_inject_context {
+    let context_key = supported_schema_key(&tool_properties, MCP_AGENT_CONTEXT_KEYS)
+        .or_else(|| has_context_fallback.then_some(MCP_AGENT_CONTEXT_KEY));
+    if let Some(context_key) = context_key
+        && should_inject_string_argument(&args, context_key)
+    {
         let context = context_packet::build_context_packet(
             sess,
             turn_context,
@@ -209,15 +258,179 @@ async fn maybe_inject_claude_code_context(
         )
         .await;
         if !context.trim().is_empty() {
-            args.insert(CLAUDE_CODE_CONTEXT_KEY.to_string(), Value::String(context));
+            args.insert(context_key.to_string(), Value::String(context));
+        }
+    }
+
+    let memory_scope_version_key =
+        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_VERSION_KEYS);
+    let memory_scope_kind_key =
+        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_KIND_KEYS);
+    let memory_summary_sha256_key =
+        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS);
+    let memory_binding_key = supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_BINDING_KEYS);
+    if (memory_scope_version_key.is_some()
+        || memory_scope_kind_key.is_some()
+        || memory_summary_sha256_key.is_some()
+        || memory_binding_key.is_some())
+        && let Some(memory_context) = turn_context.resolve_hook_memory_context().await
+    {
+        if let Some(memory_scope_version_key) = memory_scope_version_key
+            && should_inject_string_argument(&args, memory_scope_version_key)
+            && let Some(scope_version) = memory_context.active_memory_scope_version.as_ref()
+        {
+            args.insert(
+                memory_scope_version_key.to_string(),
+                Value::String(scope_version.clone()),
+            );
+        }
+        if let Some(memory_scope_kind_key) = memory_scope_kind_key
+            && should_inject_string_argument(&args, memory_scope_kind_key)
+            && let Some(scope_kind) = memory_context.active_scope_kind.as_ref()
+        {
+            args.insert(
+                memory_scope_kind_key.to_string(),
+                Value::String(scope_kind.clone()),
+            );
+        }
+        if let Some(memory_summary_sha256_key) = memory_summary_sha256_key
+            && should_inject_string_argument(&args, memory_summary_sha256_key)
+            && let Some(memory_summary_sha256) =
+                memory_context.active_memory_summary_sha256.as_ref()
+        {
+            args.insert(
+                memory_summary_sha256_key.to_string(),
+                Value::String(memory_summary_sha256.clone()),
+            );
+        }
+        if let Some(memory_binding_key) = memory_binding_key
+            && should_inject_string_argument(&args, memory_binding_key)
+            && let Some(binding_key) = memory_context.active_memory_binding_key.as_ref()
+        {
+            args.insert(
+                memory_binding_key.to_string(),
+                Value::String(binding_key.clone()),
+            );
         }
     }
 
     Some(Value::Object(args))
 }
 
+fn should_inject_string_argument(args: &serde_json::Map<String, Value>, key: &str) -> bool {
+    match args.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.trim().is_empty(),
+        Some(_) => false,
+    }
+}
+
+fn schema_has_property(
+    properties: &Option<serde_json::Map<String, Value>>,
+    property_name: &str,
+) -> bool {
+    properties
+        .as_ref()
+        .is_some_and(|properties| properties.contains_key(property_name))
+}
+
+fn supported_schema_key<'a>(
+    properties: &Option<serde_json::Map<String, Value>>,
+    candidate_keys: &'a [&'a str],
+) -> Option<&'a str> {
+    candidate_keys
+        .iter()
+        .copied()
+        .find(|candidate_key| schema_has_property(properties, candidate_key))
+}
+
 async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, event: EventMsg) {
+    let hook_event = if let EventMsg::McpToolCallEnd(tool_call_end) = &event {
+        let memory_context = turn_context.resolve_hook_memory_context().await;
+        let memory_scope_version = memory_context
+            .as_ref()
+            .and_then(|memory_context| memory_context.active_memory_scope_version.clone());
+        let memory_scope_kind = memory_context
+            .as_ref()
+            .and_then(|memory_context| memory_context.active_scope_kind.clone());
+        let memory_summary_sha256 = memory_context
+            .as_ref()
+            .and_then(|memory_context| memory_context.active_memory_summary_sha256.clone());
+        let memory_binding_key = memory_context
+            .as_ref()
+            .and_then(|memory_context| memory_context.active_memory_binding_key.clone());
+        let (status, error_message) = mcp_tool_call_status_and_error(&tool_call_end.result);
+        let duration_ms = u64::try_from(tool_call_end.duration.as_millis()).unwrap_or(u64::MAX);
+        let server = tool_call_end.invocation.server.clone();
+        let tool_name = tool_call_end.invocation.tool.clone();
+        Some(HookEvent::AfterMcpToolCall {
+            event: HookEventAfterMcpToolCall {
+                thread_id: sess.conversation_id,
+                turn_id: turn_context.sub_id.clone(),
+                call_id: tool_call_end.call_id.clone(),
+                server: server.clone(),
+                tool_name: tool_name.clone(),
+                duration_ms,
+                status,
+                error_message,
+                provider_name: turn_context.provider.name.clone(),
+                model_slug: turn_context.model_info.slug.clone(),
+                agent_name: mcp_tool_call_agent_name(server.as_str(), tool_name.as_str()),
+                memory_scope_version,
+                memory_scope_kind,
+                memory_summary_sha256,
+                memory_binding_key,
+                memory_context,
+            },
+        })
+    } else {
+        None
+    };
+
     sess.send_event(turn_context, event).await;
+
+    if let Some(hook_event) = hook_event {
+        sess.hooks()
+            .dispatch(HookPayload {
+                session_id: sess.conversation_id,
+                cwd: turn_context.cwd.clone(),
+                triggered_at: chrono::Utc::now(),
+                hook_event,
+            })
+            .await;
+    }
+}
+
+fn mcp_tool_call_status_and_error(
+    result: &Result<CallToolResult, String>,
+) -> (HookEventMcpToolCallStatus, Option<String>) {
+    match result {
+        Ok(tool_result) => {
+            if tool_result.is_error == Some(true) {
+                (HookEventMcpToolCallStatus::ToolError, None)
+            } else {
+                (HookEventMcpToolCallStatus::Ok, None)
+            }
+        }
+        Err(message) => {
+            let status = match message.as_str() {
+                USER_REJECTED_MCP_TOOL_CALL_MESSAGE => HookEventMcpToolCallStatus::Declined,
+                USER_CANCELLED_MCP_TOOL_CALL_MESSAGE => HookEventMcpToolCallStatus::Cancelled,
+                _ => HookEventMcpToolCallStatus::TransportError,
+            };
+            (status, Some(message.clone()))
+        }
+    }
+}
+
+fn mcp_tool_call_agent_name(server: &str, tool_name: &str) -> Option<String> {
+    if tool_name == CLAUDE_CODE_TOOL_NAME || server == CLAUDE_CODE_SERVER_NAME {
+        return Some(CLAUDE_CODE_SERVER_NAME.to_string());
+    }
+    match server {
+        GEMINI_SERVER_NAME | GROK_SERVER_NAME | GOOFISH_SERVER_NAME => Some(server.to_string()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,17 +479,15 @@ async fn maybe_request_mcp_tool_approval(
     if !requires_mcp_tool_approval(&metadata.annotations) {
         return None;
     }
-    let approval_key = metadata
-        .connector_id
-        .as_deref()
-        .map(|connector_id| McpToolApprovalKey {
-            server: server.to_string(),
-            connector_id: connector_id.to_string(),
-            tool_name: tool_name.to_string(),
-        });
-    if let Some(key) = approval_key.as_ref()
-        && mcp_tool_approval_is_remembered(sess, key).await
-    {
+    let approval_key = McpToolApprovalKey {
+        server: server.to_string(),
+        connector_id: metadata
+            .connector_id
+            .clone()
+            .unwrap_or_else(|| server.to_string()),
+        tool_name: tool_name.to_string(),
+    };
+    if mcp_tool_approval_is_remembered(sess, &approval_key).await {
         return Some(McpToolApprovalDecision::Accept);
     }
 
@@ -287,7 +498,7 @@ async fn maybe_request_mcp_tool_approval(
         metadata.tool_title.as_deref(),
         metadata.connector_name.as_deref(),
         &metadata.annotations,
-        approval_key.is_some(),
+        true,
     );
     let args = RequestUserInputArgs {
         questions: vec![question],
@@ -296,10 +507,8 @@ async fn maybe_request_mcp_tool_approval(
         .request_user_input(turn_context, call_id.to_string(), args)
         .await;
     let decision = parse_mcp_tool_approval_response(response, &question_id);
-    if matches!(decision, McpToolApprovalDecision::AcceptAndRemember)
-        && let Some(key) = approval_key
-    {
-        remember_mcp_tool_approval(sess, key).await;
+    if matches!(decision, McpToolApprovalDecision::AcceptAndRemember) {
+        remember_mcp_tool_approval(sess, approval_key).await;
     }
     Some(decision)
 }
@@ -474,6 +683,7 @@ async fn notify_mcp_tool_call_skip(
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use serde_json::Map;
 
     fn annotations(
         read_only: Option<bool>,
@@ -505,5 +715,176 @@ mod tests {
     fn approval_not_required_when_read_only_true() {
         let annotations = annotations(Some(true), Some(true), Some(true));
         assert_eq!(requires_mcp_tool_approval(&annotations), false);
+    }
+
+    #[test]
+    fn status_classifies_declined_and_cancelled_messages() {
+        let (declined, declined_error) =
+            mcp_tool_call_status_and_error(&Err(USER_REJECTED_MCP_TOOL_CALL_MESSAGE.to_string()));
+        assert_eq!(declined, HookEventMcpToolCallStatus::Declined);
+        assert_eq!(
+            declined_error,
+            Some(USER_REJECTED_MCP_TOOL_CALL_MESSAGE.to_string())
+        );
+
+        let (cancelled, cancelled_error) =
+            mcp_tool_call_status_and_error(&Err(USER_CANCELLED_MCP_TOOL_CALL_MESSAGE.to_string()));
+        assert_eq!(cancelled, HookEventMcpToolCallStatus::Cancelled);
+        assert_eq!(
+            cancelled_error,
+            Some(USER_CANCELLED_MCP_TOOL_CALL_MESSAGE.to_string())
+        );
+    }
+
+    #[test]
+    fn status_classifies_tool_error_and_ok_results() {
+        let tool_error_result = CallToolResult {
+            content: vec![],
+            structured_content: None,
+            is_error: Some(true),
+            meta: None,
+        };
+        let (tool_error, tool_error_message) =
+            mcp_tool_call_status_and_error(&Ok(tool_error_result));
+        assert_eq!(tool_error, HookEventMcpToolCallStatus::ToolError);
+        assert_eq!(tool_error_message, None);
+
+        let ok_result = CallToolResult {
+            content: vec![],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+        let (ok_status, ok_message) = mcp_tool_call_status_and_error(&Ok(ok_result));
+        assert_eq!(ok_status, HookEventMcpToolCallStatus::Ok);
+        assert_eq!(ok_message, None);
+    }
+
+    #[test]
+    fn maps_server_and_tool_to_agent_name() {
+        assert_eq!(
+            mcp_tool_call_agent_name(CLAUDE_CODE_SERVER_NAME, "not_claude_tool"),
+            Some("claude-code".to_string())
+        );
+        assert_eq!(
+            mcp_tool_call_agent_name("random-server", CLAUDE_CODE_TOOL_NAME),
+            Some("claude-code".to_string())
+        );
+        assert_eq!(
+            mcp_tool_call_agent_name(GEMINI_SERVER_NAME, "something"),
+            Some("gemini".to_string())
+        );
+        assert_eq!(
+            mcp_tool_call_agent_name(GROK_SERVER_NAME, "something"),
+            Some("grok".to_string())
+        );
+        assert_eq!(
+            mcp_tool_call_agent_name(GOOFISH_SERVER_NAME, "something"),
+            Some("goofish".to_string())
+        );
+        assert_eq!(mcp_tool_call_agent_name("web.search", "find"), None);
+    }
+
+    #[test]
+    fn should_inject_string_argument_only_for_missing_or_empty_values() {
+        let mut args = Map::new();
+        assert_eq!(should_inject_string_argument(&args, "context"), true);
+
+        args.insert("context".to_string(), Value::Null);
+        assert_eq!(should_inject_string_argument(&args, "context"), true);
+
+        args.insert("context".to_string(), Value::String(String::new()));
+        assert_eq!(should_inject_string_argument(&args, "context"), true);
+
+        args.insert("context".to_string(), Value::String("   ".to_string()));
+        assert_eq!(should_inject_string_argument(&args, "context"), true);
+
+        args.insert(
+            "context".to_string(),
+            Value::String("already set".to_string()),
+        );
+        assert_eq!(should_inject_string_argument(&args, "context"), false);
+
+        args.insert("context".to_string(), Value::Bool(true));
+        assert_eq!(should_inject_string_argument(&args, "context"), false);
+    }
+
+    #[test]
+    fn schema_has_property_checks_map_presence() {
+        let mut properties = Map::new();
+        properties.insert(
+            MCP_AGENT_MEMORY_SCOPE_VERSION_KEY.to_string(),
+            Value::Object(Map::new()),
+        );
+        let properties = Some(properties);
+
+        assert_eq!(
+            schema_has_property(&properties, MCP_AGENT_MEMORY_SCOPE_VERSION_KEY),
+            true
+        );
+        assert_eq!(schema_has_property(&properties, "context"), false);
+        assert_eq!(schema_has_property(&None, "context"), false);
+    }
+
+    #[test]
+    fn supported_schema_key_prefers_first_matching_candidate() {
+        let mut properties = Map::new();
+        properties.insert(MCP_AGENT_WORKDIR_KEY.to_string(), Value::Object(Map::new()));
+        properties.insert(
+            MCP_AGENT_WORK_FOLDER_KEY.to_string(),
+            Value::Object(Map::new()),
+        );
+        let properties = Some(properties);
+
+        assert_eq!(
+            supported_schema_key(&properties, MCP_AGENT_WORK_FOLDER_KEYS),
+            Some(MCP_AGENT_WORK_FOLDER_KEY)
+        );
+        assert_eq!(supported_schema_key(&properties, &["does_not_exist"]), None);
+        assert_eq!(supported_schema_key(&None, MCP_AGENT_CONTEXT_KEYS), None);
+    }
+
+    #[test]
+    fn supported_schema_key_falls_back_to_snake_case_variant() {
+        let mut properties = Map::new();
+        properties.insert(
+            MCP_AGENT_MEMORY_SUMMARY_SHA256_SNAKE_KEY.to_string(),
+            Value::Object(Map::new()),
+        );
+        let properties = Some(properties);
+
+        assert_eq!(
+            supported_schema_key(&properties, MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS),
+            Some(MCP_AGENT_MEMORY_SUMMARY_SHA256_SNAKE_KEY)
+        );
+        assert_eq!(
+            supported_schema_key(&properties, MCP_AGENT_MEMORY_BINDING_KEYS),
+            None
+        );
+    }
+
+    #[test]
+    fn supported_schema_key_matches_memory_binding_key_variants() {
+        let mut camel_properties = Map::new();
+        camel_properties.insert(
+            MCP_AGENT_MEMORY_BINDING_KEY.to_string(),
+            Value::Object(Map::new()),
+        );
+        let camel_properties = Some(camel_properties);
+        assert_eq!(
+            supported_schema_key(&camel_properties, MCP_AGENT_MEMORY_BINDING_KEYS),
+            Some(MCP_AGENT_MEMORY_BINDING_KEY)
+        );
+
+        let mut snake_properties = Map::new();
+        snake_properties.insert(
+            MCP_AGENT_MEMORY_BINDING_SNAKE_KEY.to_string(),
+            Value::Object(Map::new()),
+        );
+        let snake_properties = Some(snake_properties);
+        assert_eq!(
+            supported_schema_key(&snake_properties, MCP_AGENT_MEMORY_BINDING_KEYS),
+            Some(MCP_AGENT_MEMORY_BINDING_SNAKE_KEY)
+        );
     }
 }

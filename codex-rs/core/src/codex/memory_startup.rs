@@ -435,6 +435,7 @@ async fn process_memory_candidate(
             content: vec![ContentItem::InputText {
                 text: memories::build_stage_one_input_message(
                     &candidate.rollout_path,
+                    &candidate.cwd,
                     &rollout_contents,
                 ),
             }],
@@ -627,6 +628,39 @@ async fn persist_phase_one_memory_for_scope(
             scope.scope_kind,
             scope.scope_key
         );
+        return false;
+    }
+
+    if raw_memory.trim().is_empty() && summary.trim().is_empty() {
+        let marked_succeeded = match state_db
+            .mark_phase1_job_succeeded(
+                candidate.thread_id,
+                scope.scope_kind,
+                &scope.scope_key,
+                ownership_token,
+                "",
+                "",
+            )
+            .await
+        {
+            Ok(marked) => marked,
+            Err(err) => {
+                warn!(
+                    "state db mark_phase1_job_succeeded failed during {MEMORY_STARTUP_STAGE}: {err}"
+                );
+                return false;
+            }
+        };
+
+        if marked_succeeded {
+            debug!(
+                "memory phase-1 raw memory skipped (no-op output): rollout={} scope={} scope_key={}",
+                candidate.rollout_path.display(),
+                scope.scope_kind,
+                scope.scope_key
+            );
+        }
+
         return false;
     }
 

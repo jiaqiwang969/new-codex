@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
+use codex_core::features::Feature;
 
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::EventMsg;
@@ -203,7 +204,17 @@ async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<(
     let rmcp_test_server_bin = stdio_server_bin()?;
 
     let fixture = test_codex()
+        .with_pre_build_hook(|codex_home| {
+            let user_memory_root = codex_home.join("memories").join("user").join("memory");
+            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
+            std::fs::write(
+                user_memory_root.join("memory_summary.md"),
+                "user memory summary",
+            )
+            .expect("write user memory summary");
+        })
         .with_config(move |config| {
+            config.features.enable(Feature::MemoryTool);
             let mut servers = config.mcp_servers.get().clone();
             servers.insert(
                 server_name.to_string(),
@@ -281,6 +292,414 @@ async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<(
     assert!(
         context.contains("test user instructions: follow AGENTS.md"),
         "context should include user instructions. actual={context:?}"
+    );
+    assert!(
+        context.contains("Active memory scope: user"),
+        "context should include active memory scope. actual={context:?}"
+    );
+
+    let memory_scope_kind = map
+        .get("memoryScopeKind")
+        .and_then(Value::as_str)
+        .expect("memoryScopeKind present");
+    assert_eq!(memory_scope_kind, "user");
+    let memory_scope_version = map
+        .get("memoryScopeVersion")
+        .and_then(Value::as_str)
+        .expect("memoryScopeVersion present");
+    assert!(
+        memory_scope_version.starts_with("user:"),
+        "memoryScopeVersion should have user scope prefix. actual={memory_scope_version:?}"
+    );
+    let memory_summary_sha256 = map
+        .get("memorySummarySha256")
+        .and_then(Value::as_str)
+        .expect("memorySummarySha256 present");
+    assert_eq!(memory_summary_sha256.len(), 64);
+    assert_eq!(&memory_summary_sha256[..12], &memory_scope_version[5..17]);
+    let memory_binding_key = map
+        .get("memoryBindingKey")
+        .and_then(Value::as_str)
+        .expect("memoryBindingKey present");
+    assert_eq!(
+        memory_binding_key,
+        format!("{memory_scope_version}:{memory_summary_sha256}")
+    );
+    let expected_scope_version_line =
+        format!("Active memory scope version: {memory_scope_version}");
+    assert!(
+        context.contains(&expected_scope_version_line),
+        "context should include exact memory scope version line. expected={expected_scope_version_line:?} actual={context:?}"
+    );
+
+    server.verify().await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(mcp_test_value)]
+async fn stdio_generic_agent_tool_injects_context_and_memory_scope() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+
+    let call_id = "agent-ctx-1";
+    let server_name = "rmcp";
+    let tool_name = format!("mcp__{server_name}__agent_context_echo");
+    let mocks =
+        mount_function_call_agent_response(&server, call_id, "{\"message\":\"ping\"}", &tool_name)
+            .await;
+
+    let rmcp_test_server_bin = stdio_server_bin()?;
+
+    let fixture = test_codex()
+        .with_pre_build_hook(|codex_home| {
+            let user_memory_root = codex_home.join("memories").join("user").join("memory");
+            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
+            std::fs::write(
+                user_memory_root.join("memory_summary.md"),
+                "user memory summary",
+            )
+            .expect("write user memory summary");
+        })
+        .with_config(move |config| {
+            config.features.enable(Feature::MemoryTool);
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                server_name.to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: None,
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    enabled: true,
+                    required: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                },
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+            config.project_doc_max_bytes = 32 * 1024;
+            std::fs::write(
+                config.cwd.join("AGENTS.override.md"),
+                "test user instructions: follow AGENTS.md",
+            )
+            .expect("should write test AGENTS.md");
+        })
+        .build(&server)
+        .await?;
+    fixture
+        .submit_turn_with_policies(
+            "call the generic rmcp agent_context_echo tool",
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+        )
+        .await?;
+
+    let completion_request = mocks.completion.single_request();
+    let content = completion_request
+        .function_call_output_text(call_id)
+        .expect("function_call_output should be present");
+    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
+        panic!("failed to parse agent_context_echo output as JSON: {err}. output={content:?}");
+    });
+    let Value::Object(map) = payload else {
+        panic!("function_call_output should be an object: {payload:?}");
+    };
+
+    let message = map
+        .get("message")
+        .and_then(Value::as_str)
+        .expect("message present");
+    assert_eq!(message, "ping");
+    let work_folder = map
+        .get("workFolder")
+        .and_then(Value::as_str)
+        .expect("workFolder present");
+    assert_eq!(work_folder, fixture.cwd.path().to_string_lossy().as_ref());
+    let context = map
+        .get("context")
+        .and_then(Value::as_str)
+        .expect("context present");
+    assert!(
+        context.contains("Active memory scope: user"),
+        "context should include active memory scope. actual={context:?}"
+    );
+    let memory_scope_kind = map
+        .get("memoryScopeKind")
+        .and_then(Value::as_str)
+        .expect("memoryScopeKind present");
+    assert_eq!(memory_scope_kind, "user");
+    let memory_scope_version = map
+        .get("memoryScopeVersion")
+        .and_then(Value::as_str)
+        .expect("memoryScopeVersion present");
+    assert!(memory_scope_version.starts_with("user:"));
+    let memory_summary_sha256 = map
+        .get("memorySummarySha256")
+        .and_then(Value::as_str)
+        .expect("memorySummarySha256 present");
+    assert_eq!(memory_summary_sha256.len(), 64);
+    assert_eq!(&memory_summary_sha256[..12], &memory_scope_version[5..17]);
+    let memory_binding_key = map
+        .get("memoryBindingKey")
+        .and_then(Value::as_str)
+        .expect("memoryBindingKey present");
+    assert_eq!(
+        memory_binding_key,
+        format!("{memory_scope_version}:{memory_summary_sha256}")
+    );
+
+    server.verify().await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(mcp_test_value)]
+async fn stdio_snake_case_agent_tool_injects_context_and_memory_scope() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+
+    let call_id = "agent-ctx-snake-1";
+    let server_name = "rmcp";
+    let tool_name = format!("mcp__{server_name}__agent_context_echo_snake");
+    let mocks =
+        mount_function_call_agent_response(&server, call_id, "{\"message\":\"ping\"}", &tool_name)
+            .await;
+
+    let rmcp_test_server_bin = stdio_server_bin()?;
+
+    let fixture = test_codex()
+        .with_pre_build_hook(|codex_home| {
+            let user_memory_root = codex_home.join("memories").join("user").join("memory");
+            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
+            std::fs::write(
+                user_memory_root.join("memory_summary.md"),
+                "user memory summary",
+            )
+            .expect("write user memory summary");
+        })
+        .with_config(move |config| {
+            config.features.enable(Feature::MemoryTool);
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                server_name.to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: None,
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    enabled: true,
+                    required: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                },
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+        })
+        .build(&server)
+        .await?;
+    fixture
+        .submit_turn_with_policies(
+            "call the generic rmcp agent_context_echo_snake tool",
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+        )
+        .await?;
+
+    let completion_request = mocks.completion.single_request();
+    let content = completion_request
+        .function_call_output_text(call_id)
+        .expect("function_call_output should be present");
+    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
+        panic!(
+            "failed to parse agent_context_echo_snake output as JSON: {err}. output={content:?}"
+        );
+    });
+    let Value::Object(map) = payload else {
+        panic!("function_call_output should be an object: {payload:?}");
+    };
+
+    let message = map
+        .get("message")
+        .and_then(Value::as_str)
+        .expect("message present");
+    assert_eq!(message, "ping");
+    let workdir = map
+        .get("workdir")
+        .and_then(Value::as_str)
+        .expect("workdir present");
+    assert_eq!(workdir, fixture.cwd.path().to_string_lossy().as_ref());
+    let context = map
+        .get("context")
+        .and_then(Value::as_str)
+        .expect("context present");
+    assert!(
+        context.contains("Active memory scope: user"),
+        "context should include active memory scope. actual={context:?}"
+    );
+    let memory_scope_kind = map
+        .get("memory_scope_kind")
+        .and_then(Value::as_str)
+        .expect("memory_scope_kind present");
+    assert_eq!(memory_scope_kind, "user");
+    let memory_scope_version = map
+        .get("memory_scope_version")
+        .and_then(Value::as_str)
+        .expect("memory_scope_version present");
+    assert!(memory_scope_version.starts_with("user:"));
+    let memory_summary_sha256 = map
+        .get("memory_summary_sha256")
+        .and_then(Value::as_str)
+        .expect("memory_summary_sha256 present");
+    assert_eq!(memory_summary_sha256.len(), 64);
+    assert_eq!(&memory_summary_sha256[..12], &memory_scope_version[5..17]);
+    let memory_binding_key = map
+        .get("memory_binding_key")
+        .and_then(Value::as_str)
+        .expect("memory_binding_key present");
+    assert_eq!(
+        memory_binding_key,
+        format!("{memory_scope_version}:{memory_summary_sha256}")
+    );
+
+    server.verify().await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(mcp_test_value)]
+async fn stdio_agent_tool_does_not_override_explicit_context_inputs() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+
+    let call_id = "agent-ctx-explicit-1";
+    let server_name = "rmcp";
+    let tool_name = format!("mcp__{server_name}__agent_context_echo");
+    let args = json!({
+        "message": "ping",
+        "context": "external context from caller",
+        "workFolder": "/tmp/external-workdir",
+        "memoryScopeVersion": "external:123",
+        "memoryScopeKind": "external",
+        "memorySummarySha256": "b".repeat(64),
+        "memoryBindingKey": "external:123:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    });
+    let mocks =
+        mount_function_call_agent_response(&server, call_id, &args.to_string(), &tool_name).await;
+
+    let rmcp_test_server_bin = stdio_server_bin()?;
+
+    let fixture = test_codex()
+        .with_pre_build_hook(|codex_home| {
+            let user_memory_root = codex_home.join("memories").join("user").join("memory");
+            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
+            std::fs::write(
+                user_memory_root.join("memory_summary.md"),
+                "user memory summary",
+            )
+            .expect("write user memory summary");
+        })
+        .with_config(move |config| {
+            config.features.enable(Feature::MemoryTool);
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                server_name.to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: None,
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    enabled: true,
+                    required: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                },
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+        })
+        .build(&server)
+        .await?;
+    fixture
+        .submit_turn_with_policies(
+            "call the generic rmcp agent_context_echo tool with explicit inputs",
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+        )
+        .await?;
+
+    let completion_request = mocks.completion.single_request();
+    let content = completion_request
+        .function_call_output_text(call_id)
+        .expect("function_call_output should be present");
+    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
+        panic!("failed to parse agent_context_echo output as JSON: {err}. output={content:?}");
+    });
+    let Value::Object(map) = payload else {
+        panic!("function_call_output should be an object: {payload:?}");
+    };
+
+    assert_eq!(
+        map.get("context"),
+        Some(&Value::String("external context from caller".to_string()))
+    );
+    assert_eq!(
+        map.get("workFolder"),
+        Some(&Value::String("/tmp/external-workdir".to_string()))
+    );
+    assert_eq!(
+        map.get("memoryScopeVersion"),
+        Some(&Value::String("external:123".to_string()))
+    );
+    assert_eq!(
+        map.get("memoryScopeKind"),
+        Some(&Value::String("external".to_string()))
+    );
+    assert_eq!(
+        map.get("memorySummarySha256"),
+        Some(&Value::String("b".repeat(64)))
+    );
+    assert_eq!(
+        map.get("memoryBindingKey"),
+        Some(&Value::String(
+            "external:123:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string()
+        ))
     );
 
     server.verify().await;

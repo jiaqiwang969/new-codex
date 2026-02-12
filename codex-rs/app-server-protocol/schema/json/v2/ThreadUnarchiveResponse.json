@@ -401,6 +401,35 @@
       ],
       "type": "string"
     },
+    "MemoryLink": {
+      "properties": {
+        "bindingKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopeKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopeVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summarySha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "PatchApplyStatus": {
       "enum": [
         "inProgress",
@@ -888,6 +917,17 @@
             "id": {
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Memory continuity metadata when available from the originating tool call."
+            },
             "result": {
               "anyOf": [
                 {
@@ -938,6 +978,17 @@
             "id": {
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Memory continuity metadata when available from the originating collab call."
             },
             "prompt": {
               "description": "Prompt text sent as part of the collab tool call, when available.",

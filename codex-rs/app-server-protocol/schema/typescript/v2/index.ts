@@ -87,6 +87,7 @@ export type { McpToolCallError } from "./McpToolCallError";
 export type { McpToolCallProgressNotification } from "./McpToolCallProgressNotification";
 export type { McpToolCallResult } from "./McpToolCallResult";
 export type { McpToolCallStatus } from "./McpToolCallStatus";
+export type { MemoryLink } from "./MemoryLink";
 export type { MergeStrategy } from "./MergeStrategy";
 export type { Model } from "./Model";
 export type { ModelListParams } from "./ModelListParams";

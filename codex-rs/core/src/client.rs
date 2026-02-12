@@ -1740,6 +1740,15 @@ mod tests {
         client.new_session()
     }
 
+    fn test_api_provider(session: &ModelClientSession) -> codex_api::Provider {
+        session
+            .client
+            .state
+            .provider
+            .to_api_provider(None)
+            .expect("test provider should convert to API provider")
+    }
+
     fn prompt_with_single_image(image_url: &str) -> Prompt {
         Prompt {
             input: vec![ResponseItem::Message {
@@ -1892,91 +1901,99 @@ mod tests {
     }
 
     #[test]
-    fn responses_options_omit_reasoning_when_grok_effort_is_filtered_and_summary_is_disabled() {
+    fn responses_request_omits_reasoning_when_grok_effort_is_filtered_and_summary_is_disabled() {
         let session = test_session(ModelProviderInfo::create_grok_provider());
+        let api_provider = test_api_provider(&session);
         let prompt = Prompt::default();
         let model_info = find_model_info_for_slug("grok-4-latest");
-        let options = session.build_responses_options(
-            &prompt,
-            &model_info,
-            Some(ReasoningEffortConfig::Low),
-            ReasoningSummaryConfig::None,
-            None,
-            Compression::None,
-        );
+        let request = session
+            .build_responses_request(
+                &api_provider,
+                &prompt,
+                &model_info,
+                Some(ReasoningEffortConfig::Low),
+                ReasoningSummaryConfig::None,
+            )
+            .expect("request should build");
 
-        assert!(options.reasoning.is_none());
-        assert!(options.include.is_empty());
+        assert!(request.reasoning.is_none());
+        assert!(request.include.is_empty());
     }
 
     #[test]
-    fn responses_options_keep_reasoning_summary_for_grok_models() {
+    fn responses_request_keeps_reasoning_summary_for_grok_models() {
         let session = test_session(ModelProviderInfo::create_grok_provider());
+        let api_provider = test_api_provider(&session);
         let prompt = Prompt::default();
         let model_info = find_model_info_for_slug("grok-4-latest");
-        let options = session.build_responses_options(
-            &prompt,
-            &model_info,
-            Some(ReasoningEffortConfig::Low),
-            ReasoningSummaryConfig::Auto,
-            None,
-            Compression::None,
-        );
+        let request = session
+            .build_responses_request(
+                &api_provider,
+                &prompt,
+                &model_info,
+                Some(ReasoningEffortConfig::Low),
+                ReasoningSummaryConfig::Auto,
+            )
+            .expect("request should build");
 
         assert_eq!(
-            serde_json::to_value(options.reasoning).unwrap(),
+            serde_json::to_value(request.reasoning).unwrap(),
             json!({"summary": "auto"})
         );
         assert_eq!(
-            options.include,
+            request.include,
             vec!["reasoning.encrypted_content".to_string()]
         );
     }
 
     #[test]
-    fn responses_options_keep_reasoning_effort_for_non_grok_models() {
+    fn responses_request_keeps_reasoning_effort_for_non_grok_models() {
         let session = test_session(ModelProviderInfo::create_openai_provider());
+        let api_provider = test_api_provider(&session);
         let prompt = Prompt::default();
         let model_info = find_model_info_for_slug("gpt-5-codex");
-        let options = session.build_responses_options(
-            &prompt,
-            &model_info,
-            Some(ReasoningEffortConfig::Low),
-            ReasoningSummaryConfig::None,
-            None,
-            Compression::None,
-        );
+        let request = session
+            .build_responses_request(
+                &api_provider,
+                &prompt,
+                &model_info,
+                Some(ReasoningEffortConfig::Low),
+                ReasoningSummaryConfig::None,
+            )
+            .expect("request should build");
 
         assert_eq!(
-            serde_json::to_value(options.reasoning).unwrap(),
+            serde_json::to_value(request.reasoning).unwrap(),
             json!({"effort": "low"})
         );
         assert_eq!(
-            options.include,
+            request.include,
             vec!["reasoning.encrypted_content".to_string()]
         );
     }
 
     #[test]
-    fn responses_options_omit_reasoning_for_models_without_reasoning_summaries() {
+    fn responses_request_omits_reasoning_for_models_without_reasoning_summaries() {
         let session = test_session(ModelProviderInfo::create_gemini_provider());
+        let api_provider = test_api_provider(&session);
         let prompt = Prompt::default();
         let model_info = find_model_info_for_slug("gemini-2.5-pro");
-        let options = session.build_responses_options(
-            &prompt,
-            &model_info,
-            Some(ReasoningEffortConfig::Low),
-            ReasoningSummaryConfig::Auto,
-            None,
-            Compression::None,
-        );
+        let request = session
+            .build_responses_request(
+                &api_provider,
+                &prompt,
+                &model_info,
+                Some(ReasoningEffortConfig::Low),
+                ReasoningSummaryConfig::Auto,
+            )
+            .expect("request should build");
 
-        assert!(options.reasoning.is_none());
-        assert!(options.include.is_empty());
+        assert!(request.reasoning.is_none());
+        assert!(request.include.is_empty());
     }
 
     #[tokio::test]
-    async fn summarize_memory_traces_fails_fast_for_grok_models() {
+    async fn summarize_memories_fails_fast_for_grok_models() {
         let client = ModelClient::new(
             None,
             ThreadId::new(),
@@ -2002,23 +2019,23 @@ mod tests {
             "test".to_string(),
             SessionSource::Exec,
         );
-        let traces = vec![ApiMemoryTrace {
+        let raw_memories = vec![ApiRawMemory {
             id: "trace-1".to_string(),
-            metadata: codex_api::MemoryTraceMetadata {
+            metadata: codex_api::RawMemoryMetadata {
                 source_path: "trace.jsonl".to_string(),
             },
             items: vec![json!({"role": "user", "content": "hello"})],
         }];
 
         let err = client
-            .summarize_memory_traces(
-                traces,
+            .summarize_memories(
+                raw_memories,
                 &model_info,
                 Some(ReasoningEffortConfig::Low),
                 &otel_manager,
             )
             .await
-            .expect_err("grok should fail fast before making memory trace requests");
+            .expect_err("grok should fail fast before making memory summarize requests");
 
         assert!(
             err.to_string().contains("Memory trace summarization"),
@@ -2027,7 +2044,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summarize_memory_traces_fails_fast_when_provider_is_grok() {
+    async fn summarize_memories_fails_fast_when_provider_is_grok() {
         let client = ModelClient::new(
             None,
             ThreadId::new(),
@@ -2053,23 +2070,23 @@ mod tests {
             "test".to_string(),
             SessionSource::Exec,
         );
-        let traces = vec![ApiMemoryTrace {
+        let raw_memories = vec![ApiRawMemory {
             id: "trace-1".to_string(),
-            metadata: codex_api::MemoryTraceMetadata {
+            metadata: codex_api::RawMemoryMetadata {
                 source_path: "trace.jsonl".to_string(),
             },
             items: vec![json!({"role": "user", "content": "hello"})],
         }];
 
         let err = client
-            .summarize_memory_traces(
-                traces,
+            .summarize_memories(
+                raw_memories,
                 &model_info,
                 Some(ReasoningEffortConfig::Low),
                 &otel_manager,
             )
             .await
-            .expect_err("grok provider should fail fast before making memory trace requests");
+            .expect_err("grok provider should fail fast before making memory summarize requests");
 
         assert!(
             err.to_string().contains("Memory trace summarization"),

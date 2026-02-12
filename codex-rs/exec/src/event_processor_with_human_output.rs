@@ -613,6 +613,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 sender_thread_id: _,
+                memory: _,
                 prompt,
             }) => {
                 ts_msg!(
@@ -626,6 +627,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
                 call_id,
                 sender_thread_id: _,
+                memory: _,
                 new_thread_id,
                 prompt,
                 status,
@@ -645,6 +647,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::CollabAgentInteractionBegin(CollabAgentInteractionBeginEvent {
                 call_id,
                 sender_thread_id: _,
+                memory: _,
                 receiver_thread_id,
                 prompt,
             }) => {
@@ -663,6 +666,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::CollabAgentInteractionEnd(CollabAgentInteractionEndEvent {
                 call_id,
                 sender_thread_id: _,
+                memory: _,
                 receiver_thread_id,
                 prompt,
                 status,
@@ -682,6 +686,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
                 sender_thread_id: _,
+                memory: _,
                 receiver_thread_ids,
                 call_id,
             }) => {
@@ -698,6 +703,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
                 sender_thread_id: _,
+                memory: _,
                 call_id,
                 statuses,
             }) => {
@@ -734,6 +740,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::CollabCloseBegin(CollabCloseBeginEvent {
                 call_id,
                 sender_thread_id: _,
+                memory: _,
                 receiver_thread_id,
             }) => {
                 ts_msg!(
@@ -750,6 +757,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::CollabCloseEnd(CollabCloseEndEvent {
                 call_id,
                 sender_thread_id: _,
+                memory: _,
                 receiver_thread_id,
                 status,
             }) => {

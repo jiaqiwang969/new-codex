@@ -486,11 +486,12 @@
               "type": "string"
             },
             "thought_signature": {
-              "description": "Gemini thought signature for this function call (preserved for round-tripping).",
+              "description": "Gemini thought signature for this function call (preserved for round-tripping). Never serialized on the protocol wire — only used internally.",
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "writeOnly": true
             },
             "type": {
               "enum": [

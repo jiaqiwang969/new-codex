@@ -24,7 +24,7 @@ impl Hooks {
 
     fn hooks_for_event(&self, hook_event: &HookEvent) -> &[Hook] {
         match hook_event {
-            HookEvent::AfterAgent { .. } => &self.after_agent,
+            HookEvent::AfterAgent { .. } | HookEvent::AfterMcpToolCall { .. } => &self.after_agent,
         }
     }
 
@@ -70,6 +70,8 @@ mod tests {
 
     use super::*;
     use crate::types::HookEventAfterAgent;
+    use crate::types::HookEventAfterMcpToolCall;
+    use crate::types::HookEventMcpToolCallStatus;
 
     const CWD: &str = "/tmp";
     const INPUT_MESSAGE: &str = "hello";
@@ -88,6 +90,44 @@ mod tests {
                     turn_id: format!("turn-{label}"),
                     input_messages: vec![INPUT_MESSAGE.to_string()],
                     last_assistant_message: Some("hi".to_string()),
+                    provider_name: "OpenAI".to_string(),
+                    model_slug: "gpt-5".to_string(),
+                    memory_scope_version: None,
+                    memory_scope_kind: None,
+                    memory_summary_sha256: None,
+                    memory_binding_key: None,
+                    memory_context: None,
+                },
+            },
+        }
+    }
+
+    fn mcp_hook_payload(label: &str) -> HookPayload {
+        HookPayload {
+            session_id: ThreadId::new(),
+            cwd: PathBuf::from(CWD),
+            triggered_at: Utc
+                .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            hook_event: HookEvent::AfterMcpToolCall {
+                event: HookEventAfterMcpToolCall {
+                    thread_id: ThreadId::new(),
+                    turn_id: format!("turn-{label}"),
+                    call_id: format!("call-{label}"),
+                    server: "claude-code".to_string(),
+                    tool_name: "claude_code".to_string(),
+                    duration_ms: 10,
+                    status: HookEventMcpToolCallStatus::Ok,
+                    error_message: None,
+                    provider_name: "OpenAI".to_string(),
+                    model_slug: "gpt-5".to_string(),
+                    agent_name: Some("claude-code".to_string()),
+                    memory_scope_version: None,
+                    memory_scope_kind: None,
+                    memory_summary_sha256: None,
+                    memory_binding_key: None,
+                    memory_context: None,
                 },
             },
         }
@@ -159,6 +199,15 @@ mod tests {
         let hooks = hooks_for_after_agent(vec![counting_hook(&calls, HookOutcome::Continue)]);
 
         hooks.dispatch(hook_payload("1")).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_executes_hook_for_mcp_tool_call_event() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hooks = hooks_for_after_agent(vec![counting_hook(&calls, HookOutcome::Continue)]);
+
+        hooks.dispatch(mcp_hook_payload("mcp")).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 

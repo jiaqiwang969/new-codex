@@ -110,6 +110,36 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             is_default: false,
         },
         Model {
+            id: "gpt-5.1-codex-max".to_string(),
+            model: "gpt-5.1-codex-max".to_string(),
+            upgrade: Some("gpt-5.2-codex".to_string()),
+            display_name: "gpt-5.1-codex-max".to_string(),
+            description: "Codex-optimized flagship for deep and fast reasoning.".to_string(),
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks"
+                        .to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Medium,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
             id: "gpt-5.2".to_string(),
             model: "gpt-5.2".to_string(),
             upgrade: Some("gpt-5.2-codex".to_string()),
@@ -270,6 +300,28 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             supports_personality: false,
             is_default: false,
         },
+        Model {
+            id: "gpt-5.1-codex-mini".to_string(),
+            model: "gpt-5.1-codex-mini".to_string(),
+            upgrade: Some("gpt-5.2-codex".to_string()),
+            display_name: "gpt-5.1-codex-mini".to_string(),
+            description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Dynamically adjusts reasoning based on the task".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Maximizes reasoning depth for complex or ambiguous problems"
+                        .to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Medium,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
     ];
 
     assert_eq!(items, expected_models);
@@ -348,7 +400,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(third_response)?;
 
     assert_eq!(third_items.len(), 1);
-    assert_eq!(third_items[0].id, "gpt-5.2");
+    assert_eq!(third_items[0].id, "gpt-5.1-codex-max");
     let fourth_cursor = third_cursor.ok_or_else(|| anyhow!("cursor for fourth page"))?;
 
     let fourth_request = mcp
@@ -370,7 +422,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(fourth_response)?;
 
     assert_eq!(fourth_items.len(), 1);
-    assert_eq!(fourth_items[0].id, "gemini-3-pro-preview");
+    assert_eq!(fourth_items[0].id, "gpt-5.2");
     let fifth_cursor = fourth_cursor.ok_or_else(|| anyhow!("cursor for fifth page"))?;
 
     let fifth_request = mcp
@@ -392,7 +444,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(fifth_response)?;
 
     assert_eq!(fifth_items.len(), 1);
-    assert_eq!(fifth_items[0].id, "gemini-3-flash-preview");
+    assert_eq!(fifth_items[0].id, "gemini-3-pro-preview");
     let sixth_cursor = fifth_cursor.ok_or_else(|| anyhow!("cursor for sixth page"))?;
 
     let sixth_request = mcp
@@ -414,7 +466,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(sixth_response)?;
 
     assert_eq!(sixth_items.len(), 1);
-    assert_eq!(sixth_items[0].id, "gemini-3-pro-image-preview");
+    assert_eq!(sixth_items[0].id, "gemini-3-flash-preview");
     let seventh_cursor = sixth_cursor.ok_or_else(|| anyhow!("cursor for seventh page"))?;
 
     let seventh_request = mcp
@@ -436,7 +488,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(seventh_response)?;
 
     assert_eq!(seventh_items.len(), 1);
-    assert_eq!(seventh_items[0].id, "gemma-3n");
+    assert_eq!(seventh_items[0].id, "gemini-3-pro-image-preview");
     let eighth_cursor = seventh_cursor.ok_or_else(|| anyhow!("cursor for eighth page"))?;
 
     let eighth_request = mcp
@@ -458,7 +510,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(eighth_response)?;
 
     assert_eq!(eighth_items.len(), 1);
-    assert_eq!(eighth_items[0].id, "grok-4-latest");
+    assert_eq!(eighth_items[0].id, "gemma-3n");
     let ninth_cursor = eighth_cursor.ok_or_else(|| anyhow!("cursor for ninth page"))?;
 
     let ninth_request = mcp
@@ -480,8 +532,52 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(ninth_response)?;
 
     assert_eq!(ninth_items.len(), 1);
-    assert_eq!(ninth_items[0].id, "grok-4-1-fast-reasoning");
-    assert!(tenth_cursor.is_none());
+    assert_eq!(ninth_items[0].id, "grok-4-latest");
+    let tenth_cursor = tenth_cursor.ok_or_else(|| anyhow!("cursor for tenth page"))?;
+
+    let tenth_request = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(1),
+            cursor: Some(tenth_cursor.clone()),
+        })
+        .await?;
+
+    let tenth_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(tenth_request)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: tenth_items,
+        next_cursor: eleventh_cursor,
+    } = to_response::<ModelListResponse>(tenth_response)?;
+
+    assert_eq!(tenth_items.len(), 1);
+    assert_eq!(tenth_items[0].id, "grok-4-1-fast-reasoning");
+    let eleventh_cursor = eleventh_cursor.ok_or_else(|| anyhow!("cursor for eleventh page"))?;
+
+    let eleventh_request = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(1),
+            cursor: Some(eleventh_cursor.clone()),
+        })
+        .await?;
+
+    let eleventh_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(eleventh_request)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: eleventh_items,
+        next_cursor: twelfth_cursor,
+    } = to_response::<ModelListResponse>(eleventh_response)?;
+
+    assert_eq!(eleventh_items.len(), 1);
+    assert_eq!(eleventh_items[0].id, "gpt-5.1-codex-mini");
+    assert!(twelfth_cursor.is_none());
     Ok(())
 }
 

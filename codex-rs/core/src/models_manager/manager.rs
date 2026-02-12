@@ -17,8 +17,10 @@ use codex_api::ReqwestTransport;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -270,24 +272,23 @@ impl ModelsManager {
 
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
-        let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
-        for model in models {
-            if let Some(existing_index) = existing_models
-                .iter()
-                .position(|existing| existing.slug == model.slug)
-            {
-                existing_models[existing_index] = model;
-            } else {
-                existing_models.push(model);
-            }
+        let mut merged_models: HashMap<String, ModelInfo> = Self::load_remote_models_from_file()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|model| (model.slug.clone(), model))
+            .collect();
+
+        for model in dedupe_remote_models(models) {
+            merged_models.insert(model.slug.clone(), model);
         }
-        *self.remote_models.write().await = existing_models;
+
+        *self.remote_models.write().await = merged_models.into_values().collect();
     }
 
     fn load_remote_models_from_file() -> Result<Vec<ModelInfo>, std::io::Error> {
         let file_contents = include_str!("../../models.json");
         let response: ModelsResponse = serde_json::from_str(file_contents)?;
-        Ok(response.models)
+        Ok(dedupe_remote_models(response.models))
     }
 
     /// Attempt to satisfy the refresh from the cache when it matches the provider and TTL.
@@ -307,7 +308,7 @@ impl ModelsManager {
 
     /// Merge remote model metadata into picker-ready presets, preserving existing entries.
     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
-        remote_models.sort_by(|a, b| a.priority.cmp(&b.priority));
+        remote_models.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.slug.cmp(&b.slug)));
 
         let remote_presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
         let existing_presets = self.local_models.clone();
@@ -387,10 +388,45 @@ impl ModelsManager {
     }
 }
 
+fn dedupe_remote_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    let mut by_slug: HashMap<String, ModelInfo> = HashMap::new();
+
+    for model in models {
+        match by_slug.entry(model.slug.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(model);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if should_prefer_model(entry.get(), &model) {
+                    entry.insert(model);
+                }
+            }
+        }
+    }
+
+    by_slug.into_values().collect()
+}
+
+fn should_prefer_model(existing: &ModelInfo, candidate: &ModelInfo) -> bool {
+    let existing_visible = matches!(existing.visibility, ModelVisibility::List);
+    let candidate_visible = matches!(candidate.visibility, ModelVisibility::List);
+
+    if candidate_visible != existing_visible {
+        return candidate_visible;
+    }
+
+    if candidate.priority != existing.priority {
+        return candidate.priority < existing.priority;
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::CodexAuth;
+    use crate::auth::AuthCredentialsStoreMode;
     use crate::config::ConfigBuilder;
     use crate::features::Feature;
     use crate::model_provider_info::WireApi;

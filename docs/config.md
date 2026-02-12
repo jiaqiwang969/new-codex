@@ -48,6 +48,19 @@ Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the c
 
 - https://developers.openai.com/codex/config-reference
 
+For MCP tools that declare agent-context fields in their input schema, Codex can
+auto-populate missing values at call time:
+
+- `context`
+- `workFolder` or `workdir`
+- `memoryScopeVersion` or `memory_scope_version`
+- `memoryScopeKind` or `memory_scope_kind`
+- `memorySummarySha256` or `memory_summary_sha256`
+- `memoryBindingKey` or `memory_binding_key`
+
+Explicit values from the model are preserved. Codex only injects values when a
+field is missing, null, or an empty string.
+
 ## Apps (Connectors)
 
 Use `$` in the composer to insert a ChatGPT connector; the popover lists accessible
@@ -59,6 +72,39 @@ and are labeled as connected; others are marked as can be installed.
 Codex can run a notification hook when the agent finishes a turn. See the configuration reference for the latest notification settings:
 
 - https://developers.openai.com/codex/config-reference
+
+When a notify hook is configured, Codex appends a legacy JSON payload as the last argv argument.
+Current event types:
+
+- `agent-turn-complete`: emitted after a turn completes.
+- `mcp-tool-call-complete`: emitted after an MCP tool call finishes.
+
+Both payloads include `provider-name`, `model-slug`, and (when available)
+`memory-scope-version`, `memory-scope-kind`, `memory-summary-sha256`, and
+`memory-binding-key`.
+When the `memory_tool` feature is enabled,
+payloads may also include a `memory-context` object with active memory scope metadata.
+
+Codex also exports hook metadata via environment variables for easier integration:
+
+- Common:
+  `CODEX_HOOK_EVENT`, `CODEX_HOOK_THREAD_ID`, `CODEX_HOOK_TURN_ID`,
+  `CODEX_HOOK_CWD`, `CODEX_HOOK_PROVIDER_NAME`, `CODEX_HOOK_MODEL_SLUG`
+- Memory (when available):
+  `CODEX_HOOK_MEMORY_SCOPE_VERSION`, `CODEX_HOOK_MEMORY_SCOPE_KIND`,
+  `CODEX_HOOK_MEMORY_SUMMARY_SHA256`, `CODEX_HOOK_MEMORY_BINDING_KEY`,
+  `CODEX_HOOK_ACTIVE_MEMORY_SCOPE_VERSION`, `CODEX_HOOK_ACTIVE_MEMORY_BINDING_KEY`
+- MCP-only:
+  `CODEX_HOOK_MCP_CALL_ID`, `CODEX_HOOK_MCP_SERVER`, `CODEX_HOOK_MCP_TOOL_NAME`,
+  `CODEX_HOOK_MCP_STATUS`, `CODEX_HOOK_MCP_ERROR_MESSAGE`, `CODEX_HOOK_AGENT_NAME`
+
+For `mcp-tool-call-complete`, `status` can be one of:
+`ok`, `tool-error`, `transport-error`, `declined`, `cancelled`.
+
+- `tool-error` means the MCP transport succeeded but the tool returned `is_error=true`.
+- `transport-error` means the MCP call itself failed before a normal tool result was returned.
+- `declined` means the user explicitly denied the approval prompt for the tool call.
+- `cancelled` means the user cancelled the approval prompt or provided no usable answer.
 
 ## JSON Schema
 

@@ -94,18 +94,27 @@ impl ToolRegistry {
         let handler = match self.handler(tool_name.as_ref()) {
             Some(handler) => handler,
             None => {
-                let message =
-                    unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());
-                otel.tool_result_with_tags(
-                    tool_name.as_ref(),
-                    &call_id_owned,
-                    log_payload.as_ref(),
-                    Duration::ZERO,
-                    false,
-                    &message,
-                    &metric_tags,
-                );
-                return Err(FunctionCallError::RespondToModel(message));
+                if matches!(&invocation.payload, ToolPayload::Mcp { .. })
+                    && let Some(handler) = self
+                        .handlers
+                        .values()
+                        .find(|handler| handler.kind() == ToolKind::Mcp)
+                {
+                    Arc::clone(handler)
+                } else {
+                    let message =
+                        unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());
+                    otel.tool_result_with_tags(
+                        tool_name.as_ref(),
+                        &call_id_owned,
+                        log_payload.as_ref(),
+                        Duration::ZERO,
+                        false,
+                        &message,
+                        &metric_tags,
+                    );
+                    return Err(FunctionCallError::RespondToModel(message));
+                }
             }
         };
 

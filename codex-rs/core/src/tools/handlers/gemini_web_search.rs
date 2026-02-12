@@ -156,27 +156,27 @@ fn format_grounding_response(resp: &GeminiResponse) -> String {
     // Extract text from candidates.
     if let Some(candidates) = &resp.candidates {
         for candidate in candidates {
-            if let Some(content) = &candidate.content {
-                if let Some(parts) = &content.parts {
-                    for part in parts {
-                        if let Some(text) = &part.text {
-                            out.push_str(text);
-                            out.push('\n');
-                        }
+            if let Some(content) = &candidate.content
+                && let Some(parts) = &content.parts
+            {
+                for part in parts {
+                    if let Some(text) = &part.text {
+                        out.push_str(text);
+                        out.push('\n');
                     }
                 }
             }
 
             // Append grounding metadata (search queries + source links).
             if let Some(meta) = &candidate.grounding_metadata {
-                if let Some(queries) = &meta.web_search_queries {
-                    if !queries.is_empty() {
-                        out.push_str("\n--- Search Queries ---\n");
-                        for q in queries {
-                            out.push_str("- ");
-                            out.push_str(q);
-                            out.push('\n');
-                        }
+                if let Some(queries) = &meta.web_search_queries
+                    && !queries.is_empty()
+                {
+                    out.push_str("\n--- Search Queries ---\n");
+                    for q in queries {
+                        out.push_str("- ");
+                        out.push_str(q);
+                        out.push('\n');
                     }
                 }
                 if let Some(chunks) = &meta.grounding_chunks {
@@ -211,7 +211,6 @@ fn format_grounding_response(resp: &GeminiResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gemini_types::*;
 
     #[test]
     fn format_grounding_with_text_and_sources() {

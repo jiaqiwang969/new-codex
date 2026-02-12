@@ -104,6 +104,10 @@ async fn start_review_conversation(
 
     // Set explicit review rubric for the sub-agent
     sub_agent_config.base_instructions = Some(crate::REVIEW_PROMPT.to_string());
+    let review_approval_policy = ctx.approval_policy;
+    sub_agent_config.approval_policy =
+        Constrained::normalized(review_approval_policy, move |_| review_approval_policy)
+            .expect("review approval policy normalizer should be valid");
 
     let model = config
         .review_model

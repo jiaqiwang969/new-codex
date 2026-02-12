@@ -38,35 +38,30 @@ pub(crate) fn attach_item_ids(payload_json: &mut Value, original_items: &[Respon
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::RetryConfig;
-    use codex_protocol::protocol::SubAgentSource;
-    use http::HeaderValue;
     use pretty_assertions::assert_eq;
-    use std::time::Duration;
-
-    fn provider(name: &str, base_url: &str) -> Provider {
-        Provider {
-            name: name.to_string(),
-            base_url: base_url.to_string(),
-            query_params: None,
-            headers: HeaderMap::new(),
-            retry: RetryConfig {
-                max_attempts: 1,
-                base_delay: Duration::from_millis(50),
-                retry_429: false,
-                retry_5xx: true,
-                retry_transport: true,
-            },
-            stream_idle_timeout: Duration::from_secs(5),
-        }
-    }
+    use serde_json::json;
 
     #[test]
-    fn azure_default_store_attaches_ids_and_headers() {
-        let provider = provider("azure", "https://example.openai.azure.com/v1");
+    fn attach_item_ids_inserts_non_empty_ids() {
+        let mut payload_json = json!({
+            "input": [
+                { "type": "message", "role": "assistant", "content": [] },
+                { "type": "message", "role": "assistant", "content": [] },
+                { "type": "message", "role": "assistant", "content": [] }
+            ]
+        });
+
         let input = vec![
             ResponseItem::Message {
                 id: Some("m1".into()),
+                role: "assistant".into(),
+                content: Vec::new(),
+                end_turn: None,
+                phase: None,
+                thought_signature: None,
+            },
+            ResponseItem::Message {
+                id: Some(String::new()),
                 role: "assistant".into(),
                 content: Vec::new(),
                 end_turn: None,
@@ -83,31 +78,23 @@ mod tests {
             },
         ];
 
-        let request = ResponsesRequestBuilder::new("gpt-test", "inst", &input)
-            .conversation(Some("conv-1".into()))
-            .session_source(Some(SessionSource::SubAgent(SubAgentSource::Review)))
-            .build(&provider)
-            .expect("request");
+        attach_item_ids(&mut payload_json, &input);
 
-        assert_eq!(request.body.get("store"), Some(&Value::Bool(true)));
+        assert_eq!(payload_json["input"][0]["id"], json!("m1"));
+        assert_eq!(payload_json["input"][1].get("id"), None);
+        assert_eq!(payload_json["input"][2].get("id"), None);
+    }
 
-        let ids: Vec<Option<String>> = request
-            .body
-            .get("input")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .map(|item| item.get("id").and_then(|v| v.as_str().map(str::to_string)))
-            .collect();
-        assert_eq!(ids, vec![Some("m1".to_string()), None]);
+    #[test]
+    fn attach_item_ids_noops_when_input_missing_or_not_array() {
+        let input = vec![ResponseItem::Other];
 
-        assert_eq!(
-            request.headers.get("session_id"),
-            Some(&HeaderValue::from_static("conv-1"))
-        );
-        assert_eq!(
-            request.headers.get("x-openai-subagent"),
-            Some(&HeaderValue::from_static("review"))
-        );
+        let mut without_input = json!({ "store": true });
+        attach_item_ids(&mut without_input, &input);
+        assert_eq!(without_input, json!({ "store": true }));
+
+        let mut non_array_input = json!({ "input": { "type": "message" } });
+        attach_item_ids(&mut non_array_input, &input);
+        assert_eq!(non_array_input, json!({ "input": { "type": "message" } }));
     }
 }

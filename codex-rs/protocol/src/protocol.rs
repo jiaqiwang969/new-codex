@@ -2440,12 +2440,26 @@ pub enum TurnAbortReason {
     ReviewEnded,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct MemoryLink {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct CollabAgentSpawnBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -2457,6 +2471,8 @@ pub struct CollabAgentSpawnEndEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the newly spawned agent, if it was created.
     pub new_thread_id: Option<ThreadId>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
@@ -2472,6 +2488,8 @@ pub struct CollabAgentInteractionBeginEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receiver.
     pub receiver_thread_id: ThreadId,
     /// Prompt sent from the sender to the receiver. Can be empty to prevent CoT
@@ -2485,6 +2503,8 @@ pub struct CollabAgentInteractionEndEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receiver.
     pub receiver_thread_id: ThreadId,
     /// Prompt sent from the sender to the receiver. Can be empty to prevent CoT
@@ -2498,6 +2518,8 @@ pub struct CollabAgentInteractionEndEvent {
 pub struct CollabWaitingBeginEvent {
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receivers.
     pub receiver_thread_ids: Vec<ThreadId>,
     /// ID of the waiting call.
@@ -2508,6 +2530,8 @@ pub struct CollabWaitingBeginEvent {
 pub struct CollabWaitingEndEvent {
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// ID of the waiting call.
     pub call_id: String,
     /// Last known status of the receiver agents reported to the sender agent.
@@ -2520,6 +2544,8 @@ pub struct CollabCloseBeginEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receiver.
     pub receiver_thread_id: ThreadId,
 }
@@ -2530,6 +2556,8 @@ pub struct CollabCloseEndEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receiver.
     pub receiver_thread_id: ThreadId,
     /// Last known status of the receiver agent reported to the sender agent before
@@ -2543,6 +2571,8 @@ pub struct CollabResumeBeginEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receiver.
     pub receiver_thread_id: ThreadId,
 }
@@ -2553,6 +2583,8 @@ pub struct CollabResumeEndEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     /// Thread ID of the receiver.
     pub receiver_thread_id: ThreadId,
     /// Last known status of the receiver agent reported to the sender agent after

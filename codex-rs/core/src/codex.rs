@@ -46,6 +46,7 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterAgent;
+use codex_hooks::HookEventMemoryContext;
 use codex_hooks::HookPayload;
 use codex_hooks::Hooks;
 use codex_network_proxy::NetworkProxy;
@@ -594,6 +595,8 @@ pub(crate) struct TurnContext {
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     turn_metadata_header: OnceCell<Option<String>>,
+    memory_read_path_source: OnceCell<Option<memories::MemoryReadPathSource>>,
+    hook_memory_context: OnceCell<Option<HookEventMemoryContext>>,
 }
 impl TurnContext {
     pub(crate) fn model_context_window(&self) -> Option<i64> {
@@ -645,6 +648,27 @@ impl TurnContext {
             context.build_turn_metadata_header().await;
             trace!("Turn metadata calculation task completed");
         });
+    }
+
+    pub(crate) async fn resolve_memory_read_path_source(
+        &self,
+    ) -> Option<memories::MemoryReadPathSource> {
+        self.memory_read_path_source
+            .get_or_init(|| async {
+                if !self.features.enabled(Feature::MemoryTool) {
+                    return None;
+                }
+                memories::select_memory_read_path_source(&self.config.codex_home, &self.cwd).await
+            })
+            .await
+            .clone()
+    }
+
+    pub(crate) async fn resolve_hook_memory_context(&self) -> Option<HookEventMemoryContext> {
+        self.hook_memory_context
+            .get_or_init(|| async { build_hook_memory_context(self).await })
+            .await
+            .clone()
     }
 }
 
@@ -804,8 +828,7 @@ impl SessionConfiguration {
                         .as_deref()
                         .unwrap_or("(default)");
                     provider_switch_label = Some(format!(
-                        "{} -> {} [{}] @ {} (model: {})",
-                        old_provider_id, target_provider_id, account_label, base_url, new_model
+                        "{old_provider_id} -> {target_provider_id} [{account_label}] @ {base_url} (model: {new_model})"
                     ));
                     tracing::info!(
                         from_provider = %old_provider_id,
@@ -1094,6 +1117,8 @@ impl Session {
             truncation_policy: model_info.truncation_policy.into(),
             dynamic_tools: session_configuration.dynamic_tools.clone(),
             turn_metadata_header: OnceCell::new(),
+            memory_read_path_source: OnceCell::new(),
+            hook_memory_context: OnceCell::new(),
         }
     }
 
@@ -1429,28 +1454,21 @@ impl Session {
         required_mcp_servers.sort();
         let cancel_token = sess.mcp_startup_cancellation_token().await;
         if required_mcp_servers.is_empty() {
-            // No required MCP servers: initialize in background so first turn is
-            // not blocked by optional server startup latency.
-            let manager = Arc::clone(&sess.services.mcp_connection_manager);
-            let mcp_servers_for_init = mcp_servers.clone();
-            let auth_statuses_for_init = auth_statuses.clone();
-            let tx_event_for_init = tx_event.clone();
-            let config_for_init = Arc::clone(&config);
-            tokio::spawn(async move {
-                let mut initialized_manager = McpConnectionManager::default();
-                initialized_manager
-                    .initialize(
-                        &mcp_servers_for_init,
-                        config_for_init.mcp_oauth_credentials_store_mode,
-                        auth_statuses_for_init,
-                        tx_event_for_init,
-                        cancel_token,
-                        sandbox_state,
-                    )
-                    .await;
-                let mut guard = manager.write().await;
-                *guard = initialized_manager;
-            });
+            // Initialize immediately so MCP server names are available for tool-call routing
+            // on the first turn, while keeping optional server readiness asynchronous.
+            let mut initialized_manager = McpConnectionManager::default();
+            initialized_manager
+                .initialize(
+                    &mcp_servers,
+                    config.mcp_oauth_credentials_store_mode,
+                    auth_statuses.clone(),
+                    tx_event.clone(),
+                    cancel_token,
+                    sandbox_state,
+                )
+                .await;
+            let mut guard = sess.services.mcp_connection_manager.write().await;
+            *guard = initialized_manager;
         } else {
             let mut initialized_manager = McpConnectionManager::default();
             initialized_manager
@@ -2608,6 +2626,10 @@ impl Session {
             items.push(
                 DeveloperInstructions::new(SEARCH_TOOL_DEVELOPER_INSTRUCTIONS.to_string()).into(),
             );
+        }
+        if let Some(memory_source) = turn_context.resolve_memory_read_path_source().await {
+            let memory_prompt = memories::render_memory_tool_developer_instructions(&memory_source);
+            items.push(DeveloperInstructions::new(memory_prompt).into());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         let (collaboration_mode, base_instructions) = {
@@ -4184,6 +4206,8 @@ async fn spawn_review_thread(
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
         truncation_policy: model_info.truncation_policy.into(),
         turn_metadata_header: parent_turn_context.turn_metadata_header.clone(),
+        memory_read_path_source: OnceCell::new(),
+        hook_memory_context: OnceCell::new(),
     };
 
     // Seed the child task with the review prompt as the initial user message.
@@ -4506,6 +4530,20 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
+                    let memory_context = turn_context.resolve_hook_memory_context().await;
+                    let memory_scope_version = memory_context.as_ref().and_then(|memory_context| {
+                        memory_context.active_memory_scope_version.clone()
+                    });
+                    let memory_scope_kind = memory_context
+                        .as_ref()
+                        .and_then(|memory_context| memory_context.active_scope_kind.clone());
+                    let memory_summary_sha256 =
+                        memory_context.as_ref().and_then(|memory_context| {
+                            memory_context.active_memory_summary_sha256.clone()
+                        });
+                    let memory_binding_key = memory_context.as_ref().and_then(|memory_context| {
+                        memory_context.active_memory_binding_key.clone()
+                    });
                     sess.hooks()
                         .dispatch(HookPayload {
                             session_id: sess.conversation_id,
@@ -4517,6 +4555,13 @@ pub(crate) async fn run_turn(
                                     turn_id: turn_context.sub_id.clone(),
                                     input_messages: sampling_request_input_messages,
                                     last_assistant_message: last_agent_message.clone(),
+                                    provider_name: turn_context.provider.name.clone(),
+                                    model_slug: turn_context.model_info.slug.clone(),
+                                    memory_scope_version,
+                                    memory_scope_kind,
+                                    memory_summary_sha256,
+                                    memory_binding_key,
+                                    memory_context,
                                 },
                             },
                         })
@@ -4556,6 +4601,70 @@ pub(crate) async fn run_turn(
     }
 
     last_agent_message
+}
+
+pub(crate) async fn build_hook_memory_context(
+    turn_context: &TurnContext,
+) -> Option<HookEventMemoryContext> {
+    if !turn_context.features.enabled(Feature::MemoryTool) {
+        return None;
+    }
+
+    let cwd_scope_key = memories::memory_scope_key_for_cwd(&turn_context.cwd);
+    let cwd_memory_root =
+        memories::memory_root_for_cwd(&turn_context.config.codex_home, &turn_context.cwd);
+    let cwd_memory_summary_path = memories::memory_summary_file(&cwd_memory_root);
+    let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+    let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+
+    let cwd_memory_summary_exists = tokio::fs::try_exists(&cwd_memory_summary_path)
+        .await
+        .unwrap_or(false);
+    let user_memory_summary_exists = tokio::fs::try_exists(&user_memory_summary_path)
+        .await
+        .unwrap_or(false);
+    let active_source = turn_context.resolve_memory_read_path_source().await;
+    let active_scope_kind = active_source
+        .as_ref()
+        .map(|active_source| active_source.scope_kind.to_string());
+    let active_memory_root = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_root.display().to_string());
+    let active_memory_summary_path = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_summary_path.display().to_string());
+    let active_memory_summary_sha256 = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_summary_sha256.clone());
+    let active_memory_summary_bytes = active_source
+        .as_ref()
+        .and_then(|active_source| u64::try_from(active_source.memory_summary.len()).ok());
+    let active_memory_scope_version = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_scope_version.clone());
+    let active_memory_binding_key = active_source.as_ref().map(|active_source| {
+        memories::memory_binding_key(
+            &active_source.memory_scope_version,
+            &active_source.memory_summary_sha256,
+        )
+    });
+
+    Some(HookEventMemoryContext {
+        cwd_scope_key,
+        cwd_memory_root: cwd_memory_root.display().to_string(),
+        cwd_memory_summary_path: cwd_memory_summary_path.display().to_string(),
+        cwd_memory_summary_exists,
+        user_memory_root: user_memory_root.display().to_string(),
+        user_memory_summary_path: user_memory_summary_path.display().to_string(),
+        user_memory_summary_exists,
+        active_scope_kind,
+        active_memory_root,
+        active_memory_summary_path,
+        active_memory_summary_sha256,
+        active_memory_summary_bytes,
+        active_memory_scope_version,
+        active_memory_binding_key,
+    })
 }
 
 async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) -> CodexResult<()> {
@@ -6885,6 +6994,278 @@ mod tests {
             .last_token_usage
             .total_tokens;
         assert_eq!(actual_tokens, expected_tokens.max(0));
+    }
+
+    #[tokio::test]
+    async fn build_hook_memory_context_returns_none_when_memory_tool_disabled() {
+        let (_session, turn_context) = make_session_and_context().await;
+        let actual = build_hook_memory_context(&turn_context).await;
+        assert_eq!(actual, None);
+    }
+
+    #[tokio::test]
+    async fn build_hook_memory_context_prefers_cwd_scope_summary() {
+        let (_session, mut turn_context) = make_session_and_context().await;
+        turn_context.features.enable(Feature::MemoryTool);
+
+        let cwd_memory_root =
+            memories::memory_root_for_cwd(&turn_context.config.codex_home, &turn_context.cwd);
+        let cwd_memory_summary_path = memories::memory_summary_file(&cwd_memory_root);
+        tokio::fs::create_dir_all(&cwd_memory_root)
+            .await
+            .expect("create cwd memory root");
+        tokio::fs::write(&cwd_memory_summary_path, "  cwd summary  \n")
+            .await
+            .expect("write cwd memory summary");
+
+        let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+        let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+        tokio::fs::create_dir_all(&user_memory_root)
+            .await
+            .expect("create user memory root");
+        tokio::fs::write(&user_memory_summary_path, "user summary")
+            .await
+            .expect("write user memory summary");
+
+        let trimmed_summary = "cwd summary";
+        let summary_sha256 = memories::memory_summary_sha256(trimmed_summary);
+        let expected = HookEventMemoryContext {
+            cwd_scope_key: memories::memory_scope_key_for_cwd(&turn_context.cwd),
+            cwd_memory_root: cwd_memory_root.display().to_string(),
+            cwd_memory_summary_path: cwd_memory_summary_path.display().to_string(),
+            cwd_memory_summary_exists: true,
+            user_memory_root: user_memory_root.display().to_string(),
+            user_memory_summary_path: user_memory_summary_path.display().to_string(),
+            user_memory_summary_exists: true,
+            active_scope_kind: Some(memories::MEMORY_SCOPE_KIND_CWD.to_string()),
+            active_memory_root: Some(cwd_memory_root.display().to_string()),
+            active_memory_summary_path: Some(cwd_memory_summary_path.display().to_string()),
+            active_memory_summary_sha256: Some(summary_sha256.clone()),
+            active_memory_summary_bytes: Some(
+                u64::try_from(trimmed_summary.len()).expect("summary length fits u64"),
+            ),
+            active_memory_scope_version: Some(memories::memory_scope_version(
+                memories::MEMORY_SCOPE_KIND_CWD,
+                &summary_sha256,
+            )),
+            active_memory_binding_key: Some(memories::memory_binding_key(
+                &memories::memory_scope_version(memories::MEMORY_SCOPE_KIND_CWD, &summary_sha256),
+                &summary_sha256,
+            )),
+        };
+
+        let actual = build_hook_memory_context(&turn_context).await;
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn build_hook_memory_context_falls_back_to_user_scope_summary() {
+        let (_session, mut turn_context) = make_session_and_context().await;
+        turn_context.features.enable(Feature::MemoryTool);
+
+        let cwd_memory_root =
+            memories::memory_root_for_cwd(&turn_context.config.codex_home, &turn_context.cwd);
+        let cwd_memory_summary_path = memories::memory_summary_file(&cwd_memory_root);
+
+        let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+        let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+        tokio::fs::create_dir_all(&user_memory_root)
+            .await
+            .expect("create user memory root");
+        tokio::fs::write(&user_memory_summary_path, "\n user summary \n")
+            .await
+            .expect("write user memory summary");
+
+        let trimmed_summary = "user summary";
+        let summary_sha256 = memories::memory_summary_sha256(trimmed_summary);
+        let expected = HookEventMemoryContext {
+            cwd_scope_key: memories::memory_scope_key_for_cwd(&turn_context.cwd),
+            cwd_memory_root: cwd_memory_root.display().to_string(),
+            cwd_memory_summary_path: cwd_memory_summary_path.display().to_string(),
+            cwd_memory_summary_exists: false,
+            user_memory_root: user_memory_root.display().to_string(),
+            user_memory_summary_path: user_memory_summary_path.display().to_string(),
+            user_memory_summary_exists: true,
+            active_scope_kind: Some(memories::MEMORY_SCOPE_KIND_USER.to_string()),
+            active_memory_root: Some(user_memory_root.display().to_string()),
+            active_memory_summary_path: Some(user_memory_summary_path.display().to_string()),
+            active_memory_summary_sha256: Some(summary_sha256.clone()),
+            active_memory_summary_bytes: Some(
+                u64::try_from(trimmed_summary.len()).expect("summary length fits u64"),
+            ),
+            active_memory_scope_version: Some(memories::memory_scope_version(
+                memories::MEMORY_SCOPE_KIND_USER,
+                &summary_sha256,
+            )),
+            active_memory_binding_key: Some(memories::memory_binding_key(
+                &memories::memory_scope_version(memories::MEMORY_SCOPE_KIND_USER, &summary_sha256),
+                &summary_sha256,
+            )),
+        };
+
+        let actual = build_hook_memory_context(&turn_context).await;
+        assert_eq!(actual, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn resolve_hook_memory_context_is_stable_for_same_turn() {
+        let (_session, mut turn_context) = make_session_and_context().await;
+        turn_context.features.enable(Feature::MemoryTool);
+
+        let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+        let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+        tokio::fs::create_dir_all(&user_memory_root)
+            .await
+            .expect("create user memory root");
+        tokio::fs::write(&user_memory_summary_path, "first summary")
+            .await
+            .expect("write first user memory summary");
+
+        let first = turn_context.resolve_hook_memory_context().await;
+        assert_eq!(
+            first
+                .as_ref()
+                .and_then(|memory_context| memory_context.active_scope_kind.as_deref()),
+            Some(memories::MEMORY_SCOPE_KIND_USER)
+        );
+
+        tokio::fs::write(&user_memory_summary_path, "second summary")
+            .await
+            .expect("write second user memory summary");
+
+        let second = turn_context.resolve_hook_memory_context().await;
+        assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_read_path_source_is_stable_for_same_turn() {
+        let (_session, mut turn_context) = make_session_and_context().await;
+        turn_context.features.enable(Feature::MemoryTool);
+
+        let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+        let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+        tokio::fs::create_dir_all(&user_memory_root)
+            .await
+            .expect("create user memory root");
+        tokio::fs::write(&user_memory_summary_path, "first summary")
+            .await
+            .expect("write first user memory summary");
+
+        let first = turn_context
+            .resolve_memory_read_path_source()
+            .await
+            .expect("first memory source");
+
+        tokio::fs::write(&user_memory_summary_path, "second summary")
+            .await
+            .expect("write second user memory summary");
+
+        let second = turn_context
+            .resolve_memory_read_path_source()
+            .await
+            .expect("second memory source");
+        assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn build_hook_memory_context_reuses_cached_memory_read_path_source() {
+        let (_session, mut turn_context) = make_session_and_context().await;
+        turn_context.features.enable(Feature::MemoryTool);
+
+        let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+        let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+        tokio::fs::create_dir_all(&user_memory_root)
+            .await
+            .expect("create user memory root");
+        tokio::fs::write(&user_memory_summary_path, "first summary")
+            .await
+            .expect("write first user memory summary");
+
+        let first_source = turn_context
+            .resolve_memory_read_path_source()
+            .await
+            .expect("first memory source");
+        tokio::fs::write(&user_memory_summary_path, "second summary")
+            .await
+            .expect("write second user memory summary");
+
+        let hook_context = turn_context
+            .resolve_hook_memory_context()
+            .await
+            .expect("memory context");
+
+        let summary_sha256 = memories::memory_summary_sha256(&first_source.memory_summary);
+        assert_eq!(
+            hook_context.active_memory_summary_sha256,
+            Some(summary_sha256.clone())
+        );
+        assert_eq!(
+            hook_context.active_memory_summary_bytes,
+            Some(
+                u64::try_from(first_source.memory_summary.len())
+                    .expect("summary length should fit in u64")
+            )
+        );
+        assert_eq!(
+            hook_context.active_memory_scope_version,
+            Some(memories::memory_scope_version(
+                first_source.scope_kind,
+                &summary_sha256,
+            ))
+        );
+        let scope_version =
+            memories::memory_scope_version(first_source.scope_kind, &summary_sha256);
+        assert_eq!(
+            hook_context.active_memory_binding_key,
+            Some(memories::memory_binding_key(
+                &scope_version,
+                &summary_sha256
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_hook_memory_context_recomputes_for_new_turn_context() {
+        let (_session, mut turn_context) = make_session_and_context().await;
+        turn_context.features.enable(Feature::MemoryTool);
+
+        let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+        let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+        tokio::fs::create_dir_all(&user_memory_root)
+            .await
+            .expect("create user memory root");
+        tokio::fs::write(&user_memory_summary_path, "first summary")
+            .await
+            .expect("write first user memory summary");
+
+        let first = turn_context
+            .resolve_hook_memory_context()
+            .await
+            .expect("first memory context");
+
+        tokio::fs::write(&user_memory_summary_path, "second summary")
+            .await
+            .expect("write second user memory summary");
+
+        let next_turn_context = TurnContext {
+            sub_id: "next-turn".to_string(),
+            memory_read_path_source: tokio::sync::OnceCell::new(),
+            hook_memory_context: tokio::sync::OnceCell::new(),
+            ..turn_context
+        };
+        let second = next_turn_context
+            .resolve_hook_memory_context()
+            .await
+            .expect("second memory context");
+
+        assert_ne!(
+            first.active_memory_scope_version,
+            second.active_memory_scope_version
+        );
+        assert_ne!(
+            first.active_memory_binding_key,
+            second.active_memory_binding_key
+        );
     }
 
     #[tokio::test]
