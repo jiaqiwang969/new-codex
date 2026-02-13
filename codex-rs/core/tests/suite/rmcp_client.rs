@@ -31,6 +31,7 @@ use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::responses;
+use core_test_support::responses::mount_function_call_agent_response;
 use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::skip_if_no_network;
@@ -262,7 +263,7 @@ async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<(
         .submit_turn_with_policies(
             "call the rmcp claude_code tool",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -412,7 +413,7 @@ async fn stdio_generic_agent_tool_injects_context_and_memory_scope() -> anyhow::
         .submit_turn_with_policies(
             "call the generic rmcp agent_context_echo tool",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -535,7 +536,7 @@ async fn stdio_snake_case_agent_tool_injects_context_and_memory_scope() -> anyho
         .submit_turn_with_policies(
             "call the generic rmcp agent_context_echo_snake tool",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -668,7 +669,7 @@ async fn stdio_agent_tool_does_not_override_explicit_context_inputs() -> anyhow:
         .submit_turn_with_policies(
             "call the generic rmcp agent_context_echo tool with explicit inputs",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 

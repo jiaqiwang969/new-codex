@@ -267,12 +267,14 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             ],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         ResponseItem::FunctionCall {
             id: None,
             name: "view_image".to_string(),
             arguments: "{}".to_string(),
             call_id: "call-1".to_string(),
+            thought_signature: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
@@ -308,12 +310,14 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             ],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         },
         ResponseItem::FunctionCall {
             id: None,
             name: "view_image".to_string(),
             arguments: "{}".to_string(),
             call_id: "call-1".to_string(),
+            thought_signature: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
@@ -345,6 +349,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
         ],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     }]);
     let preserved = with_images.for_prompt(&modalities);
     assert_eq!(preserved.len(), 1);

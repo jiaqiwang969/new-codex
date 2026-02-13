@@ -13,6 +13,7 @@ pub struct HooksConfig {
 #[derive(Clone)]
 pub struct Hooks {
     after_agent: Vec<Hook>,
+    after_mcp_tool_call: Vec<Hook>,
     after_tool_use: Vec<Hook>,
 }
 
@@ -26,14 +27,16 @@ impl Default for Hooks {
 // executed after specific events in the Codex lifecycle.
 impl Hooks {
     pub fn new(config: HooksConfig) -> Self {
-        let after_agent = config
+        let legacy_notify = config
             .legacy_notify_argv
             .filter(|argv| !argv.is_empty() && !argv[0].is_empty())
             .map(crate::notify_hook)
-            .into_iter()
-            .collect();
+            .into_iter();
+        let after_agent = legacy_notify.clone().collect();
+        let after_mcp_tool_call = legacy_notify.collect();
         Self {
             after_agent,
+            after_mcp_tool_call,
             after_tool_use: Vec::new(),
         }
     }
@@ -41,6 +44,7 @@ impl Hooks {
     fn hooks_for_event(&self, hook_event: &HookEvent) -> &[Hook] {
         match hook_event {
             HookEvent::AfterAgent { .. } => &self.after_agent,
+            HookEvent::AfterMcpToolCall { .. } => &self.after_mcp_tool_call,
             HookEvent::AfterToolUse { .. } => &self.after_tool_use,
         }
     }
@@ -87,7 +91,9 @@ mod tests {
 
     use super::*;
     use crate::types::HookEventAfterAgent;
+    use crate::types::HookEventAfterMcpToolCall;
     use crate::types::HookEventAfterToolUse;
+    use crate::types::HookEventMcpToolCallStatus;
     use crate::types::HookToolInput;
     use crate::types::HookToolKind;
 
@@ -223,10 +229,22 @@ mod tests {
     fn hooks_new_requires_program_name() {
         assert!(Hooks::new(HooksConfig::default()).after_agent.is_empty());
         assert!(
+            Hooks::new(HooksConfig::default())
+                .after_mcp_tool_call
+                .is_empty()
+        );
+        assert!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec![]),
             })
             .after_agent
+            .is_empty()
+        );
+        assert!(
+            Hooks::new(HooksConfig {
+                legacy_notify_argv: Some(vec![]),
+            })
+            .after_mcp_tool_call
             .is_empty()
         );
         assert!(
@@ -236,11 +254,26 @@ mod tests {
             .after_agent
             .is_empty()
         );
+        assert!(
+            Hooks::new(HooksConfig {
+                legacy_notify_argv: Some(vec!["".to_string()]),
+            })
+            .after_mcp_tool_call
+            .is_empty()
+        );
         assert_eq!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec!["notify-send".to_string()]),
             })
             .after_agent
+            .len(),
+            1
+        );
+        assert_eq!(
+            Hooks::new(HooksConfig {
+                legacy_notify_argv: Some(vec!["notify-send".to_string()]),
+            })
+            .after_mcp_tool_call
             .len(),
             1
         );
@@ -261,7 +294,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_executes_hook_for_mcp_tool_call_event() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let hooks = hooks_for_after_agent(vec![counting_hook(&calls, HookOutcome::Continue)]);
+        let hooks = Hooks {
+            after_mcp_tool_call: vec![counting_hook(&calls, HookOutcome::Continue)],
+            ..Hooks::default()
+        };
 
         hooks.dispatch(mcp_hook_payload("mcp")).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);

@@ -307,6 +307,7 @@ pub(crate) fn spawn_gemini_response_stream(
             .send(Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
+                can_append: false,
             }))
             .await;
     });
@@ -734,6 +735,7 @@ async fn process_gemini_sse<S>(
         .send(Ok(ResponseEvent::Completed {
             response_id: last_response_id,
             token_usage: last_token_usage,
+            can_append: false,
         }))
         .await;
 }

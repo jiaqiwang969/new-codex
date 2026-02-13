@@ -206,6 +206,106 @@ LIMIT ?
             .collect::<Result<Vec<_>, _>>()
     }
 
+    /// Gets a stored stage-1 output for a single thread, if present.
+    pub async fn get_stage1_output(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<Stage1Output>> {
+        let thread_id = thread_id.to_string();
+        let row = sqlx::query(
+            r#"
+SELECT so.thread_id, so.source_updated_at, so.raw_memory, so.rollout_summary, so.generated_at
+FROM stage1_outputs AS so
+WHERE so.thread_id = ?
+LIMIT 1
+            "#,
+        )
+        .bind(thread_id.as_str())
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+
+        row.map(|row| Stage1OutputRow::try_from_row(&row).and_then(Stage1Output::try_from))
+            .transpose()
+    }
+
+    /// Lists the most recent non-empty stage-1 outputs for threads with matching cwd.
+    pub async fn list_stage1_outputs_for_cwd(
+        &self,
+        cwd: &str,
+        n: usize,
+    ) -> anyhow::Result<Vec<Stage1Output>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query(
+            r#"
+SELECT so.thread_id, so.source_updated_at, so.raw_memory, so.rollout_summary, so.generated_at
+FROM stage1_outputs AS so
+JOIN threads AS t
+    ON t.id = so.thread_id
+WHERE t.cwd = ?
+  AND (length(trim(so.raw_memory)) > 0 OR length(trim(so.rollout_summary)) > 0)
+ORDER BY so.source_updated_at DESC, so.thread_id DESC
+LIMIT ?
+            "#,
+        )
+        .bind(cwd)
+        .bind(n as i64)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Stage1OutputRow::try_from_row(&row).and_then(Stage1Output::try_from))
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Upserts stage-1 output for a thread without requiring a job claim.
+    ///
+    /// This is intended for on-demand writes (e.g. per-turn memory captures) that want to reuse
+    /// the same storage as the stage-1 pipeline.
+    pub async fn upsert_stage1_output(
+        &self,
+        thread_id: ThreadId,
+        source_updated_at: i64,
+        raw_memory: &str,
+        rollout_summary: &str,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp();
+        let thread_id = thread_id.to_string();
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+INSERT INTO stage1_outputs (
+    thread_id,
+    source_updated_at,
+    raw_memory,
+    rollout_summary,
+    generated_at
+) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(thread_id) DO UPDATE SET
+    source_updated_at = excluded.source_updated_at,
+    raw_memory = excluded.raw_memory,
+    rollout_summary = excluded.rollout_summary,
+    generated_at = excluded.generated_at
+WHERE excluded.source_updated_at >= stage1_outputs.source_updated_at
+            "#,
+        )
+        .bind(thread_id.as_str())
+        .bind(source_updated_at)
+        .bind(raw_memory)
+        .bind(rollout_summary)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        enqueue_global_consolidation_with_executor(&mut *tx, source_updated_at).await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Attempts to claim a stage-1 job for a thread at `source_updated_at`.
     ///
     /// Claim semantics:

@@ -5729,7 +5729,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
             }));
-            tx.send(AppEvent::UpdateModel(switch_model_for_events.clone()));
+            tx.send(AppEvent::UpdateModel(switch_model_for_events.clone(), None));
             tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
         })];
 

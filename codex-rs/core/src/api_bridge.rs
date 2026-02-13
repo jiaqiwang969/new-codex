@@ -124,6 +124,7 @@ const CF_RAY_HEADER: &str = "cf-ray";
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
 
     #[test]
     fn map_api_error_maps_server_overloaded() {

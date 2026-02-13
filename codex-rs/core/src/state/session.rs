@@ -32,6 +32,9 @@ pub(crate) struct SessionState {
     /// Startup regular task pre-created during session initialization.
     pub(crate) startup_regular_task: Option<RegularTask>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
+    active_reference_images: Vec<String>,
+    image_size: Option<GeminiImageSize>,
+    aspect_ratio: Option<GeminiAspectRatio>,
 }
 
 impl SessionState {
@@ -49,6 +52,9 @@ impl SessionState {
             previous_model: None,
             startup_regular_task: None,
             active_mcp_tool_selection: None,
+            active_reference_images: Vec::new(),
+            image_size: None,
+            aspect_ratio: None,
         }
     }
 

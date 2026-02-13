@@ -633,6 +633,8 @@ impl TurnContext {
             model_info: &model_info,
             features: &features,
             web_search_mode: self.tools_config.web_search_mode,
+            is_gemini_wire_api: self.provider.wire_api
+                == crate::model_provider_info::WireApi::Gemini,
         });
 
         Self {
@@ -669,6 +671,8 @@ impl TurnContext {
             js_repl: Arc::clone(&self.js_repl),
             dynamic_tools: self.dynamic_tools.clone(),
             turn_metadata_header: self.turn_metadata_header.clone(),
+            memory_read_path_source: self.memory_read_path_source.clone(),
+            hook_memory_context: self.hook_memory_context.clone(),
         }
     }
 
@@ -2721,6 +2725,17 @@ impl Session {
             && turn_context.features.enabled(Feature::MemoryTool)
         {
             items.push(DeveloperInstructions::new(memory_prompt).into());
+        }
+        if turn_context.features.enabled(Feature::MemoryTool)
+            && let Some(active_memory_source) = turn_context.resolve_memory_read_path_source().await
+        {
+            items.push(
+                DeveloperInstructions::new(format!(
+                    "Active memory scope version: {}",
+                    active_memory_source.memory_scope_version
+                ))
+                .into(),
+            );
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         let (collaboration_mode, base_instructions) = {
@@ -4775,6 +4790,67 @@ pub(crate) async fn run_turn(
     last_agent_message
 }
 
+pub(crate) async fn build_hook_memory_context(
+    turn_context: &TurnContext,
+) -> Option<HookEventMemoryContext> {
+    if !turn_context.features.enabled(Feature::MemoryTool) {
+        return None;
+    }
+
+    let cwd_scope_key = memories::memory_scope_key_for_cwd(&turn_context.cwd);
+    let cwd_memory_root =
+        memories::memory_root_for_cwd(&turn_context.config.codex_home, &turn_context.cwd);
+    let cwd_memory_summary_path = memories::memory_summary_file(&cwd_memory_root);
+    let user_memory_root = memories::memory_root_for_user(&turn_context.config.codex_home);
+    let user_memory_summary_path = memories::memory_summary_file(&user_memory_root);
+
+    let cwd_memory_summary_exists = tokio::fs::try_exists(&cwd_memory_summary_path)
+        .await
+        .unwrap_or(false);
+    let user_memory_summary_exists = tokio::fs::try_exists(&user_memory_summary_path)
+        .await
+        .unwrap_or(false);
+    let active_source = turn_context.resolve_memory_read_path_source().await;
+    let active_scope_kind = active_source
+        .as_ref()
+        .map(|active_source| active_source.scope_kind.to_string());
+    let active_memory_root = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_root.display().to_string());
+    let active_memory_summary_path = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_summary_path.display().to_string());
+    let active_memory_summary_sha256 = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_summary_sha256.clone());
+    let active_memory_summary_bytes = active_source
+        .as_ref()
+        .and_then(|active_source| u64::try_from(active_source.memory_summary.len()).ok());
+    let active_memory_scope_version = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_scope_version.clone());
+    let active_memory_binding_key = active_source
+        .as_ref()
+        .map(|active_source| active_source.memory_binding_key.clone());
+
+    Some(HookEventMemoryContext {
+        cwd_scope_key,
+        cwd_memory_root: cwd_memory_root.display().to_string(),
+        cwd_memory_summary_path: cwd_memory_summary_path.display().to_string(),
+        cwd_memory_summary_exists,
+        user_memory_root: user_memory_root.display().to_string(),
+        user_memory_summary_path: user_memory_summary_path.display().to_string(),
+        user_memory_summary_exists,
+        active_scope_kind,
+        active_memory_root,
+        active_memory_summary_path,
+        active_memory_summary_sha256,
+        active_memory_summary_bytes,
+        active_memory_scope_version,
+        active_memory_binding_key,
+    })
+}
+
 async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
@@ -5176,7 +5252,7 @@ async fn run_sampling_request(
     explicitly_enabled_connectors: &HashSet<String>,
     skills_outcome: Option<&SkillLoadOutcome>,
     cancellation_token: CancellationToken,
-) -> CodexResult<SamplingRequestResult> {
+) -> CodexResult<SamplingRequestOutcome> {
     let router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -6147,6 +6223,54 @@ pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -
     })
 }
 
+/// When no persisted reference images are set, derive them from the
+/// conversation history so image-capable models still receive context.
+///
+/// Priority:
+/// 1. Explicit images attached to the last user message in this turn.
+/// 2. The most recent image from an assistant message (e.g. a generated image).
+/// 3. Empty — no images to attach.
+fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
+    // Prefer explicit images attached to the last user message in this turn.
+    let last_user_index = input
+        .iter()
+        .rposition(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"));
+
+    if let Some(index) = last_user_index
+        && let ResponseItem::Message { content, .. } = &input[index]
+    {
+        let mut urls: Vec<String> = Vec::new();
+        for entry in content {
+            if let ContentItem::InputImage { image_url } = entry
+                && !image_url.trim().is_empty()
+            {
+                urls.push(image_url.clone());
+            }
+        }
+        if !urls.is_empty() {
+            return urls;
+        }
+    }
+
+    // Otherwise, fall back to the last assistant message that carried an image.
+    for item in input.iter().rev() {
+        if let ResponseItem::Message { role, content, .. } = item {
+            if role != "assistant" {
+                continue;
+            }
+            for entry in content.iter().rev() {
+                if let ContentItem::InputImage { image_url } = entry
+                    && !image_url.trim().is_empty()
+                {
+                    return vec![image_url.clone()];
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
 use crate::memories::prompts::build_memory_tool_developer_instructions;
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
@@ -6198,6 +6322,7 @@ mod tests {
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseInputItem;
     use codex_protocol::models::ResponseItem;
+    use codex_protocol::openai_models::InputModality;
     use codex_protocol::openai_models::ModelsResponse;
     use std::path::Path;
     use std::time::Duration;
@@ -6424,7 +6549,7 @@ mod tests {
         let removed = drop_provider_specific_encrypted_history_items(&mut state);
         assert_eq!(removed, 2);
 
-        let filtered = state.clone_history().for_prompt();
+        let filtered = state.clone_history().for_prompt(&[InputModality::Text]);
         assert_eq!(
             filtered,
             vec![

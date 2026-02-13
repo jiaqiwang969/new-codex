@@ -194,6 +194,10 @@ pub enum HookEvent {
         #[serde(flatten)]
         event: HookEventAfterAgent,
     },
+    AfterMcpToolCall {
+        #[serde(flatten)]
+        event: HookEventAfterMcpToolCall,
+    },
     AfterToolUse {
         #[serde(flatten)]
         event: HookEventAfterToolUse,
@@ -220,7 +224,10 @@ mod tests {
 
     use super::HookEvent;
     use super::HookEventAfterAgent;
+    use super::HookEventAfterMcpToolCall;
     use super::HookEventAfterToolUse;
+    use super::HookEventMcpToolCallStatus;
+    use super::HookEventMemoryContext;
     use super::HookPayload;
     use super::HookToolInput;
     use super::HookToolInputLocalShell;

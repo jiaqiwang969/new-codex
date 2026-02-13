@@ -243,7 +243,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call the rmcp echo tool",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -432,7 +432,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call the rmcp echo tool",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -499,10 +499,10 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
                 .as_str()
                 .expect("agent payload should include top-level memory binding key");
 
-            assert_eq!(mcp_scope_version, scope_version);
-            assert_eq!(agent_scope_version, scope_version);
-            assert_eq!(mcp_top_level_scope_version, scope_version);
-            assert_eq!(agent_top_level_scope_version, scope_version);
+            assert_eq!(mcp_scope_version, scope_version.as_str());
+            assert_eq!(agent_scope_version, scope_version.as_str());
+            assert_eq!(mcp_top_level_scope_version, scope_version.as_str());
+            assert_eq!(agent_top_level_scope_version, scope_version.as_str());
             assert_eq!(mcp_top_level_scope_kind, "user");
             assert_eq!(agent_top_level_scope_kind, "user");
             assert_eq!(mcp_top_level_summary_sha, agent_top_level_summary_sha);
@@ -597,7 +597,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call an rmcp tool that does not exist",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -714,7 +714,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call the rmcp soft_error tool",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -842,7 +842,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call the rmcp echo tool twice",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -1237,7 +1237,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
             summary: ReasoningSummary::Auto,
@@ -1596,7 +1596,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call the rmcp echo tool first",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -1612,7 +1612,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         .submit_turn_with_policies(
             "call the rmcp echo tool second",
             AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
+            SandboxPolicy::new_read_only_policy(),
         )
         .await?;
 
@@ -1701,7 +1701,7 @@ async fn submit_mcp_approval_turn(
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
             summary: ReasoningSummary::Auto,
@@ -1725,11 +1725,10 @@ async fn submit_mcp_approval_turn(
                     anyhow::bail!("expected at most one approval prompt per turn");
                 }
                 saw_request = true;
-                let question_id = request
-                    .questions
-                    .first()
-                    .map(|question| question.id.clone())
-                    .expect("approval question should exist");
+                let Some(question) = request.questions.first() else {
+                    anyhow::bail!("approval question should exist");
+                };
+                let question_id = question.id.clone();
                 let mut answers = HashMap::new();
                 answers.insert(
                     question_id,

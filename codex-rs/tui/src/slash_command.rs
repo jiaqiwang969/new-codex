@@ -178,6 +178,9 @@ impl SlashCommand {
             SlashCommand::Collab => true,
             SlashCommand::Agent => true,
             SlashCommand::Statusline => false,
+            SlashCommand::RalphLoop => false,
+            SlashCommand::RefImageBatch => true,
+            SlashCommand::PdfUpdate => true,
         }
     }
 

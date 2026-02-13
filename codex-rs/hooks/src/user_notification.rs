@@ -219,7 +219,7 @@ fn apply_memory_env(
     );
 }
 
-fn apply_notify_env(command: &mut Command, payload: &HookPayload) {
+fn apply_notify_env(command: &mut Command, payload: &HookPayload) -> bool {
     for key in KNOWN_NOTIFY_ENV_VARS {
         command.env_remove(key);
     }
@@ -241,6 +241,7 @@ fn apply_notify_env(command: &mut Command, payload: &HookPayload) {
                 event.memory_binding_key.as_deref(),
                 event.memory_context.as_ref(),
             );
+            true
         }
         HookEvent::AfterMcpToolCall { event } => {
             command.env(CODEX_HOOK_EVENT, HOOK_EVENT_MCP_TOOL_CALL_COMPLETE);
@@ -269,7 +270,9 @@ fn apply_notify_env(command: &mut Command, payload: &HookPayload) {
                 event.memory_binding_key.as_deref(),
                 event.memory_context.as_ref(),
             );
+            true
         }
+        HookEvent::AfterToolUse { .. } => false,
     }
 }
 
@@ -282,10 +285,37 @@ pub fn legacy_notify_json(hook_event: &HookEvent, cwd: &Path) -> Result<String, 
                 cwd: cwd.display().to_string(),
                 input_messages: event.input_messages.clone(),
                 last_assistant_message: event.last_assistant_message.clone(),
+                provider_name: event.provider_name.clone(),
+                model_slug: event.model_slug.clone(),
+                memory_scope_version: event.memory_scope_version.clone(),
+                memory_scope_kind: event.memory_scope_kind.clone(),
+                memory_summary_sha256: event.memory_summary_sha256.clone(),
+                memory_binding_key: event.memory_binding_key.clone(),
+                memory_context: legacy_memory_context(&event.memory_context),
             })
         }
-        _ => Err(serde_json::Error::io(std::io::Error::other(
-            "legacy notify payload is only supported for after_agent",
+        HookEvent::AfterMcpToolCall { event } => {
+            serde_json::to_string(&UserNotification::McpToolCallComplete {
+                thread_id: event.thread_id.to_string(),
+                turn_id: event.turn_id.clone(),
+                call_id: event.call_id.clone(),
+                server: event.server.clone(),
+                tool_name: event.tool_name.clone(),
+                duration_ms: event.duration_ms,
+                status: mcp_tool_call_status_label(&event.status).to_string(),
+                error_message: event.error_message.clone(),
+                provider_name: event.provider_name.clone(),
+                model_slug: event.model_slug.clone(),
+                agent_name: event.agent_name.clone(),
+                memory_scope_version: event.memory_scope_version.clone(),
+                memory_scope_kind: event.memory_scope_kind.clone(),
+                memory_summary_sha256: event.memory_summary_sha256.clone(),
+                memory_binding_key: event.memory_binding_key.clone(),
+                memory_context: legacy_memory_context(&event.memory_context),
+            })
+        }
+        HookEvent::AfterToolUse { .. } => Err(serde_json::Error::io(std::io::Error::other(
+            "legacy notify payload is only supported for after_agent and after_mcp_tool_call",
         ))),
     }
 }
@@ -300,7 +330,9 @@ pub fn notify_hook(argv: Vec<String>) -> Hook {
                     Some(command) => command,
                     None => return HookOutcome::Continue,
                 };
-                apply_notify_env(&mut command, payload);
+                if !apply_notify_env(&mut command, payload) {
+                    return HookOutcome::Continue;
+                }
                 if let Ok(notify_payload) = legacy_notify_json(&payload.hook_event, &payload.cwd) {
                     command.arg(notify_payload);
                 }
@@ -311,7 +343,12 @@ pub fn notify_hook(argv: Vec<String>) -> Hook {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
 
-                let _ = command.spawn();
+                if let Ok(mut child) = command.spawn() {
+                    // Avoid leaving zombies around in long-running sessions.
+                    tokio::spawn(async move {
+                        let _ = child.wait().await;
+                    });
+                }
                 HookOutcome::Continue
             })
         }),

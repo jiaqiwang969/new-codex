@@ -112,7 +112,17 @@ where
 
     // Regular invocation – create a Tokio runtime and execute the provided
     // async entry-point.
-    let runtime = tokio::runtime::Runtime::new()?;
+    // Some Codex tasks (shell snapshotting in particular) can temporarily use a
+    // relatively deep stack via async poll chains. Tokio's default thread stack
+    // size (Rust std default) can be too small on some systems, causing a hard
+    // abort on stack overflow.
+    //
+    // Keep this value modest to avoid excessive memory reservation per worker.
+    const TOKIO_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(TOKIO_THREAD_STACK_SIZE)
+        .build()?;
     runtime.block_on(async move {
         let codex_linux_sandbox_exe: Option<PathBuf> = if cfg!(target_os = "linux") {
             std::env::current_exe().ok()

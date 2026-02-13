@@ -816,7 +816,7 @@ async fn run_thread_memory_backfill(
         .await;
 
         if !args.force {
-            match db.get_thread_memory(thread_id).await {
+            match db.get_stage1_output(thread_id).await {
                 Ok(Some(_)) => {
                     skipped = skipped.saturating_add(1);
                     continue;
@@ -843,7 +843,7 @@ async fn run_thread_memory_backfill(
         if !args.no_remote {
             let source_path = session_cwd
                 .as_deref()
-                .unwrap_or_else(|| config.cwd.as_path())
+                .unwrap_or(config.cwd.as_path())
                 .display()
                 .to_string();
             let trace = RawMemory {
@@ -889,7 +889,15 @@ async fn run_thread_memory_backfill(
         }
 
         match db
-            .upsert_thread_memory(thread_id, trace_summary.trim(), memory_summary.trim())
+            .upsert_stage1_output(
+                thread_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                trace_summary.trim(),
+                memory_summary.trim(),
+            )
             .await
         {
             Ok(_) => {

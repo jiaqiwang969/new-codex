@@ -24,6 +24,37 @@ fn enable_deterministic_unified_exec_process_ids_for_tests() {
     codex_core::test_support::set_deterministic_process_ids(true);
 }
 
+// macOS defaults to `ulimit -n 256`, which is easy to exhaust when the integration
+// test suite runs in parallel (mock servers, child processes, pipes, etc.).
+// Bump the soft limit for the current process (and therefore spawned children)
+// so tests are less sensitive to local shell limits.
+#[cfg(unix)]
+#[ctor]
+fn bump_nofile_rlimit_for_tests() {
+    // Best-effort only: ignore failures and keep the existing limit.
+    unsafe {
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
+            return;
+        }
+
+        let target: libc::rlim_t = 1024;
+        let new_cur = std::cmp::min(limits.rlim_max, target);
+        if new_cur <= limits.rlim_cur {
+            return;
+        }
+
+        let new_limits = libc::rlimit {
+            rlim_cur: new_cur,
+            rlim_max: limits.rlim_max,
+        };
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &new_limits);
+    }
+}
+
 #[track_caller]
 pub fn assert_regex_match<'s>(pattern: &str, actual: &'s str) -> regex_lite::Captures<'s> {
     let regex = Regex::new(pattern).unwrap_or_else(|err| {

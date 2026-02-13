@@ -942,6 +942,7 @@ fn assistant_message_item(id: &str, text: &str) -> ResponseItem {
         content: vec![ContentItem::OutputText { text: text.into() }],
         end_turn: None,
         phase: None,
+        thought_signature: None,
     }
 }
 

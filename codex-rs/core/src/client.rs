@@ -89,6 +89,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
+use tracing::debug;
 use tracing::trace;
 use tracing::warn;
 
@@ -163,7 +164,6 @@ struct PreconnectedWebSocket {
 ///
 /// `InFlight` tracks the startup task so the first turn can await it and reuse the same socket.
 /// `Ready` stores a one-shot warmed socket for turn adoption.
-
 #[allow(dead_code)]
 enum PreconnectState {
     /// No startup preconnect task is active and no warmed socket is available.
@@ -339,14 +339,17 @@ impl ModelClient {
     /// A timeout when computing turn metadata is treated the same as "no metadata" so startup
     /// cannot block indefinitely on optional preconnect context.
     pub fn pre_establish_connection(&self, otel_manager: OtelManager, cwd: PathBuf) {
-        if !self.responses_websocket_enabled() || self.disable_websockets() {
+        if !self.state.provider.supports_websockets
+            || !self.state.enable_responses_websockets
+            || self.websockets_disabled()
+        {
             return;
         }
 
         let model_client = self.clone();
         let handle = tokio::spawn(async move {
             let turn_metadata_header = resolve_turn_metadata_header_with_timeout(
-                build_turn_metadata_header(cwd.clone()),
+                build_turn_metadata_header(cwd.as_path(), None),
                 None,
             )
             .await;
@@ -371,7 +374,10 @@ impl ModelClient {
         otel_manager: &OtelManager,
         turn_metadata_header: Option<&str>,
     ) -> bool {
-        if !self.responses_websocket_enabled() || self.disable_websockets() {
+        if !self.state.provider.supports_websockets
+            || !self.state.enable_responses_websockets
+            || self.websockets_disabled()
+        {
             return false;
         }
 
@@ -435,9 +441,8 @@ impl ModelClient {
                 state: Arc::new(state_copy),
             },
             connection: None,
-            websocket_last_items: Vec::new(),
-            websocket_last_response_id: None,
-            websocket_last_response_id_rx: None,
+            websocket_last_request: None,
+            websocket_last_response_rx: None,
             turn_state: Arc::new(OnceLock::new()),
         }
     }

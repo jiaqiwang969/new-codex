@@ -34,6 +34,8 @@ pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_mode: Option<WebSearchMode>,
+    pub web_search_supported: bool,
+    pub web_search_supports_external_web_access: bool,
     pub search_tool: bool,
     pub js_repl_enabled: bool,
     pub collab_tools: bool,
@@ -64,6 +66,9 @@ impl ToolsConfig {
         let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
         let request_rule_enabled = features.enabled(Feature::RequestRule);
         let include_search_tool = features.enabled(Feature::Apps);
+        let web_search_supported = model_supports_web_search_tool(model_info.slug.as_str());
+        let web_search_supports_external_web_access =
+            model_supports_web_search_external_web_access(model_info.slug.as_str());
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -94,6 +99,8 @@ impl ToolsConfig {
             shell_type,
             apply_patch_tool_type,
             web_search_mode: *web_search_mode,
+            web_search_supported,
+            web_search_supports_external_web_access,
             search_tool: include_search_tool,
             js_repl_enabled: include_js_repl,
             collab_tools: include_collab_tools,
@@ -1931,6 +1938,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
 
@@ -1956,6 +1964,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert_contains_tool_names(&tools, &["js_repl", "js_repl_reset"]);
@@ -2046,7 +2055,8 @@ mod tests {
     #[test]
     fn grok_web_search_omits_external_web_access() {
         let config = test_config();
-        let model_info = ModelsManager::construct_model_info_offline("grok-4-latest", &config);
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("grok-4-latest", &config);
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
@@ -2069,7 +2079,8 @@ mod tests {
     #[test]
     fn xai_prefixed_grok_web_search_omits_external_web_access() {
         let config = test_config();
-        let model_info = ModelsManager::construct_model_info_offline("xai/grok-4-latest", &config);
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("xai/grok-4-latest", &config);
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
@@ -2092,7 +2103,7 @@ mod tests {
     #[test]
     fn grok_3_web_search_is_disabled() {
         let config = test_config();
-        let model_info = ModelsManager::construct_model_info_offline("grok-3", &config);
+        let model_info = ModelsManager::construct_model_info_offline_for_tests("grok-3", &config);
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
@@ -2112,7 +2123,8 @@ mod tests {
     #[test]
     fn grok_models_use_json_apply_patch_tool() {
         let config = test_config();
-        let model_info = ModelsManager::construct_model_info_offline("grok-4-latest", &config);
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("grok-4-latest", &config);
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {

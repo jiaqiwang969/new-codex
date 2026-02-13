@@ -27,6 +27,14 @@ use uuid::Uuid;
 /// Core-facing handle to the optional SQLite-backed state runtime.
 pub type StateDbHandle = Arc<codex_state::StateRuntime>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadMemory {
+    pub thread_id: ThreadId,
+    pub updated_at: DateTime<Utc>,
+    pub raw_memory: String,
+    pub memory_summary: String,
+}
+
 /// Initialize the state runtime when the `sqlite` feature flag is enabled. To only be used
 /// inside `core`. The initialization should not be done anywhere else.
 pub(crate) async fn init_if_enabled(
@@ -344,6 +352,82 @@ pub async fn persist_dynamic_tools(
     };
     if let Err(err) = ctx.persist_dynamic_tools(thread_id, tools).await {
         warn!("state db persist_dynamic_tools failed during {stage}: {err}");
+    }
+}
+
+pub async fn get_thread_memory(
+    context: Option<&codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    stage: &str,
+) -> Option<ThreadMemory> {
+    let ctx = context?;
+    match ctx.get_stage1_output(thread_id).await {
+        Ok(Some(output)) => Some(ThreadMemory {
+            thread_id: output.thread_id,
+            updated_at: output.generated_at,
+            raw_memory: output.raw_memory,
+            memory_summary: output.rollout_summary,
+        }),
+        Ok(None) => None,
+        Err(err) => {
+            warn!("state db get_thread_memory failed during {stage}: {err}");
+            None
+        }
+    }
+}
+
+pub async fn get_last_n_thread_memories_for_cwd(
+    context: Option<&codex_state::StateRuntime>,
+    cwd: &Path,
+    n: usize,
+    stage: &str,
+) -> Option<Vec<ThreadMemory>> {
+    let ctx = context?;
+    let normalized = normalize_cwd_for_state_db(cwd);
+    let cwd_str = normalized.display().to_string();
+    match ctx.list_stage1_outputs_for_cwd(cwd_str.as_str(), n).await {
+        Ok(outputs) => Some(
+            outputs
+                .into_iter()
+                .map(|output| ThreadMemory {
+                    thread_id: output.thread_id,
+                    updated_at: output.generated_at,
+                    raw_memory: output.raw_memory,
+                    memory_summary: output.rollout_summary,
+                })
+                .collect(),
+        ),
+        Err(err) => {
+            warn!("state db get_last_n_thread_memories_for_cwd failed during {stage}: {err}");
+            None
+        }
+    }
+}
+
+pub async fn upsert_thread_memory(
+    context: Option<&codex_state::StateRuntime>,
+    thread_id: ThreadId,
+    raw_memory: &str,
+    memory_summary: &str,
+    stage: &str,
+) {
+    let Some(ctx) = context else {
+        return;
+    };
+    let source_updated_at = match ctx.get_thread(thread_id).await {
+        Ok(Some(thread)) => thread.updated_at.timestamp(),
+        Ok(None) => Utc::now().timestamp(),
+        Err(err) => {
+            warn!("state db upsert_thread_memory failed to read thread during {stage}: {err}");
+            Utc::now().timestamp()
+        }
+    };
+
+    if let Err(err) = ctx
+        .upsert_stage1_output(thread_id, source_updated_at, raw_memory, memory_summary)
+        .await
+    {
+        warn!("state db upsert_thread_memory failed during {stage}: {err}");
     }
 }
 

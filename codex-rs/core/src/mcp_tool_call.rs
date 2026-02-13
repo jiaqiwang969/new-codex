@@ -129,7 +129,7 @@ pub(crate) async fn handle_mcp_tool_call(
 
                 let start = Instant::now();
                 let result = sess
-                    .call_tool(&server, &tool_name, arguments_value.clone())
+                    .call_tool(&server, &tool_name, call_tool_arguments_value.clone())
                     .await
                     .map_err(|e| format!("tool call error: {e:?}"));
                 let result = sanitize_mcp_tool_result_for_model(
@@ -197,7 +197,7 @@ pub(crate) async fn handle_mcp_tool_call(
     let start = Instant::now();
     // Perform the tool call.
     let result = sess
-        .call_tool(&server, &tool_name, arguments_value.clone())
+        .call_tool(&server, &tool_name, call_tool_arguments_value.clone())
         .await
         .map_err(|e| format!("tool call error: {e:?}"));
     let result = sanitize_mcp_tool_result_for_model(
@@ -225,6 +225,138 @@ pub(crate) async fn handle_mcp_tool_call(
         .counter("codex.mcp.call", 1, &[("status", status)]);
 
     ResponseInputItem::McpToolCallOutput { call_id, result }
+}
+
+async fn maybe_inject_mcp_agent_context(
+    sess: &Session,
+    turn_context: &TurnContext,
+    server: &str,
+    tool_name: &str,
+    arguments: Option<Value>,
+) -> Option<Value> {
+    let Some(Value::Object(mut args)) = arguments else {
+        return arguments;
+    };
+
+    let tool_properties = sess
+        .services
+        .mcp_connection_manager
+        .read()
+        .await
+        .list_all_tools()
+        .await
+        .into_values()
+        .find(|tool_info| tool_info.server_name == server && tool_info.tool_name == tool_name)
+        .and_then(|tool_info| tool_info.tool.input_schema.get("properties").cloned())
+        .and_then(|properties| properties.as_object().cloned());
+    let has_context_fallback = tool_name == CLAUDE_CODE_TOOL_NAME;
+    let work_folder_key = supported_schema_key(&tool_properties, MCP_AGENT_WORK_FOLDER_KEYS)
+        .or_else(|| has_context_fallback.then_some(MCP_AGENT_WORK_FOLDER_KEY));
+    if let Some(work_folder_key) = work_folder_key
+        && should_inject_string_argument(&args, work_folder_key)
+    {
+        args.insert(
+            work_folder_key.to_string(),
+            Value::String(turn_context.cwd.to_string_lossy().into_owned()),
+        );
+    }
+
+    let context_key = supported_schema_key(&tool_properties, MCP_AGENT_CONTEXT_KEYS)
+        .or_else(|| has_context_fallback.then_some(MCP_AGENT_CONTEXT_KEY));
+    if let Some(context_key) = context_key
+        && should_inject_string_argument(&args, context_key)
+    {
+        let context = context_packet::build_context_packet(
+            sess,
+            turn_context,
+            context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
+        )
+        .await;
+        if !context.trim().is_empty() {
+            args.insert(context_key.to_string(), Value::String(context));
+        }
+    }
+
+    let memory_scope_version_key =
+        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_VERSION_KEYS);
+    let memory_scope_kind_key =
+        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_KIND_KEYS);
+    let memory_summary_sha256_key =
+        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS);
+    let memory_binding_key = supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_BINDING_KEYS);
+    if (memory_scope_version_key.is_some()
+        || memory_scope_kind_key.is_some()
+        || memory_summary_sha256_key.is_some()
+        || memory_binding_key.is_some())
+        && let Some(memory_context) = turn_context.resolve_hook_memory_context().await
+    {
+        if let Some(memory_scope_version_key) = memory_scope_version_key
+            && should_inject_string_argument(&args, memory_scope_version_key)
+            && let Some(scope_version) = memory_context.active_memory_scope_version.as_ref()
+        {
+            args.insert(
+                memory_scope_version_key.to_string(),
+                Value::String(scope_version.clone()),
+            );
+        }
+        if let Some(memory_scope_kind_key) = memory_scope_kind_key
+            && should_inject_string_argument(&args, memory_scope_kind_key)
+            && let Some(scope_kind) = memory_context.active_scope_kind.as_ref()
+        {
+            args.insert(
+                memory_scope_kind_key.to_string(),
+                Value::String(scope_kind.clone()),
+            );
+        }
+        if let Some(memory_summary_sha256_key) = memory_summary_sha256_key
+            && should_inject_string_argument(&args, memory_summary_sha256_key)
+            && let Some(memory_summary_sha256) =
+                memory_context.active_memory_summary_sha256.as_ref()
+        {
+            args.insert(
+                memory_summary_sha256_key.to_string(),
+                Value::String(memory_summary_sha256.clone()),
+            );
+        }
+        if let Some(memory_binding_key) = memory_binding_key
+            && should_inject_string_argument(&args, memory_binding_key)
+            && let Some(binding_key) = memory_context.active_memory_binding_key.as_ref()
+        {
+            args.insert(
+                memory_binding_key.to_string(),
+                Value::String(binding_key.clone()),
+            );
+        }
+    }
+
+    Some(Value::Object(args))
+}
+
+fn should_inject_string_argument(args: &serde_json::Map<String, Value>, key: &str) -> bool {
+    match args.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.trim().is_empty(),
+        Some(_) => false,
+    }
+}
+
+fn schema_has_property(
+    properties: &Option<serde_json::Map<String, Value>>,
+    property_name: &str,
+) -> bool {
+    properties
+        .as_ref()
+        .is_some_and(|properties| properties.contains_key(property_name))
+}
+
+fn supported_schema_key<'a>(
+    properties: &Option<serde_json::Map<String, Value>>,
+    candidate_keys: &'a [&'a str],
+) -> Option<&'a str> {
+    candidate_keys
+        .iter()
+        .copied()
+        .find(|candidate_key| schema_has_property(properties, candidate_key))
 }
 
 fn sanitize_mcp_tool_result_for_model(
@@ -597,7 +729,6 @@ async fn notify_mcp_tool_call_skip(
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use serde_json::Map;
 
     fn annotations(
         read_only: Option<bool>,

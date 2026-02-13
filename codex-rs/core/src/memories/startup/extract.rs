@@ -71,6 +71,7 @@ pub(super) async fn extract_stage_one_output(
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }],
         tools: Vec::new(),
         parallel_tool_calls: false,
@@ -79,6 +80,9 @@ pub(super) async fn extract_stage_one_output(
         },
         personality: None,
         output_schema: Some(stage_one_output_schema()),
+        reference_images: Vec::new(),
+        image_size: None,
+        aspect_ratio: None,
     };
 
     let mut client_session = session.services.model_client.new_session();
@@ -188,6 +192,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         })];
 
         let serialized = serialize_filtered_rollout_response_items(&input).expect("serialize");
