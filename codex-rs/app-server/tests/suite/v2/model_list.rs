@@ -112,7 +112,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
         Model {
             id: "gpt-5.1-codex-max".to_string(),
             model: "gpt-5.1-codex-max".to_string(),
-            upgrade: Some("gpt-5.2-codex".to_string()),
+            upgrade: Some("gpt-5.3-codex".to_string()),
             display_name: "gpt-5.1-codex-max".to_string(),
             description: "Codex-optimized flagship for deep and fast reasoning.".to_string(),
             supported_reasoning_efforts: vec![
@@ -303,7 +303,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
         Model {
             id: "gpt-5.1-codex-mini".to_string(),
             model: "gpt-5.1-codex-mini".to_string(),
-            upgrade: Some("gpt-5.2-codex".to_string()),
+            upgrade: Some("gpt-5.3-codex".to_string()),
             display_name: "gpt-5.1-codex-mini".to_string(),
             description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
             supported_reasoning_efforts: vec![
