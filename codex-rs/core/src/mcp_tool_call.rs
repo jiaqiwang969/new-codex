@@ -393,18 +393,17 @@ fn sanitize_mcp_tool_result_for_model(
 async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, event: EventMsg) {
     let hook_event = if let EventMsg::McpToolCallEnd(tool_call_end) = &event {
         let memory_context = turn_context.resolve_hook_memory_context().await;
-        let memory_scope_version = memory_context
+        let memory = turn_context.resolve_memory_link().await;
+        let memory_scope_version = memory
             .as_ref()
-            .and_then(|memory_context| memory_context.active_memory_scope_version.clone());
-        let memory_scope_kind = memory_context
+            .and_then(|memory| memory.scope_version.clone());
+        let memory_scope_kind = memory.as_ref().and_then(|memory| memory.scope_kind.clone());
+        let memory_summary_sha256 = memory
             .as_ref()
-            .and_then(|memory_context| memory_context.active_scope_kind.clone());
-        let memory_summary_sha256 = memory_context
+            .and_then(|memory| memory.summary_sha256.clone());
+        let memory_binding_key = memory
             .as_ref()
-            .and_then(|memory_context| memory_context.active_memory_summary_sha256.clone());
-        let memory_binding_key = memory_context
-            .as_ref()
-            .and_then(|memory_context| memory_context.active_memory_binding_key.clone());
+            .and_then(|memory| memory.binding_key.clone());
         let (status, error_message) = mcp_tool_call_status_and_error(&tool_call_end.result);
         let duration_ms = u64::try_from(tool_call_end.duration.as_millis()).unwrap_or(u64::MAX);
         let server = tool_call_end.invocation.server.clone();
@@ -422,6 +421,7 @@ async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, 
                 provider_name: turn_context.provider.name.clone(),
                 model_slug: turn_context.model_info.slug.clone(),
                 agent_name: mcp_tool_call_agent_name(server.as_str(), tool_name.as_str()),
+                memory,
                 memory_scope_version,
                 memory_scope_kind,
                 memory_summary_sha256,

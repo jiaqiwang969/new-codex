@@ -6,6 +6,7 @@ use chrono::SecondsFormat;
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::models::SandboxPermissions;
+use codex_protocol::protocol::MemoryLink;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde::Serializer;
@@ -51,6 +52,8 @@ pub struct HookEventAfterAgent {
     pub provider_name: String,
     pub model_slug: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_scope_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_scope_kind: Option<String>,
@@ -86,6 +89,8 @@ pub struct HookEventAfterMcpToolCall {
     pub provider_name: String,
     pub model_slug: String,
     pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_scope_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -168,6 +173,8 @@ pub enum HookToolInput {
 pub struct HookEventAfterToolUse {
     pub turn_id: String,
     pub call_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
     pub tool_name: String,
     pub tool_kind: HookToolKind,
     pub tool_input: HookToolInput,
@@ -219,6 +226,7 @@ mod tests {
     use chrono::Utc;
     use codex_protocol::ThreadId;
     use codex_protocol::models::SandboxPermissions;
+    use codex_protocol::protocol::MemoryLink;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -252,6 +260,15 @@ mod tests {
                     last_assistant_message: Some("hi".to_string()),
                     provider_name: "Gemini".to_string(),
                     model_slug: "gemini-2.5-pro".to_string(),
+                    memory: Some(MemoryLink {
+                        scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                        scope_kind: Some("cwd".to_string()),
+                        summary_sha256: Some("a".repeat(64)),
+                        binding_key: Some(
+                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                        ),
+                    }),
                     memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                     memory_scope_kind: Some("cwd".to_string()),
                     memory_summary_sha256: Some("a".repeat(64)),
@@ -305,6 +322,12 @@ mod tests {
                 "last_assistant_message": "hi",
                 "provider_name": "Gemini",
                 "model_slug": "gemini-2.5-pro",
+                "memory": {
+                    "scope_version": "cwd:aaaaaaaaaaaa",
+                    "scope_kind": "cwd",
+                    "summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
                 "memory_scope_version": "cwd:aaaaaaaaaaaa",
                 "memory_scope_kind": "cwd",
                 "memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -355,6 +378,15 @@ mod tests {
                     provider_name: "OpenAI".to_string(),
                     model_slug: "gpt-5".to_string(),
                     agent_name: Some("claude-code".to_string()),
+                    memory: Some(MemoryLink {
+                        scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                        scope_kind: Some("cwd".to_string()),
+                        summary_sha256: Some("a".repeat(64)),
+                        binding_key: Some(
+                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                        ),
+                    }),
                     memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                     memory_scope_kind: Some("cwd".to_string()),
                     memory_summary_sha256: Some("a".repeat(64)),
@@ -413,6 +445,12 @@ mod tests {
                 "provider_name": "OpenAI",
                 "model_slug": "gpt-5",
                 "agent_name": "claude-code",
+                "memory": {
+                    "scope_version": "cwd:aaaaaaaaaaaa",
+                    "scope_kind": "cwd",
+                    "summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
                 "memory_scope_version": "cwd:aaaaaaaaaaaa",
                 "memory_scope_kind": "cwd",
                 "memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -453,6 +491,15 @@ mod tests {
                 event: HookEventAfterToolUse {
                     turn_id: "turn-2".to_string(),
                     call_id: "call-1".to_string(),
+                    memory: Some(MemoryLink {
+                        scope_version: Some("user:bbbbbbbbbbbb".to_string()),
+                        scope_kind: Some("user".to_string()),
+                        summary_sha256: Some("b".repeat(64)),
+                        binding_key: Some(
+                            "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                .to_string(),
+                        ),
+                    }),
                     tool_name: "local_shell".to_string(),
                     tool_kind: HookToolKind::LocalShell,
                     tool_input: HookToolInput::LocalShell {
@@ -485,6 +532,12 @@ mod tests {
                 "event_type": "after_tool_use",
                 "turn_id": "turn-2",
                 "call_id": "call-1",
+                "memory": {
+                    "scope_version": "user:bbbbbbbbbbbb",
+                    "scope_kind": "user",
+                    "summary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "binding_key": "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
                 "tool_name": "local_shell",
                 "tool_kind": "local_shell",
                 "tool_input": {

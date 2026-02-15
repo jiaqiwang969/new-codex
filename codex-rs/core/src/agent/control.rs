@@ -271,6 +271,7 @@ mod tests {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }));
         assert_eq!(status, Some(AgentStatus::Running));
     }
@@ -280,6 +281,7 @@ mod tests {
         let status = agent_status_from_event(&EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("done".to_string()),
+            memory: None,
         }));
         let expected = AgentStatus::Completed(Some("done".to_string()));
         assert_eq!(status, Some(expected));

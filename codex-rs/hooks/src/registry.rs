@@ -116,6 +116,7 @@ mod tests {
                     last_assistant_message: Some("hi".to_string()),
                     provider_name: "OpenAI".to_string(),
                     model_slug: "gpt-5".to_string(),
+                    memory: None,
                     memory_scope_version: None,
                     memory_scope_kind: None,
                     memory_summary_sha256: None,
@@ -147,6 +148,7 @@ mod tests {
                     provider_name: "OpenAI".to_string(),
                     model_slug: "gpt-5".to_string(),
                     agent_name: Some("claude-code".to_string()),
+                    memory: None,
                     memory_scope_version: None,
                     memory_scope_kind: None,
                     memory_summary_sha256: None,
@@ -182,6 +184,7 @@ mod tests {
                 event: HookEventAfterToolUse {
                     turn_id: format!("turn-{label}"),
                     call_id: format!("call-{label}"),
+                    memory: None,
                     tool_name: "apply_patch".to_string(),
                     tool_kind: HookToolKind::Custom,
                     tool_input: HookToolInput::Custom {

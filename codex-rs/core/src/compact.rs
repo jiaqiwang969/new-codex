@@ -60,6 +60,7 @@ pub(crate) async fn run_compact_task(
         turn_id: turn_context.sub_id.clone(),
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        memory: turn_context.resolve_memory_link().await,
     });
     sess.send_event(&turn_context, start_event).await;
     run_compact_task_inner(sess.clone(), turn_context, input).await

@@ -178,8 +178,16 @@ pub(crate) async fn apply_bespoke_event_handling(
     } = event;
     match msg {
         EventMsg::TurnStarted(_) => {}
-        EventMsg::TurnComplete(_ev) => {
-            handle_turn_complete(conversation_id, event_turn_id, &outgoing, &thread_state).await;
+        EventMsg::TurnComplete(ev) => {
+            let memory = memory_link_from_core(ev.memory);
+            handle_turn_complete(
+                conversation_id,
+                event_turn_id,
+                memory,
+                &outgoing,
+                &thread_state,
+            )
+            .await;
         }
         EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
             call_id,
@@ -1284,6 +1292,7 @@ async fn handle_turn_plan_update(
 async fn emit_turn_completed_with_status(
     conversation_id: ThreadId,
     event_turn_id: String,
+    memory: Option<MemoryLink>,
     status: TurnStatus,
     error: Option<TurnError>,
     outgoing: &ThreadScopedOutgoingMessageSender,
@@ -1292,6 +1301,7 @@ async fn emit_turn_completed_with_status(
         thread_id: conversation_id.to_string(),
         turn: Turn {
             id: event_turn_id,
+            memory,
             items: vec![],
             error,
             status,
@@ -1395,6 +1405,7 @@ async fn find_and_remove_turn_summary(
 async fn handle_turn_complete(
     conversation_id: ThreadId,
     event_turn_id: String,
+    memory: Option<MemoryLink>,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
@@ -1405,7 +1416,15 @@ async fn handle_turn_complete(
         None => (TurnStatus::Completed, None),
     };
 
-    emit_turn_completed_with_status(conversation_id, event_turn_id, status, error, outgoing).await;
+    emit_turn_completed_with_status(
+        conversation_id,
+        event_turn_id,
+        memory,
+        status,
+        error,
+        outgoing,
+    )
+    .await;
 }
 
 async fn handle_turn_interrupted(
@@ -1419,6 +1438,7 @@ async fn handle_turn_interrupted(
     emit_turn_completed_with_status(
         conversation_id,
         event_turn_id,
+        None,
         TurnStatus::Interrupted,
         None,
         outgoing,
@@ -2144,6 +2164,7 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
+            None,
             &outgoing,
             &thread_state,
         )
@@ -2224,6 +2245,7 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
+            None,
             &outgoing,
             &thread_state,
         )
@@ -2469,7 +2491,14 @@ mod tests {
             &thread_state,
         )
         .await;
-        handle_turn_complete(conversation_a, a_turn1.clone(), &outgoing, &thread_state).await;
+        handle_turn_complete(
+            conversation_a,
+            a_turn1.clone(),
+            None,
+            &outgoing,
+            &thread_state,
+        )
+        .await;
 
         // Turn 1 on conversation B
         let b_turn1 = "b_turn1".to_string();
@@ -2483,11 +2512,25 @@ mod tests {
             &thread_state,
         )
         .await;
-        handle_turn_complete(conversation_b, b_turn1.clone(), &outgoing, &thread_state).await;
+        handle_turn_complete(
+            conversation_b,
+            b_turn1.clone(),
+            None,
+            &outgoing,
+            &thread_state,
+        )
+        .await;
 
         // Turn 2 on conversation A
         let a_turn2 = "a_turn2".to_string();
-        handle_turn_complete(conversation_a, a_turn2.clone(), &outgoing, &thread_state).await;
+        handle_turn_complete(
+            conversation_a,
+            a_turn2.clone(),
+            None,
+            &outgoing,
+            &thread_state,
+        )
+        .await;
 
         // Verify: A turn 1
         let msg = recv_broadcast_message(&mut rx).await?;

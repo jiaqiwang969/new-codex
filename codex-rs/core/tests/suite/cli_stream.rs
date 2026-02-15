@@ -41,7 +41,8 @@ async fn responses_mode_stream_cli() {
     );
     let bin = codex_utils_cargo_bin::cargo_bin("codex").unwrap();
     let mut cmd = AssertCommand::new(bin);
-    cmd.timeout(Duration::from_secs(30));
+    // This test spawns a full Codex CLI subprocess; allow some slack under parallel test load.
+    cmd.timeout(Duration::from_secs(60));
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")

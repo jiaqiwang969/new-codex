@@ -2118,6 +2118,7 @@ impl From<CoreTokenUsage> for TokenUsageBreakdown {
 #[ts(export_to = "v2/")]
 pub struct Turn {
     pub id: String,
+    pub memory: Option<MemoryLink>,
     /// Only populated on a `thread/resume` or `thread/fork` response.
     /// For all other responses and notifications returning a Turn,
     /// the items field will be an empty list.
@@ -2549,6 +2550,17 @@ pub struct MemoryLink {
     pub scope_kind: Option<String>,
     pub summary_sha256: Option<String>,
     pub binding_key: Option<String>,
+}
+
+impl From<codex_protocol::protocol::MemoryLink> for MemoryLink {
+    fn from(value: codex_protocol::protocol::MemoryLink) -> Self {
+        Self {
+            scope_version: value.scope_version,
+            scope_kind: value.scope_kind,
+            summary_sha256: value.summary_sha256,
+            binding_key: value.binding_key,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

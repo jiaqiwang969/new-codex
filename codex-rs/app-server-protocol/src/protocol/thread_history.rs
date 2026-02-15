@@ -1,3 +1,4 @@
+use crate::protocol::v2::MemoryLink;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnError;
@@ -174,14 +175,18 @@ impl ThreadHistoryBuilder {
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
         self.finish_current_turn();
-        self.current_turn = Some(
-            self.new_turn(Some(payload.turn_id.clone()))
-                .opened_explicitly(),
-        );
+        let mut turn = self
+            .new_turn(Some(payload.turn_id.clone()))
+            .opened_explicitly();
+        turn.memory = payload.memory.clone().map(Into::into);
+        self.current_turn = Some(turn);
     }
 
-    fn handle_turn_complete(&mut self, _payload: &TurnCompleteEvent) {
+    fn handle_turn_complete(&mut self, payload: &TurnCompleteEvent) {
         if let Some(current_turn) = self.current_turn.as_mut() {
+            if let Some(memory) = payload.memory.clone().map(Into::into) {
+                current_turn.memory = Some(memory);
+            }
             current_turn.status = TurnStatus::Completed;
             self.finish_current_turn();
         }
@@ -222,6 +227,7 @@ impl ThreadHistoryBuilder {
     fn new_turn(&mut self, id: Option<String>) -> PendingTurn {
         PendingTurn {
             id: id.unwrap_or_else(|| Uuid::now_v7().to_string()),
+            memory: None,
             items: Vec::new(),
             error: None,
             status: TurnStatus::Completed,
@@ -276,6 +282,7 @@ impl ThreadHistoryBuilder {
 
 struct PendingTurn {
     id: String,
+    memory: Option<MemoryLink>,
     items: Vec<ThreadItem>,
     error: Option<TurnError>,
     status: TurnStatus,
@@ -298,6 +305,7 @@ impl From<PendingTurn> for Turn {
     fn from(value: PendingTurn) -> Self {
         Self {
             id: value.id,
+            memory: value.memory,
             items: value.items,
             error: value.error,
             status: value.status,
@@ -659,6 +667,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Start".into(),
@@ -675,6 +684,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -713,6 +723,7 @@ mod tests {
                 turn_id: "turn-compact".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
@@ -721,6 +732,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
                 last_agent_message: None,
+                memory: None,
             })),
         ];
 
@@ -729,6 +741,7 @@ mod tests {
             turns,
             vec![Turn {
                 id: "turn-compact".into(),
+                memory: None,
                 status: TurnStatus::Completed,
                 error: None,
                 items: Vec::new(),

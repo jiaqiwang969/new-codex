@@ -69,6 +69,7 @@ use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::MemoryLink;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
@@ -742,6 +743,29 @@ impl TurnContext {
             .get_or_init(|| async { build_hook_memory_context(self).await })
             .await
             .clone()
+    }
+
+    pub(crate) async fn resolve_memory_link(&self) -> Option<MemoryLink> {
+        let memory_context = self.resolve_hook_memory_context().await?;
+        let scope_version = memory_context.active_memory_scope_version;
+        let scope_kind = memory_context.active_scope_kind;
+        let summary_sha256 = memory_context.active_memory_summary_sha256;
+        let binding_key = memory_context.active_memory_binding_key;
+
+        if scope_version.is_none()
+            && scope_kind.is_none()
+            && summary_sha256.is_none()
+            && binding_key.is_none()
+        {
+            return None;
+        }
+
+        Some(MemoryLink {
+            scope_version,
+            scope_kind,
+            summary_sha256,
+            binding_key,
+        })
     }
 }
 
@@ -4504,6 +4528,7 @@ pub(crate) async fn run_turn(
         turn_id: turn_context.sub_id.clone(),
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        memory: turn_context.resolve_memory_link().await,
     });
     sess.send_event(&turn_context, event).await;
     if run_pre_sampling_compact(&sess, &turn_context)
@@ -4718,19 +4743,18 @@ pub(crate) async fn run_turn(
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
                     let memory_context = turn_context.resolve_hook_memory_context().await;
-                    let memory_scope_version = memory_context.as_ref().and_then(|memory_context| {
-                        memory_context.active_memory_scope_version.clone()
-                    });
-                    let memory_scope_kind = memory_context
+                    let memory = turn_context.resolve_memory_link().await;
+                    let memory_scope_version = memory
                         .as_ref()
-                        .and_then(|memory_context| memory_context.active_scope_kind.clone());
-                    let memory_summary_sha256 =
-                        memory_context.as_ref().and_then(|memory_context| {
-                            memory_context.active_memory_summary_sha256.clone()
-                        });
-                    let memory_binding_key = memory_context.as_ref().and_then(|memory_context| {
-                        memory_context.active_memory_binding_key.clone()
-                    });
+                        .and_then(|memory| memory.scope_version.clone());
+                    let memory_scope_kind =
+                        memory.as_ref().and_then(|memory| memory.scope_kind.clone());
+                    let memory_summary_sha256 = memory
+                        .as_ref()
+                        .and_then(|memory| memory.summary_sha256.clone());
+                    let memory_binding_key = memory
+                        .as_ref()
+                        .and_then(|memory| memory.binding_key.clone());
                     sess.hooks()
                         .dispatch(HookPayload {
                             session_id: sess.conversation_id,
@@ -4744,6 +4768,7 @@ pub(crate) async fn run_turn(
                                     last_assistant_message: last_agent_message.clone(),
                                     provider_name: turn_context.provider.name.clone(),
                                     model_slug: turn_context.model_info.slug.clone(),
+                                    memory,
                                     memory_scope_version,
                                     memory_scope_kind,
                                     memory_summary_sha256,

@@ -347,6 +347,7 @@ async fn dispatch_after_tool_use_hook(dispatch: AfterToolUseHookDispatch<'_>) {
     let AfterToolUseHookDispatch { invocation, .. } = dispatch;
     let session = invocation.session.as_ref();
     let turn = invocation.turn.as_ref();
+    let memory = turn.resolve_memory_link().await;
     let tool_input = HookToolInput::from(&invocation.payload);
     session
         .hooks()
@@ -358,6 +359,7 @@ async fn dispatch_after_tool_use_hook(dispatch: AfterToolUseHookDispatch<'_>) {
                 event: HookEventAfterToolUse {
                     turn_id: turn.sub_id.clone(),
                     call_id: invocation.call_id.clone(),
+                    memory,
                     tool_name: invocation.tool_name.clone(),
                     tool_kind: hook_tool_kind(&tool_input),
                     tool_input,

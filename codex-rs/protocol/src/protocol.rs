@@ -1338,6 +1338,8 @@ pub struct ContextCompactedEvent;
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -1347,6 +1349,8 @@ pub struct TurnStartedEvent {
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub collaboration_mode_kind: ModeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq, JsonSchema, TS)]

@@ -336,6 +336,7 @@ You can optionally specify config overrides on the new turn. If specified, these
 } }
 { "id": 30, "result": { "turn": {
     "id": "turn_456",
+    "memory": null,
     "status": "inProgress",
     "items": [],
     "error": null
@@ -356,6 +357,7 @@ Invoke a skill explicitly by including `$<skill-name>` in the text input and add
 } }
 { "id": 33, "result": { "turn": {
     "id": "turn_457",
+    "memory": null,
     "status": "inProgress",
     "items": [],
     "error": null
@@ -376,6 +378,7 @@ Invoke an app by including `$<app-slug>` in the text input and adding a `mention
 } }
 { "id": 34, "result": { "turn": {
     "id": "turn_458",
+    "memory": null,
     "status": "inProgress",
     "items": [],
     "error": null
@@ -446,6 +449,7 @@ Example request/response:
 { "id": 40, "result": {
     "turn": {
         "id": "turn_900",
+        "memory": null,
         "status": "inProgress",
         "items": [
             { "type": "userMessage", "id": "turn_900", "content": [ { "type": "text", "text": "Review commit 1234567: Polish tui colors" } ] }

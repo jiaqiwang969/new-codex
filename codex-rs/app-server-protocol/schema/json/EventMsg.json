@@ -525,6 +525,16 @@
               ],
               "default": "default"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "model_context_window": {
               "format": "int64",
               "type": [
@@ -557,6 +567,16 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "turn_id": {
@@ -2422,6 +2442,16 @@
               "description": "Identifier for the collab tool call.",
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "prompt": {
               "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
               "type": "string"
@@ -2457,6 +2487,16 @@
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "new_thread_id": {
               "anyOf": [
@@ -2514,6 +2554,16 @@
               "description": "Identifier for the collab tool call.",
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "prompt": {
               "description": "Prompt sent from the sender to the receiver. Can be empty to prevent CoT leaking at the beginning.",
               "type": "string"
@@ -2558,6 +2608,16 @@
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "prompt": {
               "description": "Prompt sent from the sender to the receiver. Can be empty to prevent CoT leaking at the beginning.",
@@ -2613,6 +2673,16 @@
               "description": "ID of the waiting call.",
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "receiver_thread_ids": {
               "description": "Thread ID of the receivers.",
               "items": {
@@ -2651,6 +2721,16 @@
             "call_id": {
               "description": "ID of the waiting call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "sender_thread_id": {
               "allOf": [
@@ -2691,6 +2771,16 @@
               "description": "Identifier for the collab tool call.",
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "receiver_thread_id": {
               "allOf": [
                 {
@@ -2730,6 +2820,16 @@
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "receiver_thread_id": {
               "allOf": [
@@ -2780,6 +2880,16 @@
               "description": "Identifier for the collab tool call.",
               "type": "string"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "receiver_thread_id": {
               "allOf": [
                 {
@@ -2819,6 +2929,16 @@
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "receiver_thread_id": {
               "allOf": [
@@ -3253,6 +3373,35 @@
           "type": "object"
         }
       ]
+    },
+    "MemoryLink": {
+      "properties": {
+        "binding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "MessagePhase": {
       "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
@@ -5377,6 +5526,16 @@
           ],
           "default": "default"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model_context_window": {
           "format": "int64",
           "type": [
@@ -5409,6 +5568,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "turn_id": {
@@ -7274,6 +7443,16 @@
           "description": "Identifier for the collab tool call.",
           "type": "string"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "prompt": {
           "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
           "type": "string"
@@ -7309,6 +7488,16 @@
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "new_thread_id": {
           "anyOf": [
@@ -7366,6 +7555,16 @@
           "description": "Identifier for the collab tool call.",
           "type": "string"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "prompt": {
           "description": "Prompt sent from the sender to the receiver. Can be empty to prevent CoT leaking at the beginning.",
           "type": "string"
@@ -7410,6 +7609,16 @@
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "prompt": {
           "description": "Prompt sent from the sender to the receiver. Can be empty to prevent CoT leaking at the beginning.",
@@ -7465,6 +7674,16 @@
           "description": "ID of the waiting call.",
           "type": "string"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "receiver_thread_ids": {
           "description": "Thread ID of the receivers.",
           "items": {
@@ -7503,6 +7722,16 @@
         "call_id": {
           "description": "ID of the waiting call.",
           "type": "string"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "sender_thread_id": {
           "allOf": [
@@ -7543,6 +7772,16 @@
           "description": "Identifier for the collab tool call.",
           "type": "string"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "receiver_thread_id": {
           "allOf": [
             {
@@ -7582,6 +7821,16 @@
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "receiver_thread_id": {
           "allOf": [
@@ -7632,6 +7881,16 @@
           "description": "Identifier for the collab tool call.",
           "type": "string"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "receiver_thread_id": {
           "allOf": [
             {
@@ -7671,6 +7930,16 @@
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "receiver_thread_id": {
           "allOf": [

@@ -4954,6 +4954,7 @@ impl CodexMessageProcessor {
             Ok(turn_id) => {
                 let turn = Turn {
                     id: turn_id.clone(),
+                    memory: None,
                     items: vec![],
                     error: None,
                     status: TurnStatus::InProgress,
@@ -5055,6 +5056,7 @@ impl CodexMessageProcessor {
 
         Turn {
             id: turn_id,
+            memory: None,
             items,
             error: None,
             status: TurnStatus::InProgress,

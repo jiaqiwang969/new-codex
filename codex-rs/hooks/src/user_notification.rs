@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
+use codex_protocol::protocol::MemoryLink;
 use serde::Serialize;
 use tokio::process::Command;
 
@@ -77,6 +78,9 @@ enum UserNotification {
         model_slug: String,
 
         #[serde(skip_serializing_if = "Option::is_none")]
+        memory: Option<MemoryLink>,
+
+        #[serde(skip_serializing_if = "Option::is_none")]
         memory_scope_version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_scope_kind: Option<String>,
@@ -103,6 +107,8 @@ enum UserNotification {
         model_slug: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory: Option<MemoryLink>,
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_scope_version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,6 +293,7 @@ pub fn legacy_notify_json(hook_event: &HookEvent, cwd: &Path) -> Result<String, 
                 last_assistant_message: event.last_assistant_message.clone(),
                 provider_name: event.provider_name.clone(),
                 model_slug: event.model_slug.clone(),
+                memory: event.memory.clone(),
                 memory_scope_version: event.memory_scope_version.clone(),
                 memory_scope_kind: event.memory_scope_kind.clone(),
                 memory_summary_sha256: event.memory_summary_sha256.clone(),
@@ -307,6 +314,7 @@ pub fn legacy_notify_json(hook_event: &HookEvent, cwd: &Path) -> Result<String, 
                 provider_name: event.provider_name.clone(),
                 model_slug: event.model_slug.clone(),
                 agent_name: event.agent_name.clone(),
+                memory: event.memory.clone(),
                 memory_scope_version: event.memory_scope_version.clone(),
                 memory_scope_kind: event.memory_scope_kind.clone(),
                 memory_summary_sha256: event.memory_summary_sha256.clone(),
@@ -427,6 +435,7 @@ mod tests {
             ),
             provider_name: "Gemini".to_string(),
             model_slug: "gemini-2.5-pro".to_string(),
+            memory: None,
             memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
             memory_scope_kind: Some("cwd".to_string()),
             memory_summary_sha256: Some("a".repeat(64)),
@@ -480,6 +489,7 @@ mod tests {
                 ),
                 provider_name: "Gemini".to_string(),
                 model_slug: "gemini-2.5-pro".to_string(),
+                memory: None,
                 memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                 memory_scope_kind: Some("cwd".to_string()),
                 memory_summary_sha256: Some("a".repeat(64)),
@@ -540,6 +550,7 @@ mod tests {
                 provider_name: "OpenAI".to_string(),
                 model_slug: "gpt-5".to_string(),
                 agent_name: Some("claude-code".to_string()),
+                memory: None,
                 memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                 memory_scope_kind: Some("cwd".to_string()),
                 memory_summary_sha256: Some("a".repeat(64)),
@@ -633,6 +644,7 @@ mod tests {
                 provider_name: "OpenAI".to_string(),
                 model_slug: "gpt-5".to_string(),
                 agent_name: None,
+                memory: None,
                 memory_scope_version: None,
                 memory_scope_kind: None,
                 memory_summary_sha256: None,
@@ -677,6 +689,7 @@ mod tests {
                 provider_name: "OpenAI".to_string(),
                 model_slug: "gpt-5".to_string(),
                 agent_name: None,
+                memory: None,
                 memory_scope_version: None,
                 memory_scope_kind: None,
                 memory_summary_sha256: None,
@@ -732,6 +745,7 @@ mod tests {
                     provider_name: "OpenAI".to_string(),
                     model_slug: "gpt-5".to_string(),
                     agent_name: None,
+                    memory: None,
                     memory_scope_version: None,
                     memory_scope_kind: None,
                     memory_summary_sha256: None,
@@ -788,6 +802,7 @@ mod tests {
                     last_assistant_message: Some("done".to_string()),
                     provider_name: "Gemini".to_string(),
                     model_slug: "gemini-2.5-pro".to_string(),
+                    memory: None,
                     memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                     memory_scope_kind: Some("cwd".to_string()),
                     memory_summary_sha256: Some("a".repeat(64)),
@@ -884,6 +899,7 @@ mod tests {
                     provider_name: "OpenAI".to_string(),
                     model_slug: "gpt-5".to_string(),
                     agent_name: Some("claude-code".to_string()),
+                    memory: None,
                     memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                     memory_scope_kind: Some("cwd".to_string()),
                     memory_summary_sha256: Some("a".repeat(64)),

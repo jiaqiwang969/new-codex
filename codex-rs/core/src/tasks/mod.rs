@@ -222,6 +222,7 @@ impl Session {
         let event = EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: turn_context.sub_id.clone(),
             last_agent_message,
+            memory: turn_context.resolve_memory_link().await,
         });
         self.send_event(turn_context.as_ref(), event).await;
 

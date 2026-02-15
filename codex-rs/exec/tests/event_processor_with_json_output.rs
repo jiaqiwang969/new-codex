@@ -120,6 +120,7 @@ fn task_started_produces_turn_started_event() {
             turn_id: "turn-1".to_string(),
             model_context_window: Some(32_000),
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     ));
 
@@ -313,6 +314,7 @@ fn plan_update_emits_todo_list_started_updated_and_completed() {
         EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            memory: None,
         }),
     );
     let out_complete = ep.collect_thread_events(&complete);
@@ -684,6 +686,7 @@ fn plan_update_after_complete_starts_new_todo_list_with_new_id() {
         EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            memory: None,
         }),
     );
     let _ = ep.collect_thread_events(&complete);
@@ -837,6 +840,7 @@ fn error_followed_by_task_complete_produces_turn_failed() {
         EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            memory: None,
         }),
     );
     assert_eq!(
@@ -1285,6 +1289,7 @@ fn task_complete_produces_turn_completed_with_usage() {
         EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("done".to_string()),
+            memory: None,
         }),
     );
     let out = ep.collect_thread_events(&complete_event);

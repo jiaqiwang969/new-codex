@@ -1167,6 +1167,16 @@
           },
           "type": "array"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "status": {
           "$ref": "#/definitions/TurnStatus"
         }
