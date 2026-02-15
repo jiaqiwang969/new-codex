@@ -78,6 +78,7 @@ use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
 use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::McpServerStatus;
+use codex_app_server_protocol::MemoryLink;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::MockExperimentalMethodResponse;
 use codex_app_server_protocol::ModelListParams;
@@ -4904,6 +4905,7 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        let requested_cwd = params.cwd.clone();
 
         let collaboration_mode = params
             .collaboration_mode
@@ -4952,9 +4954,13 @@ impl CodexMessageProcessor {
 
         match turn_id {
             Ok(turn_id) => {
+                let memory = thread
+                    .active_memory_link(requested_cwd)
+                    .await
+                    .map(MemoryLink::from);
                 let turn = Turn {
                     id: turn_id.clone(),
-                    memory: None,
+                    memory,
                     items: vec![],
                     error: None,
                     status: TurnStatus::InProgress,
@@ -5040,7 +5046,7 @@ impl CodexMessageProcessor {
         }
     }
 
-    fn build_review_turn(turn_id: String, display_text: &str) -> Turn {
+    fn build_review_turn(turn_id: String, memory: Option<MemoryLink>, display_text: &str) -> Turn {
         let items = if display_text.is_empty() {
             Vec::new()
         } else {
@@ -5056,7 +5062,7 @@ impl CodexMessageProcessor {
 
         Turn {
             id: turn_id,
-            memory: None,
+            memory,
             items,
             error: None,
             status: TurnStatus::InProgress,
@@ -5099,7 +5105,11 @@ impl CodexMessageProcessor {
 
         match turn_id {
             Ok(turn_id) => {
-                let turn = Self::build_review_turn(turn_id, display_text);
+                let memory = parent_thread
+                    .active_memory_link(None)
+                    .await
+                    .map(MemoryLink::from);
+                let turn = Self::build_review_turn(turn_id, memory, display_text);
                 self.emit_review_started(
                     request_id,
                     turn,
@@ -5208,7 +5218,11 @@ impl CodexMessageProcessor {
                 data: None,
             })?;
 
-        let turn = Self::build_review_turn(turn_id, display_text);
+        let memory = review_thread
+            .active_memory_link(None)
+            .await
+            .map(MemoryLink::from);
+        let turn = Self::build_review_turn(turn_id, memory, display_text);
         let review_thread_id = thread_id.to_string();
         self.emit_review_started(request_id, turn, review_thread_id.clone(), review_thread_id)
             .await;

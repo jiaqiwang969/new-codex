@@ -9,6 +9,7 @@ use crate::protocol::Submission;
 use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::MemoryLink;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
@@ -87,5 +88,25 @@ impl CodexThread {
 
     pub fn enabled(&self, feature: Feature) -> bool {
         self.codex.enabled(feature)
+    }
+
+    pub async fn active_memory_link(&self, cwd_override: Option<PathBuf>) -> Option<MemoryLink> {
+        if !self.enabled(Feature::MemoryTool) {
+            return None;
+        }
+
+        let cwd = match cwd_override {
+            Some(cwd) => cwd,
+            None => self.codex.thread_config_snapshot().await.cwd,
+        };
+        let codex_home = self.codex.session.codex_home().await;
+
+        let source = crate::memories::select_memory_read_path_source(&codex_home, &cwd).await?;
+        Some(MemoryLink {
+            scope_version: Some(source.memory_scope_version),
+            scope_kind: Some(source.scope_kind.to_string()),
+            summary_sha256: Some(source.memory_summary_sha256),
+            binding_key: Some(source.memory_binding_key),
+        })
     }
 }
