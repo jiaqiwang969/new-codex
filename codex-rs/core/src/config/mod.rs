@@ -111,6 +111,42 @@ pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
+pub const CONFIG_POOL_TOML_FILE: &str = "config-pool.toml";
+pub const AUTH_POOL_JSON_FILE: &str = "auth-pool.json";
+
+/// A lightweight provider entry used only in `config-pool.toml`.
+/// Unlike `ModelProviderInfo`, all fields are optional so users only need to
+/// specify `account_pool` (and optionally `base_url` / `env_key`).
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct PoolProviderEntry {
+    #[serde(default)]
+    pub name: String,
+    pub base_url: Option<String>,
+    pub env_key: Option<String>,
+    #[serde(default)]
+    pub account_pool: Vec<ModelProviderAccount>,
+}
+
+/// Subset of config that lives in config-pool.toml.
+/// Only contains model_providers with their account_pool entries.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct ConfigPoolToml {
+    #[serde(default)]
+    pub model_providers: HashMap<String, PoolProviderEntry>,
+}
+
+/// Load pool-specific provider config from `config-pool.toml` if it exists.
+pub fn load_pool_config(codex_home: &Path) -> Option<ConfigPoolToml> {
+    let pool_path = codex_home.join(CONFIG_POOL_TOML_FILE);
+    let contents = std::fs::read_to_string(&pool_path).ok()?;
+    match toml::from_str(&contents) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            tracing::warn!("failed to parse {CONFIG_POOL_TOML_FILE}: {e}");
+            None
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn test_config() -> Config {
@@ -1619,6 +1655,28 @@ impl Config {
                 provider.name = existing.name.clone();
             }
             model_providers.insert(key, provider);
+        }
+
+        // Overlay account_pool entries from config-pool.toml (isolated pool config).
+        if let Some(pool_config) = load_pool_config(&codex_home) {
+            for (key, pool_entry) in pool_config.model_providers {
+                if let Some(existing) = model_providers.get_mut(&key) {
+                    if !pool_entry.account_pool.is_empty() {
+                        existing.account_pool = pool_entry.account_pool;
+                    }
+                    if pool_entry.base_url.is_some() {
+                        existing.base_url = pool_entry.base_url;
+                    }
+                    if pool_entry.env_key.is_some() {
+                        existing.env_key = pool_entry.env_key;
+                    }
+                } else {
+                    tracing::warn!(
+                        "config-pool.toml references unknown provider '{key}'; \
+                         define it in config.toml first"
+                    );
+                }
+            }
         }
 
         let mut model_provider_id = model_provider

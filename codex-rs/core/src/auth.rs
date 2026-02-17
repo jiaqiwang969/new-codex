@@ -69,6 +69,7 @@ pub enum CodexAuth {
 pub struct ApiKeyAuth {
     api_key: String,
     api_keys_by_env_var: HashMap<String, String>,
+    pool_api_keys: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +173,7 @@ impl CodexAuth {
             return Ok(CodexAuth::ApiKey(ApiKeyAuth {
                 api_key: api_key.to_string(),
                 api_keys_by_env_var: api_keys_by_env_var_from_auth_dot_json(&auth_dot_json),
+                pool_api_keys: load_pool_api_keys(codex_home),
             }));
         }
 
@@ -238,6 +240,7 @@ impl CodexAuth {
                 .api_keys_by_env_var
                 .get(env_key)
                 .map(String::as_str)
+                .or_else(|| auth.pool_api_keys.get(env_key).map(String::as_str))
                 .or({
                     if matches!(env_key, OPENAI_API_KEY_ENV_VAR | GEMINI_API_KEY_ENV_VAR) {
                         Some(auth.api_key.as_str())
@@ -355,6 +358,7 @@ impl CodexAuth {
         Self::ApiKey(ApiKeyAuth {
             api_key: api_key.to_owned(),
             api_keys_by_env_var,
+            pool_api_keys: HashMap::new(),
         })
     }
 
@@ -370,6 +374,7 @@ impl CodexAuth {
         Self::ApiKey(ApiKeyAuth {
             api_key: api_key.to_string(),
             api_keys_by_env_var,
+            pool_api_keys: HashMap::new(),
         })
     }
 }
@@ -468,6 +473,33 @@ fn api_keys_by_env_var_from_auth_dot_json(auth: &AuthDotJson) -> HashMap<String,
     }
 
     keys
+}
+
+/// Load additional API keys from `auth-pool.json` for pool accounts.
+/// The file is a simple JSON object mapping env_key names to API key strings,
+/// e.g. `{"OPENAI_API_KEY_POOL_1": "sk-...", "GEMINI_API_KEY_POOL_2": "AIza..."}`.
+/// Unlike `auth.json`, there is no fallback or cross-provider key sharing.
+fn load_pool_api_keys(codex_home: &Path) -> HashMap<String, String> {
+    let pool_path = codex_home.join(crate::config::AUTH_POOL_JSON_FILE);
+    let contents = match std::fs::read_to_string(&pool_path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let raw: HashMap<String, serde_json::Value> = match serde_json::from_str(&contents) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to parse {}: {e}", crate::config::AUTH_POOL_JSON_FILE);
+            return HashMap::new();
+        }
+    };
+    raw.into_iter()
+        .filter_map(|(k, v)| {
+            v.as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| (k, s.to_string()))
+        })
+        .collect()
 }
 
 /// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`

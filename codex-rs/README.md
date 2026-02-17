@@ -7,7 +7,7 @@
   - Google Gemini (Gemini 3 Pro/Flash, Gemini 3 Pro Image, 1M context)
   - Grok (Grok 4, Grok 4.1 Fast Reasoning)
   - 本地模型 (Gemma-3n via Ollama/LM Studio)
-  - 运行时自动切换 + Account Pool 故障转移 (401/403/429 自动换号)
+  - 运行时自动切换 + Account Pool 故障转移 (400/401/403/429 自动换号，支持多轮循环)
   - 模型兼容矩阵：按模型自动启用/禁用 web search、reasoning effort、image 等能力
 
   2. 跨会话记忆系统
@@ -45,6 +45,91 @@
   - WebSocket preconnect 跨 turn 复用
   - MCP 后台初始化（不阻塞启动）
   - Debug CLI：thread-memory backfill、agent-worktrees list/restore
+
+### API Account Pool (多账户故障转移)
+
+Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个账户遇到认证失败 (400/401/403) 或限流 (429) 时，自动切换到下一个账户。支持多轮循环（默认 2 轮），所有账户都失败后才报错退出。
+
+配置文件与主配置隔离，存放在 `~/.codex/` 目录下：
+
+`~/.codex/config-pool.toml` — Pool 账户配置：
+
+```toml
+# ── OpenAI-compatible provider pool ─────────────────────────────────
+[model_providers.codex]
+base_url = "https://your-openai-proxy.example.com/v1"
+env_key = "OPENAI_API_KEY_POOL_1"
+
+[[model_providers.codex.account_pool]]
+base_url = "https://your-openai-proxy.example.com/v1"
+env_key = "OPENAI_API_KEY_POOL_1"
+
+[[model_providers.codex.account_pool]]
+base_url = "https://your-openai-proxy.example.com/v1"
+env_key = "OPENAI_API_KEY_POOL_2"
+
+[[model_providers.codex.account_pool]]
+base_url = "https://your-openai-proxy.example.com/v1"
+env_key = "OPENAI_API_KEY_POOL_3"
+
+# ── Gemini provider pool ───────────────────────────────────────────
+[model_providers.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+env_key = "GEMINI_API_KEY_POOL_1"
+
+[[model_providers.gemini.account_pool]]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+env_key = "GEMINI_API_KEY_POOL_1"
+
+[[model_providers.gemini.account_pool]]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+env_key = "GEMINI_API_KEY_POOL_2"
+
+[[model_providers.gemini.account_pool]]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+env_key = "GEMINI_API_KEY_POOL_3"
+
+# ── Grok provider pool ─────────────────────────────────────────────
+[model_providers.grok]
+base_url = "https://api.x.ai/v1"
+env_key = "XAI_API_KEY_POOL_1"
+
+[[model_providers.grok.account_pool]]
+base_url = "https://api.x.ai/v1"
+env_key = "XAI_API_KEY_POOL_1"
+
+[[model_providers.grok.account_pool]]
+base_url = "https://api.x.ai/v1"
+env_key = "XAI_API_KEY_POOL_2"
+
+[[model_providers.grok.account_pool]]
+base_url = "https://api.x.ai/v1"
+env_key = "XAI_API_KEY_POOL_3"
+```
+
+`~/.codex/auth-pool.json` — Pool API 密钥（与主 `auth.json` 隔离）：
+
+```json
+{
+  "OPENAI_API_KEY_POOL_1": "sk-your-first-openai-key",
+  "OPENAI_API_KEY_POOL_2": "sk-your-second-openai-key",
+  "OPENAI_API_KEY_POOL_3": "sk-your-third-openai-key",
+  "GEMINI_API_KEY_POOL_1": "AIza-your-first-gemini-key",
+  "GEMINI_API_KEY_POOL_2": "AIza-your-second-gemini-key",
+  "GEMINI_API_KEY_POOL_3": "AIza-your-third-gemini-key",
+  "XAI_API_KEY_POOL_1": "xai-your-first-grok-key",
+  "XAI_API_KEY_POOL_2": "xai-your-second-grok-key",
+  "XAI_API_KEY_POOL_3": "xai-your-third-grok-key"
+}
+```
+
+行为说明：
+- 每个 `account_pool` 条目可以有不同的 `base_url` 和 `env_key`，支持跨代理/跨区域分布
+- 认证失败 (400/401/403) 立即切换，不等待重试
+- 限流 (429) 也立即切换
+- 可重试错误 (5xx) 先重试到上限，再切换账户
+- 默认循环 2 轮（3 账户 × 2 轮 = 最多 6 次切换），全部失败后报错退出
+- 成功的账户会持久化到 `config-pool.toml`，下次启动直接使用
 
 #### MCP client
 

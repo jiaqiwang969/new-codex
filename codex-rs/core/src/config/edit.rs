@@ -648,9 +648,10 @@ fn normalize_skill_config_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Persist edits using a blocking strategy.
-pub fn apply_blocking(
+/// Persist edits to a specific TOML file using a blocking strategy.
+pub fn apply_blocking_to_file(
     codex_home: &Path,
+    target_file: &str,
     profile: Option<&str>,
     edits: &[ConfigEdit],
 ) -> anyhow::Result<()> {
@@ -658,7 +659,7 @@ pub fn apply_blocking(
         return Ok(());
     }
 
-    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let config_path = codex_home.join(target_file);
     let write_paths = resolve_symlink_write_paths(&config_path)?;
     let serialized = match write_paths.read_path {
         Some(path) => match std::fs::read_to_string(&path) {
@@ -694,12 +695,22 @@ pub fn apply_blocking(
 
     write_atomically(&write_paths.write_path, &document.doc.to_string()).with_context(|| {
         format!(
-            "failed to persist config.toml at {}",
+            "failed to persist {} at {}",
+            target_file,
             write_paths.write_path.display()
         )
     })?;
 
     Ok(())
+}
+
+/// Persist edits using a blocking strategy.
+pub fn apply_blocking(
+    codex_home: &Path,
+    profile: Option<&str>,
+    edits: &[ConfigEdit],
+) -> anyhow::Result<()> {
+    apply_blocking_to_file(codex_home, CONFIG_TOML_FILE, profile, edits)
 }
 
 /// Persist edits asynchronously by offloading the blocking writer.
@@ -721,6 +732,7 @@ pub struct ConfigEditsBuilder {
     codex_home: PathBuf,
     profile: Option<String>,
     edits: Vec<ConfigEdit>,
+    target_file: Option<String>,
 }
 
 impl ConfigEditsBuilder {
@@ -729,7 +741,14 @@ impl ConfigEditsBuilder {
             codex_home: codex_home.to_path_buf(),
             profile: None,
             edits: Vec::new(),
+            target_file: None,
         }
+    }
+
+    /// Override the target TOML file (defaults to `config.toml`).
+    pub fn with_target_file(mut self, file: &str) -> Self {
+        self.target_file = Some(file.to_string());
+        self
     }
 
     pub fn with_profile(mut self, profile: Option<&str>) -> Self {
@@ -867,13 +886,15 @@ impl ConfigEditsBuilder {
 
     /// Apply edits on a blocking thread.
     pub fn apply_blocking(self) -> anyhow::Result<()> {
-        apply_blocking(&self.codex_home, self.profile.as_deref(), &self.edits)
+        let target = self.target_file.as_deref().unwrap_or(CONFIG_TOML_FILE);
+        apply_blocking_to_file(&self.codex_home, target, self.profile.as_deref(), &self.edits)
     }
 
     /// Apply edits asynchronously via a blocking offload.
     pub async fn apply(self) -> anyhow::Result<()> {
+        let target = self.target_file.unwrap_or_else(|| CONFIG_TOML_FILE.to_string());
         task::spawn_blocking(move || {
-            apply_blocking(&self.codex_home, self.profile.as_deref(), &self.edits)
+            apply_blocking_to_file(&self.codex_home, &target, self.profile.as_deref(), &self.edits)
         })
         .await
         .context("config persistence task panicked")?

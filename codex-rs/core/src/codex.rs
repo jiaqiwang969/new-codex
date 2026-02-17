@@ -4942,14 +4942,18 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
 }
 
 fn should_switch_provider_account(err: &CodexErr, retries: u64, max_retries: u64) -> bool {
+    // Auth / quota errors should immediately try the next pool account.
     if matches!(
         err,
-        CodexErr::EnvVar(_) | CodexErr::RetryLimit(_) | CodexErr::UsageLimitReached(_)
+        CodexErr::EnvVar(_)
+            | CodexErr::RetryLimit(_)
+            | CodexErr::UsageLimitReached(_)
+            | CodexErr::InvalidRequest(_)
     ) {
         return true;
     }
     if let Some(status) = err.http_status_code_value()
-        && matches!(status, 401 | 403 | 429)
+        && matches!(status, 400 | 401 | 403 | 429)
     {
         return true;
     }
@@ -5090,12 +5094,74 @@ async fn persist_provider_account_selection(
     }
 
     if let Err(err) = ConfigEditsBuilder::new(&config.codex_home)
+        .with_target_file(crate::config::CONFIG_POOL_TOML_FILE)
         .with_edits(edits)
         .apply()
         .await
     {
         warn!("failed to persist account switch for provider {provider_id}: {err}");
     }
+}
+
+/// Wrapper around `maybe_switch_provider_account` that supports cycling through
+/// the account pool multiple rounds. When all accounts in the pool have been
+/// attempted in the current round, the `attempted_accounts` set is reset and a
+/// new round begins — up to `max_rounds` total rounds.
+async fn try_switch_pool_account(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    attempted_accounts: &mut HashSet<ModelProviderAccount>,
+    pool_switch_count: &mut usize,
+    pool_size: usize,
+    max_rounds: usize,
+    err: &CodexErr,
+    retries: u64,
+    max_retries: u64,
+) -> Option<Arc<TurnContext>> {
+    // First try within the current round.
+    if let Some(ctx) = maybe_switch_provider_account(
+        sess,
+        turn_context,
+        attempted_accounts,
+        err,
+        retries,
+        max_retries,
+    )
+    .await
+    {
+        *pool_switch_count += 1;
+        return Some(ctx);
+    }
+
+    // Current round exhausted. Check if we can start a new round.
+    if !should_switch_provider_account(err, retries, max_retries) {
+        return None;
+    }
+    let completed_rounds = if pool_size > 0 {
+        (*pool_switch_count + 1) / pool_size
+    } else {
+        max_rounds
+    };
+    if completed_rounds >= max_rounds {
+        return None;
+    }
+
+    // Reset for the next round and try again.
+    attempted_accounts.clear();
+    if let Some(account) = turn_context.provider.current_account() {
+        attempted_accounts.insert(account);
+    }
+    let ctx = maybe_switch_provider_account(
+        sess,
+        turn_context,
+        attempted_accounts,
+        err,
+        retries,
+        max_retries,
+    )
+    .await?;
+    *pool_switch_count += 1;
+    Some(ctx)
 }
 
 async fn maybe_switch_provider_account(
@@ -5321,6 +5387,11 @@ async fn run_sampling_request(
     };
 
     let mut retries = 0;
+    // Track pool cycling: allow up to MAX_POOL_ROUNDS full rounds through the
+    // account pool before giving up.
+    const MAX_POOL_ROUNDS: usize = 2;
+    let mut pool_switch_count: usize = 0;
+    let pool_size = turn_context.provider.account_pool.len().max(1);
     let mut attempted_accounts = {
         let mut attempted = HashSet::new();
         if let Some(account) = turn_context.provider.current_account() {
@@ -5359,10 +5430,13 @@ async fn run_sampling_request(
                 // Try switching to the next account key before giving up.
                 let usage_err = CodexErr::UsageLimitReached(e);
                 let max_retries = turn_context.provider.stream_max_retries();
-                if let Some(updated_context) = maybe_switch_provider_account(
+                if let Some(updated_context) = try_switch_pool_account(
                     &sess,
                     &turn_context,
                     &mut attempted_accounts,
+                    &mut pool_switch_count,
+                    pool_size,
+                    MAX_POOL_ROUNDS,
                     &usage_err,
                     0, // always eligible for account switch
                     max_retries,
@@ -5383,10 +5457,13 @@ async fn run_sampling_request(
         };
 
         let max_retries = turn_context.provider.stream_max_retries();
-        if let Some(updated_context) = maybe_switch_provider_account(
+        if let Some(updated_context) = try_switch_pool_account(
             &sess,
             &turn_context,
             &mut attempted_accounts,
+            &mut pool_switch_count,
+            pool_size,
+            MAX_POOL_ROUNDS,
             &err,
             retries,
             max_retries,
