@@ -1,4 +1,4 @@
-  这个项目是基于 OpenAI Codex CLI 的深度定制 fork，在上游基础上扩展了 6 大核心能力：
+  这个项目是基于 OpenAI Codex CLI 的深度定制 fork，在上游基础上扩展了 7 大核心能力：
 
   ---
   1. 多模型 Provider 支持
@@ -45,6 +45,13 @@
   - WebSocket preconnect 跨 turn 复用
   - MCP 后台初始化（不阻塞启动）
   - Debug CLI：thread-memory backfill、agent-worktrees list/restore
+
+  7. Entire 过程控制
+
+  - 通过 Codex notify hook 自动捕获 AI 会话快照
+  - 会话元数据存储在 `entire/checkpoints/v1` orphan 分支，不污染代码历史
+  - git commit 时通过 `Entire-Checkpoint` trailer 双向关联代码与 AI 会话
+  - 支持 rewind（回退检查点）、resume（恢复会话）、explain（解释上下文）
 
 ### Entire 过程控制集成
 
