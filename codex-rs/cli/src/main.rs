@@ -113,10 +113,10 @@ enum Subcommand {
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
 
-    /// [experimental] Run Codex as an MCP server and manage MCP servers.
+    /// Manage external MCP servers for Codex.
     Mcp(McpCli),
 
-    /// [experimental] Run the Codex MCP server (stdio transport).
+    /// Start Codex as an MCP server (stdio).
     McpServer,
 
     /// [experimental] Run the app server or related tooling.
@@ -734,7 +734,7 @@ async fn run_thread_memory_backfill(
     );
     let models_manager = ModelsManager::new(config.codex_home.clone(), Arc::clone(&auth_manager));
     let model_slug = models_manager
-        .get_default_model(&config.model, &config, RefreshStrategy::Offline)
+        .get_default_model(&config.model, RefreshStrategy::Offline)
         .await;
     let model_info = models_manager
         .get_model_info(model_slug.as_str(), &config)

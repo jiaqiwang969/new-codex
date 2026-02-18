@@ -65,7 +65,6 @@ use codex_api::requests::responses::Compression;
 use codex_otel::OtelManager;
 
 use crate::turn_metadata::build_turn_metadata_header;
-use crate::turn_metadata::resolve_turn_metadata_header_with_timeout;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
@@ -284,6 +283,8 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
     ) -> Self {
+        let enable_responses_websockets =
+            enable_responses_websockets || enable_responses_websockets_v2;
         Self {
             state: Arc::new(ModelClientState {
                 auth_manager,
@@ -348,11 +349,7 @@ impl ModelClient {
 
         let model_client = self.clone();
         let handle = tokio::spawn(async move {
-            let turn_metadata_header = resolve_turn_metadata_header_with_timeout(
-                build_turn_metadata_header(cwd.as_path(), None),
-                None,
-            )
-            .await;
+            let turn_metadata_header = build_turn_metadata_header(cwd.as_path(), None).await;
             let _ = model_client
                 .preconnect(&otel_manager, turn_metadata_header.as_deref())
                 .await;
@@ -536,6 +533,9 @@ impl ModelClient {
             let subagent = match sub {
                 crate::protocol::SubAgentSource::Review => "review".to_string(),
                 crate::protocol::SubAgentSource::Compact => "compact".to_string(),
+                crate::protocol::SubAgentSource::MemoryConsolidation => {
+                    "memory_consolidation".to_string()
+                }
                 crate::protocol::SubAgentSource::ThreadSpawn { .. } => "collab_spawn".to_string(),
                 crate::protocol::SubAgentSource::Other(label) => label.clone(),
             };
@@ -559,7 +559,9 @@ impl ModelClient {
     /// to be eligible.
     pub fn responses_websocket_enabled(&self, model_info: &ModelInfo) -> bool {
         self.state.provider.supports_websockets
-            && (self.state.enable_responses_websockets || model_info.prefer_websockets)
+            && (self.state.enable_responses_websockets
+                || self.state.enable_responses_websockets_v2
+                || model_info.prefer_websockets)
     }
 
     fn responses_websockets_v2_enabled(&self) -> bool {
@@ -841,7 +843,6 @@ impl ModelClientSession {
         &mut self,
         otel_manager: &OtelManager,
         model_info: &ModelInfo,
-        turn_metadata_header: Option<&str>,
     ) -> std::result::Result<(), ApiError> {
         if !self.client.responses_websocket_enabled(model_info) || self.client.websockets_disabled()
         {
@@ -864,7 +865,7 @@ impl ModelClientSession {
                 client_setup.api_provider,
                 client_setup.api_auth,
                 Some(Arc::clone(&self.turn_state)),
-                turn_metadata_header,
+                None,
             )
             .await?;
         self.connection = Some(connection);

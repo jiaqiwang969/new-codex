@@ -120,7 +120,7 @@ impl Session {
         task: T,
     ) {
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
-        self.clear_mcp_tool_selection().await;
+        self.clear_connector_selection().await;
         self.seed_initial_context_if_needed(turn_context.as_ref())
             .await;
 
@@ -197,6 +197,11 @@ impl Session {
         last_agent_message: Option<String>,
     ) {
         let memory_summary_fallback = last_agent_message.clone();
+        turn_context
+            .turn_metadata_state
+            .cancel_git_enrichment_task();
+
+
         let mut active = self.active_turn.lock().await;
         let mut pending_input = Vec::<ResponseInputItem>::new();
         let mut should_clear_active_turn = false;
@@ -267,6 +272,9 @@ impl Session {
 
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
         task.cancellation_token.cancel();
+        task.turn_context
+            .turn_metadata_state
+            .cancel_git_enrichment_task();
         let session_task = task.task;
 
         select! {

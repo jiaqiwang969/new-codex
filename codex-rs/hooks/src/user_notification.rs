@@ -8,8 +8,8 @@ use tokio::process::Command;
 
 use crate::Hook;
 use crate::HookEvent;
-use crate::HookOutcome;
 use crate::HookPayload;
+use crate::HookResult;
 use crate::command_from_argv;
 
 const CODEX_HOOK_EVENT: &str = "CODEX_HOOK_EVENT";
@@ -331,15 +331,16 @@ pub fn legacy_notify_json(hook_event: &HookEvent, cwd: &Path) -> Result<String, 
 pub fn notify_hook(argv: Vec<String>) -> Hook {
     let argv = Arc::new(argv);
     Hook {
+        name: "legacy_notify".to_string(),
         func: Arc::new(move |payload: &HookPayload| {
             let argv = Arc::clone(&argv);
             Box::pin(async move {
                 let mut command = match command_from_argv(&argv) {
                     Some(command) => command,
-                    None => return HookOutcome::Continue,
+                    None => return HookResult::Success,
                 };
                 if !apply_notify_env(&mut command, payload) {
-                    return HookOutcome::Continue;
+                    return HookResult::Success;
                 }
                 if let Ok(notify_payload) = legacy_notify_json(&payload.hook_event, &payload.cwd) {
                     command.arg(notify_payload);
@@ -351,13 +352,16 @@ pub fn notify_hook(argv: Vec<String>) -> Hook {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
 
-                if let Ok(mut child) = command.spawn() {
-                    // Avoid leaving zombies around in long-running sessions.
-                    tokio::spawn(async move {
-                        let _ = child.wait().await;
-                    });
+                match command.spawn() {
+                    Ok(mut child) => {
+                        // Avoid leaving zombies around in long-running sessions.
+                        tokio::spawn(async move {
+                            let _ = child.wait().await;
+                        });
+                        HookResult::Success
+                    }
+                    Err(err) => HookResult::FailedContinue(err.into()),
                 }
-                HookOutcome::Continue
             })
         }),
     }
@@ -843,7 +847,7 @@ mod tests {
             },
         };
 
-        assert_eq!(hook.execute(&payload).await, HookOutcome::Continue);
+        assert!(matches!(hook.execute(&payload).await, HookResult::Success));
         wait_for_file(&output_path).await;
 
         let actual = std::fs::read_to_string(&output_path)?;
@@ -940,7 +944,7 @@ mod tests {
             },
         };
 
-        assert_eq!(hook.execute(&payload).await, HookOutcome::Continue);
+        assert!(matches!(hook.execute(&payload).await, HookResult::Success));
         wait_for_file(&output_path).await;
 
         let actual = std::fs::read_to_string(&output_path)?;

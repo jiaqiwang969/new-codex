@@ -12,6 +12,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
 use std::path::PathBuf;
 
+pub mod apps_test_server;
+pub mod context_snapshot;
 pub mod process;
 pub mod responses;
 pub mod streaming_sse;
@@ -52,6 +54,26 @@ fn bump_nofile_rlimit_for_tests() {
             rlim_max: limits.rlim_max,
         };
         let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &new_limits);
+    }
+}
+
+#[ctor]
+fn configure_insta_workspace_root_for_snapshot_tests() {
+    if std::env::var_os("INSTA_WORKSPACE_ROOT").is_some() {
+        return;
+    }
+
+    let workspace_root = codex_utils_cargo_bin::repo_root()
+        .ok()
+        .map(|root| root.join("codex-rs"));
+
+    if let Some(workspace_root) = workspace_root
+        && let Ok(workspace_root) = workspace_root.canonicalize()
+    {
+        // Safety: this ctor runs at process startup before test threads begin.
+        unsafe {
+            std::env::set_var("INSTA_WORKSPACE_ROOT", workspace_root);
+        }
     }
 }
 
