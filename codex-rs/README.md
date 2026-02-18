@@ -46,6 +46,35 @@
   - MCP 后台初始化（不阻塞启动）
   - Debug CLI：thread-memory backfill、agent-worktrees list/restore
 
+### Entire 过程控制集成
+
+通过 Codex 的 `notify` hook 集成 [Entire CLI](https://github.com/jiaqiwang969/cli)，在每次 agent turn 完成时自动捕获 AI 会话快照，与 git commit 关联，形成可追溯的开发过程记录。
+
+`~/.codex/config.toml` 中添加：
+
+```toml
+notify = ["entire", "hooks", "codex", "notify"]
+```
+
+在项目中启用：
+
+```bash
+# 安装 Entire CLI
+brew tap entireio/tap && brew install entireio/tap/entire
+
+# 在项目中启用（默认 manual-commit 策略）
+cd your-project && entire enable --agent codex
+
+# 查看状态
+entire status
+```
+
+Entire 会在后台自动工作：
+- 每次 agent turn 完成后，通过 notify hook 接收 JSON payload（含 thread_id、prompts、model_slug 等）
+- 将会话元数据（transcript、prompt、context）保存到 `entire/checkpoints/v1` 分支
+- git commit 时通过 `Entire-Checkpoint` trailer 关联代码变更与 AI 会话
+- 支持 `entire rewind` 回退到任意检查点，`entire resume` 恢复会话
+
 ### API Account Pool (多账户故障转移)
 
 Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个账户遇到认证失败 (400/401/403) 或限流 (429) 时，自动切换到下一个账户。支持多轮循环（默认 2 轮），所有账户都失败后才报错退出。
