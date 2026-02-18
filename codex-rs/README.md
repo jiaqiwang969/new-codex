@@ -1,4 +1,4 @@
-  这个项目是基于 OpenAI Codex CLI 的深度定制 fork，在上游基础上扩展了 7 大核心能力：
+  这个项目是基于 OpenAI Codex CLI 的深度定制 fork，在上游基础上扩展了 7 大核心能力（含 Entire 过程控制）：
 
   ---
   1. 多模型 Provider 支持
