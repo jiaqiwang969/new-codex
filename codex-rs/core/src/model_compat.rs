@@ -59,6 +59,11 @@ pub(crate) fn model_supports_memory_trace_summarize(slug: &str) -> bool {
 }
 
 pub(crate) fn model_supports_input_images(slug: &str) -> bool {
+    // Codex-Spark is text-only.
+    if slug.starts_with("gpt-5.3-codex-spark") {
+        return false;
+    }
+
     match normalized_grok_model_slug(slug) {
         Some(grok_slug) => {
             grok_slug.starts_with("grok-4") || grok_slug.starts_with("grok-2-vision")
@@ -68,6 +73,10 @@ pub(crate) fn model_supports_input_images(slug: &str) -> bool {
 }
 
 pub(crate) fn model_supports_data_url_input_images(slug: &str) -> bool {
+    if !model_supports_input_images(slug) {
+        return false;
+    }
+
     match normalized_grok_model_slug(slug) {
         Some(grok_slug) => model_supports_input_images(grok_slug),
         None => true,
@@ -154,5 +163,13 @@ mod tests {
         assert!(model_supports_input_images("grok-2-vision-1212"));
         assert!(!model_supports_input_images("grok-3"));
         assert!(!model_supports_input_images("grok-3-mini"));
+    }
+
+    #[test]
+    fn spark_model_is_text_only() {
+        assert!(!model_supports_input_images("gpt-5.3-codex-spark|[pro]"));
+        assert!(!model_supports_data_url_input_images(
+            "gpt-5.3-codex-spark|[pro]"
+        ));
     }
 }

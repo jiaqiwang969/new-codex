@@ -887,14 +887,26 @@ impl ConfigEditsBuilder {
     /// Apply edits on a blocking thread.
     pub fn apply_blocking(self) -> anyhow::Result<()> {
         let target = self.target_file.as_deref().unwrap_or(CONFIG_TOML_FILE);
-        apply_blocking_to_file(&self.codex_home, target, self.profile.as_deref(), &self.edits)
+        apply_blocking_to_file(
+            &self.codex_home,
+            target,
+            self.profile.as_deref(),
+            &self.edits,
+        )
     }
 
     /// Apply edits asynchronously via a blocking offload.
     pub async fn apply(self) -> anyhow::Result<()> {
-        let target = self.target_file.unwrap_or_else(|| CONFIG_TOML_FILE.to_string());
+        let target = self
+            .target_file
+            .unwrap_or_else(|| CONFIG_TOML_FILE.to_string());
         task::spawn_blocking(move || {
-            apply_blocking_to_file(&self.codex_home, &target, self.profile.as_deref(), &self.edits)
+            apply_blocking_to_file(
+                &self.codex_home,
+                &target,
+                self.profile.as_deref(),
+                &self.edits,
+            )
         })
         .await
         .context("config persistence task panicked")?

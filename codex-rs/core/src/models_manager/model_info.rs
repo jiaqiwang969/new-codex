@@ -1,6 +1,7 @@
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelMessages;
@@ -15,6 +16,7 @@ use crate::config::Config;
 use crate::features::Feature;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
+use crate::model_compat::normalized_grok_model_slug;
 use crate::truncate::approx_bytes_for_tokens;
 use tracing::warn;
 
@@ -26,21 +28,26 @@ const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
+const GPT_5_3_CODEX_SPARK_INSTRUCTIONS: &str = include_str!("../../gpt-5.3-codex-spark_prompt.md");
 
 const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
 const GROK_INSTRUCTIONS: &str = include_str!("../../grok_prompt.md");
 
 pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_048_576;
 pub(crate) const CONTEXT_WINDOW_8K: i64 = 8_192;
+pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
+pub(crate) const CONTEXT_WINDOW_128K: i64 = 128_000;
+pub(crate) const CONTEXT_WINDOW_256K: i64 = 256_000;
+pub(crate) const CONTEXT_WINDOW_2M: i64 = 2_000_000;
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
     include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
+const GPT_5_3_CODEX_SPARK_INSTRUCTIONS_TEMPLATE: &str =
+    include_str!("../../templates/model_instructions/gpt-5.3-codex-spark_instructions_template.md");
 
 const GPT_5_2_CODEX_PERSONALITY_FRIENDLY: &str =
     include_str!("../../templates/personalities/gpt-5.2-codex_friendly.md");
 const GPT_5_2_CODEX_PERSONALITY_PRAGMATIC: &str =
     include_str!("../../templates/personalities/gpt-5.2-codex_pragmatic.md");
-
-pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
 
 macro_rules! model_info {
     (
@@ -198,6 +205,24 @@ fn supported_reasoning_level_low_medium_high_xhigh_non_codex() -> Vec<ReasoningE
     ]
 }
 
+fn context_window_for_grok_slug(slug: &str) -> i64 {
+    let Some(grok_slug) = normalized_grok_model_slug(slug) else {
+        return CONTEXT_WINDOW_256K;
+    };
+
+    if grok_slug.starts_with("grok-4-1-fast") || grok_slug.starts_with("grok-4-fast") {
+        CONTEXT_WINDOW_2M
+    } else if grok_slug.starts_with("grok-4") || grok_slug.starts_with("grok-code-fast") {
+        CONTEXT_WINDOW_256K
+    } else if grok_slug.starts_with("grok-2-vision") {
+        32_768
+    } else if grok_slug.starts_with("grok-2") || grok_slug.starts_with("grok-3") {
+        131_072
+    } else {
+        CONTEXT_WINDOW_256K
+    }
+}
+
 // todo(aibrahim): remove most of the entries here when enabling models.json
 pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
     if slug.starts_with("o3") || slug.starts_with("o4-mini") {
@@ -292,20 +317,23 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if slug.starts_with("gpt-5.3-codex") {
+    } else if slug.starts_with("gpt-5.3-codex-spark") {
         model_info!(
             slug,
-            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
+            base_instructions: GPT_5_3_CODEX_SPARK_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             shell_type: ConfigShellToolType::ShellCommand,
+            supported_in_api: true,
             supports_parallel_tool_calls: true,
-            supports_reasoning_summaries: true,
+            supports_reasoning_summaries: false,
             support_verbosity: false,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: Some(CONTEXT_WINDOW_128K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
+            input_modalities: vec![InputModality::Text],
+            prefer_websockets: true,
             model_messages: Some(ModelMessages {
-                instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
+                instructions_template: Some(GPT_5_3_CODEX_SPARK_INSTRUCTIONS_TEMPLATE.to_string()),
                 instructions_variables: Some(ModelInstructionsVariables {
                     personality_default: Some("".to_string()),
                     personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
@@ -313,7 +341,10 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 }),
             }),
         )
-    } else if slug.starts_with("gpt-5.2-codex") || slug.starts_with("bengalfox") {
+    } else if slug.starts_with("gpt-5.3-codex")
+        || slug.starts_with("gpt-5.2-codex")
+        || slug.starts_with("bengalfox")
+    {
         model_info!(
             slug,
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
@@ -325,7 +356,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
-            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
             model_messages: Some(ModelMessages {
                 instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
                 instructions_variables: Some(ModelInstructionsVariables {
@@ -388,6 +418,24 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             shell_type: ConfigShellToolType::Default,
             supports_reasoning_summaries: true,
             support_verbosity: true,
+            supported_reasoning_levels: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Minimal,
+                    description: "Fastest responses with little reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
@@ -443,7 +491,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: true,
             default_verbosity: Some(Verbosity::Low),
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
+            context_window: Some(context_window_for_grok_slug(slug)),
             supported_reasoning_levels: Vec::new(),
             experimental_supported_tools: vec![
                 "grep_files".to_string(),
@@ -471,6 +519,7 @@ mod tests {
     use super::find_model_info_for_slug;
     use codex_protocol::openai_models::ApplyPatchToolType;
     use codex_protocol::openai_models::ConfigShellToolType;
+    use codex_protocol::openai_models::InputModality;
     use codex_protocol::openai_models::ReasoningEffort;
     use pretty_assertions::assert_eq;
 
@@ -486,6 +535,7 @@ mod tests {
         assert!(model.supports_parallel_tool_calls);
         assert!(model.supports_reasoning_summaries);
         assert!(model.support_verbosity);
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_256K));
         assert!(model.supported_reasoning_levels.is_empty());
         assert!(
             model
@@ -497,6 +547,13 @@ mod tests {
             model.base_instructions.contains("`web_search`"),
             "grok model should include web_search guidance"
         );
+    }
+
+    #[test]
+    fn grok_fast_reasoning_models_use_2m_context_window() {
+        let model = find_model_info_for_slug("grok-4-1-fast-reasoning");
+
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_2M));
     }
 
     #[test]
@@ -523,5 +580,50 @@ mod tests {
                 "read_file".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn spark_model_uses_low_latency_text_only_defaults() {
+        let model = find_model_info_for_slug("gpt-5.3-codex-spark|[pro]");
+
+        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
+        assert!(model.supports_parallel_tool_calls);
+        assert!(!model.supports_reasoning_summaries);
+        assert!(model.supported_in_api);
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_128K));
+        assert_eq!(model.input_modalities, vec![InputModality::Text]);
+        assert!(model.prefer_websockets);
+        assert!(
+            model
+                .base_instructions
+                .contains("fast, iterative coding assistance"),
+            "spark model should use the spark-specific prompt"
+        );
+    }
+
+    #[test]
+    fn gpt_5_family_uses_272k_context_window_defaults() {
+        let gpt_53_codex = find_model_info_for_slug("gpt-5.3-codex");
+        let gpt_52_codex = find_model_info_for_slug("gpt-5.2-codex");
+        let gpt_51_codex = find_model_info_for_slug("gpt-5.1-codex");
+        let gpt_52 = find_model_info_for_slug("gpt-5.2");
+        let gpt_51 = find_model_info_for_slug("gpt-5.1");
+        let gpt_5 = find_model_info_for_slug("gpt-5");
+
+        assert_eq!(
+            gpt_53_codex.context_window,
+            Some(super::CONTEXT_WINDOW_272K)
+        );
+        assert_eq!(
+            gpt_52_codex.context_window,
+            Some(super::CONTEXT_WINDOW_272K)
+        );
+        assert_eq!(
+            gpt_51_codex.context_window,
+            Some(super::CONTEXT_WINDOW_272K)
+        );
+        assert_eq!(gpt_52.context_window, Some(super::CONTEXT_WINDOW_272K));
+        assert_eq!(gpt_51.context_window, Some(super::CONTEXT_WINDOW_272K));
+        assert_eq!(gpt_5.context_window, Some(super::CONTEXT_WINDOW_272K));
     }
 }

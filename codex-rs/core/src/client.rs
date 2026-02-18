@@ -513,7 +513,7 @@ impl ModelClient {
         let client =
             ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
-        let effort = sanitize_reasoning_effort_for_model(effort, &model_info.slug);
+        let effort = sanitize_reasoning_effort_for_model(effort, model_info);
 
         let payload = ApiMemorySummarizeInput {
             model: model_info.slug.clone(),
@@ -677,10 +677,8 @@ impl ModelClientSession {
         let input = prompt.get_formatted_input();
         let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let default_reasoning_effort = model_info.default_reasoning_level;
-        let effort = sanitize_reasoning_effort_for_model(
-            effort.or(default_reasoning_effort),
-            &model_info.slug,
-        );
+        let effort =
+            sanitize_reasoning_effort_for_model(effort.or(default_reasoning_effort), model_info);
         let reasoning =
             build_reasoning_payload(model_info.supports_reasoning_summaries, effort, summary);
 
@@ -1435,14 +1433,10 @@ fn build_reasoning_payload(
     effort: Option<ReasoningEffortConfig>,
     summary: ReasoningSummaryConfig,
 ) -> Option<Reasoning> {
-    if !supports_reasoning_summaries {
-        return None;
-    }
-
-    let summary = if summary == ReasoningSummaryConfig::None {
-        None
-    } else {
+    let summary = if supports_reasoning_summaries && summary != ReasoningSummaryConfig::None {
         Some(summary)
+    } else {
+        None
     };
     if effort.is_none() && summary.is_none() {
         return None;
@@ -1453,15 +1447,65 @@ fn build_reasoning_payload(
 
 fn sanitize_reasoning_effort_for_model(
     effort: Option<ReasoningEffortConfig>,
-    model_slug: &str,
+    model_info: &ModelInfo,
 ) -> Option<ReasoningEffortConfig> {
-    if effort.is_none() || model_supports_reasoning_effort(model_slug) {
-        return effort;
+    fn effort_rank(effort: ReasoningEffortConfig) -> i64 {
+        match effort {
+            ReasoningEffortConfig::None => 0,
+            ReasoningEffortConfig::Minimal => 1,
+            ReasoningEffortConfig::Low => 2,
+            ReasoningEffortConfig::Medium => 3,
+            ReasoningEffortConfig::High => 4,
+            ReasoningEffortConfig::XHigh => 5,
+        }
     }
 
-    warn!(
-        "model_reasoning_effort is set but ignored as the model does not support reasoning.effort: {model_slug}"
-    );
+    let effort = effort?;
+
+    if !model_supports_reasoning_effort(&model_info.slug) {
+        let model_slug = model_info.slug.as_str();
+        warn!(
+            "model_reasoning_effort is set but ignored as the model does not support reasoning.effort: {model_slug}",
+        );
+        return None;
+    }
+
+    if model_info.supported_reasoning_levels.is_empty() {
+        return Some(effort);
+    }
+
+    let supported_levels = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort)
+        .collect::<Vec<_>>();
+    if supported_levels.contains(&effort) {
+        return Some(effort);
+    }
+
+    let effort_score = effort_rank(effort);
+    let fallback = supported_levels
+        .iter()
+        .copied()
+        .filter(|candidate| effort_rank(*candidate) <= effort_score)
+        .max_by_key(|candidate| effort_rank(*candidate))
+        .or_else(|| {
+            supported_levels
+                .iter()
+                .copied()
+                .min_by_key(|candidate| effort_rank(*candidate))
+        })
+        .or(model_info.default_reasoning_level);
+    if let Some(fallback) = fallback {
+        let model_slug = model_info.slug.as_str();
+        warn!(
+            "reasoning.effort={effort} is not supported for model {model_slug}, using {fallback} instead",
+        );
+        return Some(fallback);
+    }
+
+    let model_slug = model_info.slug.as_str();
+    warn!("reasoning.effort={effort} is not supported for model {model_slug}, omitting it",);
     None
 }
 
@@ -1769,9 +1813,14 @@ impl WebsocketTelemetry for ApiTelemetry {
 #[cfg(test)]
 mod tests {
     use super::ModelClient;
+    use super::sanitize_reasoning_effort_for_model;
+    use codex_api::common::Reasoning;
     use codex_otel::OtelManager;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
     use codex_protocol::openai_models::ModelInfo;
+    use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+    use codex_protocol::openai_models::ReasoningEffortPreset;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
     use pretty_assertions::assert_eq;
@@ -1863,5 +1912,63 @@ mod tests {
             .await
             .expect("empty summarize request should succeed");
         assert_eq!(output.len(), 0);
+    }
+
+    #[test]
+    fn build_reasoning_payload_omits_summary_when_unsupported() {
+        let reasoning = super::build_reasoning_payload(
+            false,
+            Some(ReasoningEffortConfig::High),
+            ReasoningSummaryConfig::Detailed,
+        );
+
+        assert_eq!(
+            reasoning,
+            Some(Reasoning {
+                effort: Some(ReasoningEffortConfig::High),
+                summary: None
+            })
+        );
+    }
+
+    #[test]
+    fn sanitize_reasoning_effort_clamps_to_supported_level() {
+        let model_info = test_model_info();
+
+        let sanitized =
+            sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::XHigh), &model_info);
+
+        assert_eq!(sanitized, Some(ReasoningEffortConfig::Medium));
+    }
+
+    #[test]
+    fn sanitize_reasoning_effort_uses_lowest_supported_when_requested_too_low() {
+        let mut model_info = test_model_info();
+        model_info.supported_reasoning_levels = vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Medium,
+                description: "medium".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::High,
+                description: "high".to_string(),
+            },
+        ];
+
+        let sanitized =
+            sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::Low), &model_info);
+
+        assert_eq!(sanitized, Some(ReasoningEffortConfig::Medium));
+    }
+
+    #[test]
+    fn sanitize_reasoning_effort_omits_unsupported_models() {
+        let mut model_info = test_model_info();
+        model_info.slug = "grok-4-latest".to_string();
+
+        let sanitized =
+            sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::High), &model_info);
+
+        assert_eq!(sanitized, None);
     }
 }

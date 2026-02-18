@@ -1,4 +1,5 @@
 use crate::auth::AuthMode;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -43,6 +44,39 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
             supported_in_api: true,
             input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "gpt-5.3-codex-spark|[pro]".to_string(),
+            model: "gpt-5.3-codex-spark|[pro]".to_string(),
+            display_name: "gpt-5.3-codex-spark|[pro]".to_string(),
+            description:
+                "Realtime coding model optimized for low-latency edits (text only, Pro, 128K context)."
+                    .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: true,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text],
         },
         ModelPreset {
             id: "gpt-5.2-codex".to_string(),
@@ -274,7 +308,8 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "grok-4-latest".to_string(),
             model: "grok-4-latest".to_string(),
             display_name: "Grok 4 Latest".to_string(),
-            description: "xAI Grok 4 via OpenAI-compatible Responses API.".to_string(),
+            description: "xAI Grok 4 via OpenAI-compatible Responses API (256K context)."
+                .to_string(),
             default_reasoning_effort: ReasoningEffort::None,
             supported_reasoning_efforts: vec![ReasoningEffortPreset {
                 effort: ReasoningEffort::None,
@@ -291,8 +326,9 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "grok-4-1-fast-reasoning".to_string(),
             model: "grok-4-1-fast-reasoning".to_string(),
             display_name: "Grok 4.1 Fast Reasoning".to_string(),
-            description: "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API."
-                .to_string(),
+            description:
+                "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API (2M context)."
+                    .to_string(),
             default_reasoning_effort: ReasoningEffort::None,
             supported_reasoning_efforts: vec![ReasoningEffortPreset {
                 effort: ReasoningEffort::None,
@@ -514,10 +550,16 @@ mod tests {
             .iter()
             .find(|preset| preset.model == "grok-4-latest")
             .expect("grok preset should exist");
+        let spark = PRESETS
+            .iter()
+            .find(|preset| preset.model == "gpt-5.3-codex-spark|[pro]")
+            .expect("spark preset should exist");
 
         assert!(gemma.show_in_picker);
         assert_eq!(gemma.default_reasoning_effort, ReasoningEffort::Medium);
         assert!(grok.show_in_picker);
         assert_eq!(grok.default_reasoning_effort, ReasoningEffort::None);
+        assert!(spark.show_in_picker);
+        assert_eq!(spark.default_reasoning_effort, ReasoningEffort::Medium);
     }
 }

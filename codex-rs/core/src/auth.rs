@@ -488,7 +488,10 @@ fn load_pool_api_keys(codex_home: &Path) -> HashMap<String, String> {
     let raw: HashMap<String, serde_json::Value> = match serde_json::from_str(&contents) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!("failed to parse {}: {e}", crate::config::AUTH_POOL_JSON_FILE);
+            tracing::warn!(
+                "failed to parse {}: {e}",
+                crate::config::AUTH_POOL_JSON_FILE
+            );
             return HashMap::new();
         }
     };

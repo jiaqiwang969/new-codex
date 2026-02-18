@@ -3,11 +3,11 @@
   ---
   1. 多模型 Provider 支持
 
-  - OpenAI (GPT-5.3-codex, GPT-5.2-codex)
+  - OpenAI (GPT-5.3-codex-spark|[pro], GPT-5.3-codex, GPT-5.2-codex)
   - Google Gemini (Gemini 3 Pro/Flash, Gemini 3 Pro Image, 1M context)
   - Grok (Grok 4, Grok 4.1 Fast Reasoning)
   - 本地模型 (Gemma-3n via Ollama/LM Studio)
-  - 运行时自动切换 + Account Pool 故障转移 (401/403/429 自动换号)
+  - 运行时自动切换 + Account Pool 故障转移 (400/401/403/429 自动换号，支持多轮循环)
   - 模型兼容矩阵：按模型自动启用/禁用 web search、reasoning effort、image 等能力
 
   2. 跨会话记忆系统
@@ -49,3 +49,5 @@
   ---
   简单来说：从单一 OpenAI 模型的 CLI 工具，扩展成了支持 4 家 Provider、跨会话记忆、多 Agent
   协作、图像处理、git 可视化的多模型 AI 开发平台。
+
+  详细的技术文档、代码组织、配置说明和 MCP 用法请参阅 [codex-rs/README.md](./codex-rs/README.md)。

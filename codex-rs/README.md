@@ -3,7 +3,7 @@
   ---
   1. 多模型 Provider 支持
 
-  - OpenAI (GPT-5.3-codex, GPT-5.2-codex)
+  - OpenAI (GPT-5.3-codex-spark|[pro], GPT-5.3-codex, GPT-5.2-codex)
   - Google Gemini (Gemini 3 Pro/Flash, Gemini 3 Pro Image, 1M context)
   - Grok (Grok 4, Grok 4.1 Fast Reasoning)
   - 本地模型 (Gemma-3n via Ollama/LM Studio)
