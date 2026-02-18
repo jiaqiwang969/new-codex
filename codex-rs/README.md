@@ -55,32 +55,51 @@
 
 ### Entire 过程控制集成
 
-通过 Codex 的 `notify` hook 集成 [Entire CLI](https://github.com/jiaqiwang969/cli)，在每次 agent turn 完成时自动捕获 AI 会话快照，与 git commit 关联，形成可追溯的开发过程记录。
+通过 Codex 的 `notify` hook 集成 [Entire CLI](https://github.com/jiaqiwang969/cli)，在每次 agent turn 完成时自动捕获 AI 会话快照，存到 git 的隐藏分支里，不污染代码历史。本质上就是给 AI 辅助编程加了个"录屏"——录的不是屏幕，而是对话 + 代码变更。
 
-`~/.codex/config.toml` 中添加：
+**安装 Entire CLI：**
+
+```bash
+curl -fsSL https://entire.io/install.sh | bash
+```
+
+**配置 Codex notify hook（`~/.codex/config.toml`）：**
 
 ```toml
 notify = ["entire", "hooks", "codex", "notify"]
 ```
 
-在项目中启用：
+**在项目中启用：**
 
 ```bash
-# 安装 Entire CLI
-brew tap entireio/tap && brew install entireio/tap/entire
-
-# 在项目中启用（默认 manual-commit 策略）
 cd your-project && entire enable --agent codex
-
-# 查看状态
-entire status
+entire status   # 确认显示 "Enabled (manual-commit)"
 ```
 
-Entire 会在后台自动工作：
-- 每次 agent turn 完成后，通过 notify hook 接收 JSON payload（含 thread_id、prompts、model_slug 等）
-- 将会话元数据（transcript、prompt、context）保存到 `entire/checkpoints/v1` 分支
-- git commit 时通过 `Entire-Checkpoint` trailer 关联代码变更与 AI 会话
-- 支持 `entire rewind` 回退到任意检查点，`entire resume` 恢复会话
+**工作原理：**
+
+1. 你用 Codex 让 AI 改代码，每次 agent turn 完成后，Codex 通过 notify hook 把对话信息（prompt、AI 回复、model_slug、thread_id）发给 Entire
+2. Entire 把当前工作区的文件变更 + 对话记录打包成一个 commit，存到 `entire/<hash>` shadow 分支上
+3. 会话元数据（`prompt.txt`、`summary.txt`、`context.md`）保存在 `entire/checkpoints/v1` orphan 分支
+4. git commit 时通过 `Entire-Checkpoint` trailer 双向关联代码变更与 AI 会话
+
+**常用命令：**
+
+```bash
+entire status                # 查看当前状态
+entire explain <commit>      # 解释某次 commit 的 AI 会话上下文
+entire rewind                # 回退到之前的检查点
+entire resume <branch>       # 切换分支并恢复 AI 会话
+entire doctor                # 修复卡住的 session
+```
+
+**在 git graph 中查看：** Entire 的 checkpoint 会以独立分支线出现在 `git log --all --graph` 和 TUI 的 Ctrl+G 中，例如：
+
+```
+* 5ab4a56 (HEAD -> main) docs: add Entire mention
+| * 3409e82 (entire/6f4cb91-e3b0c4) Test entire integration
+| * 4909e3b (entire/checkpoints/v1) Initialize metadata branch
+```
 
 ### API Account Pool (多账户故障转移)
 
