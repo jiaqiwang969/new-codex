@@ -135,6 +135,24 @@ env_key = "XAI_API_KEY_POOL_3"
 
 Codex CLI functions as an MCP client that allows the Codex CLI and IDE extension to connect to MCP servers on startup. See the [`configuration documentation`](../docs/config.md#connecting-to-mcp-servers) for details.
 
+##### 预置 MCP Servers
+
+项目预置了两个 MCP server，通过 npx 加载，在 `~/.codex/config.toml` 中配置：
+
+```toml
+[mcp_servers.watermark-remover]
+command = "npx"
+args = ["-y", "github:jiaqiwang969/watermark-removal-mcp"]
+startup_timeout_sec = 60
+
+[mcp_servers.claude-code-mcp]
+command = "npx"
+args = ["-y", "@steipete/claude-code-mcp@latest"]
+```
+
+- [watermark-removal-mcp](https://github.com/jiaqiwang969/watermark-removal-mcp)：PDF/图片水印去除工具，需要 Python 3.10+ 和 Poppler（`brew install poppler`）
+- [claude-code-mcp](https://github.com/jiaqiwang969/claude-code-mcp)：Claude Code one-shot 执行代理，需要先安装 Claude CLI（`npm install -g @anthropic-ai/claude-code`）
+
 #### MCP server (experimental)
 
 Codex can be launched as an MCP _server_ by running `codex mcp-server`. This allows _other_ MCP clients to use Codex as a tool for another agent.
