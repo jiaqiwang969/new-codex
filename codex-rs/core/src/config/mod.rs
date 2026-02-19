@@ -38,8 +38,11 @@ use crate::features::FeatureOverrides;
 use crate::features::Features;
 use crate::features::FeaturesToml;
 use crate::git_info::resolve_root_git_project_for_trust;
+use crate::model_compat::is_anthropic_model_slug;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
+use crate::model_compat::is_openai_model_slug;
+use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
 use crate::model_provider_info::GEMINI_PROVIDER_ID;
 use crate::model_provider_info::GEMMA_PROVIDER_ID;
 use crate::model_provider_info::GROK_PROVIDER_ID;
@@ -196,6 +199,17 @@ pub struct Config {
 
     /// Optional override of model selection.
     pub model: Option<String>,
+
+    /// Optional override of the utility ("sub") model used for internal tasks
+    /// like memory summarization fallback.
+    pub model_sub: Option<String>,
+
+    /// Optional override of the utility ("sub") model used for internal tasks
+    /// that require the Responses API.
+    ///
+    /// For example, memory trace summarization uses a Responses-only unary
+    /// endpoint and cannot run on non-Responses providers.
+    pub model_sub_responses: Option<String>,
 
     /// Model used specifically for review sessions.
     pub review_model: Option<String>,
@@ -927,6 +941,12 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
+    /// Optional override of the utility ("sub") model used for internal tasks
+    /// like memory summarization fallback.
+    pub model_sub: Option<String>,
+    /// Optional override of the utility ("sub") model used for internal tasks
+    /// that require the Responses API (e.g. memory trace summarization).
+    pub model_sub_responses: Option<String>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
 
@@ -1229,6 +1249,8 @@ pub struct AgentRoleConfig {
     pub description: Option<String>,
     /// Path to a role-specific config layer.
     pub config_file: Option<PathBuf>,
+    /// Optional tags surfaced to the leader model to help route work (e.g. "large_context").
+    pub tags: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -1239,6 +1261,10 @@ pub struct AgentRoleToml {
 
     /// Path to a role-specific config layer.
     pub config_file: Option<AbsolutePathBuf>,
+
+    /// Optional tags surfaced to the leader model to help route work (e.g. "large_context").
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl From<ToolsToml> for Tools {
@@ -1537,6 +1563,8 @@ fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
         Some(GEMMA_PROVIDER_ID)
     } else if model_slug.starts_with("gemini-") {
         Some(GEMINI_PROVIDER_ID)
+    } else if is_anthropic_model_slug(model_slug) {
+        Some(ANTHROPIC_PROVIDER_ID)
     } else if is_grok_model_slug(model_slug) {
         Some(GROK_PROVIDER_ID)
     } else {
@@ -1551,6 +1579,9 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
             provider.is_gemma()
                 || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
                     && !provider.is_gemini())
+        }
+        ANTHROPIC_PROVIDER_ID => {
+            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
         }
         GROK_PROVIDER_ID => provider.is_grok(),
         _ => false,
@@ -1791,6 +1822,7 @@ impl Config {
                                     .config_file
                                     .as_ref()
                                     .map(AbsolutePathBuf::to_path_buf),
+                                tags: role.tags.clone(),
                             },
                         )
                     })
@@ -1839,6 +1871,36 @@ impl Config {
         let forced_login_method = cfg.forced_login_method;
 
         let model = model.or(config_profile.model).or(cfg.model);
+        let model_sub = config_profile
+            .model_sub
+            .or(cfg.model_sub)
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+        let mut model_sub_responses = config_profile
+            .model_sub_responses
+            .or(cfg.model_sub_responses)
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+        if let Some(model) = model_sub_responses.as_deref()
+            && !is_openai_model_slug(model)
+        {
+            startup_warnings.push(format!(
+                "Configured `model_sub_responses = \"{model}\"` is not Responses-compatible; Responses-only internal tasks will fall back to OpenAI defaults."
+            ));
+            model_sub_responses = None;
+        }
 
         // Save the user's explicitly configured provider before any auto-switching.
         let user_configured_provider = model_provider.clone();
@@ -1852,6 +1914,20 @@ impl Config {
             && let Some(target_provider) = model_providers.get(target_provider_id)
         {
             model_provider_id = target_provider_id.to_string();
+            model_provider = target_provider.clone();
+            apply_primary_account_pool_selection(&mut model_provider);
+        }
+
+        // If the selected model is an OpenAI slug but the configured provider is not
+        // OpenAI-compatible (Responses wire protocol), auto-switch to the built-in
+        // OpenAI provider. This supports cross-provider role configs (e.g. a Claude
+        // leader spawning a GPT-based explorer agent).
+        if let Some(ref m) = model
+            && is_openai_model_slug(m)
+            && model_provider.wire_api != crate::model_provider_info::WireApi::Responses
+            && let Some(target_provider) = model_providers.get("openai")
+        {
+            model_provider_id = "openai".to_string();
             model_provider = target_provider.clone();
             apply_primary_account_pool_selection(&mut model_provider);
         }
@@ -1964,6 +2040,8 @@ impl Config {
 
         let config = Self {
             model,
+            model_sub,
+            model_sub_responses,
             review_model,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
@@ -4317,6 +4395,8 @@ model_verbosity = "high"
         assert_eq!(
             Config {
                 model: Some("o3".to_string()),
+                model_sub: None,
+                model_sub_responses: None,
                 review_model: None,
                 model_context_window: None,
                 model_auto_compact_token_limit: None,
@@ -4431,6 +4511,8 @@ model_verbosity = "high"
         )?;
         let expected_gpt3_profile_config = Config {
             model: Some("gpt-3.5-turbo".to_string()),
+            model_sub: None,
+            model_sub_responses: None,
             review_model: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -4543,6 +4625,8 @@ model_verbosity = "high"
         )?;
         let expected_zdr_profile_config = Config {
             model: Some("o3".to_string()),
+            model_sub: None,
+            model_sub_responses: None,
             review_model: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -4641,6 +4725,8 @@ model_verbosity = "high"
         )?;
         let expected_gpt5_profile_config = Config {
             model: Some("gpt-5.1".to_string()),
+            model_sub: None,
+            model_sub_responses: None,
             review_model: None,
             model_context_window: None,
             model_auto_compact_token_limit: None,
@@ -4957,6 +5043,32 @@ trust_level = "trusted"
     }
 
     #[test]
+    fn claude_model_auto_switches_to_anthropic_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Anthropic");
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
     fn gemma_model_auto_switches_to_gemma_provider() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
@@ -5139,6 +5251,105 @@ trust_level = "trusted"
     }
 
     #[test]
+    fn claude_model_does_not_override_custom_anthropic_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "anthropic-proxy".to_string();
+        let custom_anthropic_provider = ModelProviderInfo {
+            name: "Anthropic Proxy".to_string(),
+            base_url: Some("https://example.com/anthropic".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY".to_string()),
+            wire_api: crate::WireApi::Anthropic,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(
+            custom_provider_id.clone(),
+            custom_anthropic_provider.clone(),
+        );
+
+        let cfg = ConfigToml {
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_anthropic_provider);
+        assert_eq!(config.user_configured_provider, custom_anthropic_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gpt_model_auto_switches_to_openai_provider_when_current_provider_is_non_responses()
+    -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider: Some("anthropic".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, "openai");
+        assert_eq!(config.model_provider.name, "OpenAI");
+        assert_eq!(config.user_configured_provider.name, "Anthropic");
+
+        Ok(())
+    }
+
+    #[test]
+    fn model_sub_responses_warns_and_is_cleared_when_non_openai_slug() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model_sub_responses: Some("claude-sonnet-4-6".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_sub_responses, None);
+        assert!(
+            config
+                .startup_warnings
+                .iter()
+                .any(|warning| warning.contains("model_sub_responses")),
+            "{:?}",
+            config.startup_warnings
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn account_pool_primary_entry_is_selected_on_config_load() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
 
@@ -5258,6 +5469,49 @@ trust_level = "trusted"
             config.model_provider.env_key.as_deref(),
             Some("KEY_PREFERRED")
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_pool_overlays_anthropic_account_pool_on_builtin_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let pool_toml = r#"
+[model_providers.anthropic]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_1"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+"#;
+        std::fs::write(codex_home.path().join(CONFIG_POOL_TOML_FILE), pool_toml)?;
+
+        let cfg = ConfigToml {
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, "anthropic");
+        assert_eq!(
+            config.model_provider.base_url.as_deref(),
+            Some("https://pool.example")
+        );
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("ANTHROPIC_API_KEY_POOL_2")
+        );
+        assert_eq!(config.model_provider.account_pool.len(), 2);
 
         Ok(())
     }

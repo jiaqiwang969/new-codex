@@ -20,6 +20,14 @@
         "description": {
           "description": "Human-facing role documentation used in spawn tool guidance.",
           "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "description": "Optional tags surfaced to the leader model to help route work (e.g. \"large_context\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -354,6 +362,14 @@
         },
         "model_reasoning_summary": {
           "$ref": "#/definitions/ReasoningSummary"
+        },
+        "model_sub": {
+          "description": "Optional override of the utility (\"sub\") model used for internal tasks like memory summarization fallback.",
+          "type": "string"
+        },
+        "model_sub_responses": {
+          "description": "Optional override of the utility (\"sub\") model used for internal tasks that require the Responses API (e.g. memory trace summarization).",
+          "type": "string"
         },
         "model_verbosity": {
           "$ref": "#/definitions/Verbosity"
@@ -1288,6 +1304,13 @@
             "gemini"
           ],
           "type": "string"
+        },
+        {
+          "description": "Anthropic Messages API via `/v1/messages`.",
+          "enum": [
+            "anthropic"
+          ],
+          "type": "string"
         }
       ]
     }
@@ -1643,6 +1666,14 @@
     },
     "model_reasoning_summary": {
       "$ref": "#/definitions/ReasoningSummary"
+    },
+    "model_sub": {
+      "description": "Optional override of the utility (\"sub\") model used for internal tasks like memory summarization fallback.",
+      "type": "string"
+    },
+    "model_sub_responses": {
+      "description": "Optional override of the utility (\"sub\") model used for internal tasks that require the Responses API (e.g. memory trace summarization).",
+      "type": "string"
     },
     "model_supports_reasoning_summaries": {
       "description": "Override to force-enable reasoning summaries for the configured model.",

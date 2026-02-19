@@ -18,6 +18,12 @@ use codex_protocol::openai_models::ReasoningEffort;
 #[schemars(deny_unknown_fields)]
 pub struct ConfigProfile {
     pub model: Option<String>,
+    /// Optional override of the utility ("sub") model used for internal tasks
+    /// like memory summarization fallback.
+    pub model_sub: Option<String>,
+    /// Optional override of the utility ("sub") model used for internal tasks
+    /// that require the Responses API (e.g. memory trace summarization).
+    pub model_sub_responses: Option<String>,
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
