@@ -5,6 +5,12 @@ model_reasoning_effort = "high"
 notify = ['entire', 'hooks', 'codex', 'notify']
 model_sub = "claude-sonnet-4-6"
 
+[memories]
+# Model used for Entire checkpoint WHY-focused summaries
+# Defaults to model_sub if not specified
+entire_summary_model = "claude-sonnet-4-6"
+entire_summary_enabled = true
+
 [features]
 # Stable (off by default)
 undo = true                          # Ghost commit at each turn for undo
