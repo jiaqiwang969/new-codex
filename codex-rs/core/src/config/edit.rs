@@ -25,6 +25,16 @@ pub enum ConfigEdit {
         model: Option<String>,
         effort: Option<ReasoningEffort>,
     },
+    /// Update the active (or default) utility ("sub") model used for internal tasks.
+    SetModelSub { model_sub: Option<String> },
+    /// Update the active (or default) utility ("sub") model used for internal tasks that require
+    /// the Responses API.
+    SetModelSubResponses { model_sub_responses: Option<String> },
+    /// Update memories phase model overrides under `[memories]`.
+    SetMemoriesPhaseModels {
+        phase_1_model: Option<String>,
+        phase_2_model: Option<String>,
+    },
     /// Update the active (or default) model personality.
     SetModelPersonality { personality: Option<Personality> },
     /// Toggle the acknowledgement flag under `[notice]`.
@@ -295,6 +305,39 @@ impl ConfigDocument {
                 mutated |= self.write_profile_value(
                     &["model_reasoning_effort"],
                     effort.map(|effort| value(effort.to_string())),
+                );
+                mutated
+            }),
+            ConfigEdit::SetModelSub { model_sub } => Ok(self.write_profile_value(
+                &["model_sub"],
+                model_sub
+                    .as_ref()
+                    .map(|model_sub_value| value(model_sub_value.clone())),
+            )),
+            ConfigEdit::SetModelSubResponses {
+                model_sub_responses,
+            } => Ok(self.write_profile_value(
+                &["model_sub_responses"],
+                model_sub_responses
+                    .as_ref()
+                    .map(|model_sub_value| value(model_sub_value.clone())),
+            )),
+            ConfigEdit::SetMemoriesPhaseModels {
+                phase_1_model,
+                phase_2_model,
+            } => Ok({
+                let mut mutated = false;
+                mutated |= self.write_profile_value(
+                    &["memories", "phase_1_model"],
+                    phase_1_model
+                        .as_ref()
+                        .map(|phase_model_value| value(phase_model_value.clone())),
+                );
+                mutated |= self.write_profile_value(
+                    &["memories", "phase_2_model"],
+                    phase_2_model
+                        .as_ref()
+                        .map(|phase_model_value| value(phase_model_value.clone())),
                 );
                 mutated
             }),
@@ -760,6 +803,32 @@ impl ConfigEditsBuilder {
         self.edits.push(ConfigEdit::SetModel {
             model: model.map(ToOwned::to_owned),
             effort,
+        });
+        self
+    }
+
+    pub fn set_model_sub(mut self, model_sub: Option<&str>) -> Self {
+        self.edits.push(ConfigEdit::SetModelSub {
+            model_sub: model_sub.map(ToOwned::to_owned),
+        });
+        self
+    }
+
+    pub fn set_model_sub_responses(mut self, model_sub_responses: Option<&str>) -> Self {
+        self.edits.push(ConfigEdit::SetModelSubResponses {
+            model_sub_responses: model_sub_responses.map(ToOwned::to_owned),
+        });
+        self
+    }
+
+    pub fn set_memories_phase_models(
+        mut self,
+        phase_1_model: Option<&str>,
+        phase_2_model: Option<&str>,
+    ) -> Self {
+        self.edits.push(ConfigEdit::SetMemoriesPhaseModels {
+            phase_1_model: phase_1_model.map(ToOwned::to_owned),
+            phase_2_model: phase_2_model.map(ToOwned::to_owned),
         });
         self
     }
@@ -1776,6 +1845,62 @@ foo = { command = "cmd" , enabled = false }
             std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
         let expected = r#"model = "gpt-5.1-codex"
 model_reasoning_effort = "high"
+"#;
+        assert_eq!(contents, expected);
+    }
+
+    #[tokio::test]
+    async fn async_builder_set_model_sub_persists() {
+        let tmp = tempdir().expect("tmpdir");
+        let codex_home = tmp.path().to_path_buf();
+
+        ConfigEditsBuilder::new(&codex_home)
+            .set_model_sub(Some("gpt-5.1-codex-mini"))
+            .apply()
+            .await
+            .expect("persist");
+
+        let contents =
+            std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
+        let expected = r#"model_sub = "gpt-5.1-codex-mini"
+"#;
+        assert_eq!(contents, expected);
+    }
+
+    #[tokio::test]
+    async fn async_builder_set_model_sub_responses_persists() {
+        let tmp = tempdir().expect("tmpdir");
+        let codex_home = tmp.path().to_path_buf();
+
+        ConfigEditsBuilder::new(&codex_home)
+            .set_model_sub_responses(Some("gpt-5.1-codex-mini"))
+            .apply()
+            .await
+            .expect("persist");
+
+        let contents =
+            std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
+        let expected = r#"model_sub_responses = "gpt-5.1-codex-mini"
+"#;
+        assert_eq!(contents, expected);
+    }
+
+    #[tokio::test]
+    async fn async_builder_set_memories_phase_models_persists() {
+        let tmp = tempdir().expect("tmpdir");
+        let codex_home = tmp.path().to_path_buf();
+
+        ConfigEditsBuilder::new(&codex_home)
+            .set_memories_phase_models(Some("claude-sonnet-4-6"), Some("claude-opus-4-6"))
+            .apply()
+            .await
+            .expect("persist");
+
+        let contents =
+            std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
+        let expected = r#"[memories]
+phase_1_model = "claude-sonnet-4-6"
+phase_2_model = "claude-opus-4-6"
 "#;
         assert_eq!(contents, expected);
     }
