@@ -35,14 +35,8 @@ model_sub = "claude-sonnet-4-6"
 **用途**:
 - 子代理（explorer, worker）的默认模型
 - 快速工具调用和辅助任务
-- 作为其他专用模型的默认继承源
 
 **运行时切换**: `/model-sub`
-
-**继承关系**:
-```
-model_sub → 其他未指定的专用模型
-```
 
 ---
 
@@ -71,13 +65,83 @@ model_sub_responses → model_sub → 内置默认
 
 ### 4. Memory phase-1 (记忆第一阶段)
 
-**角色**: 从代码库提取初始记忆的模型
+**角色**: 快速代码库扫描模型
+
+**默认值**: `gpt-5.3-codex-spark` (快速扫描优化)
 
 **配置**:
 ```toml
 [memories]
-phase_1_model = "claude-sonnet-4-6"
+phase_1_model = "gpt-5.3-codex-spark"
 ```
+
+**用途**:
+- 快速扫描代码库结构
+- 提取初始代码片段
+- 识别相关文件和符号
+
+**运行时切换**: `/model-memory-phase1`
+
+---
+
+### 5. Memory phase-2 (记忆第二阶段)
+
+**角色**: 深度代码分析和整合模型
+
+**默认值**: `gpt-5.3-codex` (深度分析优化)
+
+**配置**:
+```toml
+[memories]
+phase_2_model = "gpt-5.3-codex"
+```
+
+**用途**:
+- 深度代码分析
+- 整合和精炼记忆
+- 生成高质量的代码上下文
+
+**运行时切换**: `/model-memory-phase2`
+
+---
+
+### 6. Entire summary (Entire 摘要)
+
+**角色**: AI 会话历史摘要模型
+
+**默认值**: `claude-sonnet-4-6` (WHY 聚焦)
+
+**配置**:
+```toml
+[memories]
+entire_summary_model = "claude-sonnet-4-6"
+```
+
+**用途**:
+- 生成 AI 会话的 WHY 聚焦摘要
+- 捕获决策理由和上下文
+- 支持 Entire 可追溯性系统
+
+**运行时切换**: `/model-entire`
+
+---
+
+## 模型独立性原则
+
+从 2025 年开始，所有后台任务模型（Memory phase-1、phase-2、Entire summary）都是**完全独立**的：
+
+- ✅ 每个模型都有自己的默认值
+- ✅ 每个模型都有独立的 `/model-xxx` 命令
+- ✅ 不再从 `model_sub` 继承
+- ✅ 可以根据任务特性选择最优模型
+
+**设计理由**:
+- Memory phase-1 需要快速扫描 → 使用 `gpt-5.3-codex-spark`
+- Memory phase-2 需要深度分析 → 使用 `gpt-5.3-codex`
+- Entire summary 需要 WHY 聚焦 → 使用 `claude-sonnet-4-6`
+- Sub-agent 需要通用能力 → 使用 `model_sub` 配置
+
+这种独立性避免了语义混淆，并允许针对每个任务优化模型选择。
 
 **用途**:
 - 扫描代码库结构
