@@ -1,0 +1,50 @@
+disable_response_storage = true
+model = "claude-sonnet-4-6"
+model_provider = 'codex'
+model_reasoning_effort = "high"
+notify = ['entire', 'hooks', 'codex', 'notify']
+model_sub = "claude-sonnet-4-6"
+
+[features]
+# Stable (off by default)
+undo = true                          # Ghost commit at each turn for undo
+
+# Experimental
+multi_agent = true                   # Spawn multiple agents in parallel
+agent_worktrees = true               # Isolated git worktrees for sub-agents
+apps = true                          # ChatGPT Apps/Connectors via $ mentions
+prevent_idle_sleep = true            # Keep macOS awake while running
+
+# Under Development
+memory_tool = true                   # Startup memory extraction & consolidation
+codex_git_commit = true              # Git commit attribution guidance
+sqlite = true                        # Persist rollout metadata to SQLite
+js_repl = true                       # Persistent Node.js REPL
+child_agents_md = true               # Append AGENTS.md guidance to sub-agents
+skill_env_var_dependency_prompt = true # Prompt for missing skill env vars
+responses_websockets = true          # WebSocket transport for Responses API
+responses_websockets_v2 = true       # WebSocket v2 with previous_response_id
+
+[mcp_servers]
+[mcp_servers.claude-code-mcp]
+args = ['-y', '@steipete/claude-code-mcp@latest']
+command = 'npx'
+
+[mcp_servers.watermark-remover]
+args = ['-y', 'github:jiaqiwang969/watermark-removal-mcp']
+command = 'npx'
+startup_timeout_sec = 60
+
+
+[model_providers]
+[model_providers.codex]
+base_url = 'https://code.ppchat.vip/v1'
+name = 'codex'
+requires_openai_auth = true
+wire_api = 'responses'
+
+[projects]
+
+
+[notice]
+hide_full_access_warning = true

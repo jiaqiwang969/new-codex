@@ -1,0 +1,14 @@
+{
+  "OPENAI_API_KEY_POOL_1": "sk-invalid-fake-key-00000000000001",
+  "OPENAI_API_KEY_POOL_2": "sk-invalid-fake-key-00000000000002",
+  "OPENAI_API_KEY_POOL_3": "sk-your-openai-api-key-3-here",
+  "GEMINI_API_KEY_POOL_1": "AIza-invalid-fake-key-000000000001",
+  "GEMINI_API_KEY_POOL_2": "AIza-invalid-fake-key-000000000002",
+  "GEMINI_API_KEY_POOL_3": "AIza-your-gemini-api-key-3-here",
+  "XAI_API_KEY_POOL_1": "xai-invalid-fake-key-0000000000000000000000000000000001",
+  "XAI_API_KEY_POOL_2": "xai-invalid-fake-key-0000000000000000000000000000000002",
+  "XAI_API_KEY_POOL_3": "xai-your-xai-api-key-3-here",
+  "ANTHROPIC_API_KEY_POOL_1": "sk-invalid-fake-key-00000000000001",
+  "ANTHROPIC_API_KEY_POOL_2": "sk-invalid-fake-key-00000000000002",
+  "ANTHROPIC_API_KEY_POOL_3": "sk-ant-your-anthropic-api-key-3-here"
+}
