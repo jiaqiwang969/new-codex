@@ -19,11 +19,21 @@ const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AgentMetadata {
+    pub(crate) agent_type: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) model_provider_id: Option<String>,
+}
+
 pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
     let CollabAgentSpawnEndEvent {
         call_id,
         sender_thread_id: _,
         memory: _,
+        agent_type,
+        model,
+        model_provider_id,
         new_thread_id,
         prompt,
         status,
@@ -36,13 +46,25 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         detail_line("agent", new_agent),
         status_line(&status),
     ];
+    if let Some(agent_type) = agent_type {
+        details.push(detail_line("role", agent_type));
+    }
+    if let Some(model) = model {
+        details.push(detail_line("model", model));
+    }
+    if let Some(model_provider_id) = model_provider_id {
+        details.push(detail_line("provider", model_provider_id));
+    }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
     collab_event("Agent spawned", details)
 }
 
-pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistoryCell {
+pub(crate) fn interaction_end(
+    ev: CollabAgentInteractionEndEvent,
+    known_agents: &HashMap<String, AgentMetadata>,
+) -> PlainHistoryCell {
     let CollabAgentInteractionEndEvent {
         call_id,
         sender_thread_id: _,
@@ -56,6 +78,7 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         detail_line("receiver", receiver_thread_id.to_string()),
         status_line(&status),
     ];
+    append_agent_metadata_details(&receiver_thread_id.to_string(), known_agents, &mut details);
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
@@ -76,7 +99,10 @@ pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
     collab_event("Waiting for agents", details)
 }
 
-pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
+pub(crate) fn waiting_end(
+    ev: CollabWaitingEndEvent,
+    known_agents: &HashMap<String, AgentMetadata>,
+) -> PlainHistoryCell {
     let CollabWaitingEndEvent {
         call_id,
         sender_thread_id: _,
@@ -84,11 +110,14 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
         statuses,
     } = ev;
     let mut details = vec![detail_line("call", call_id)];
-    details.extend(wait_complete_lines(&statuses));
+    details.extend(wait_complete_lines(&statuses, known_agents));
     collab_event("Wait complete", details)
 }
 
-pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
+pub(crate) fn close_end(
+    ev: CollabCloseEndEvent,
+    known_agents: &HashMap<String, AgentMetadata>,
+) -> PlainHistoryCell {
     let CollabCloseEndEvent {
         call_id,
         sender_thread_id: _,
@@ -96,29 +125,37 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
         receiver_thread_id,
         status,
     } = ev;
-    let details = vec![
+    let mut details = vec![
         detail_line("call", call_id),
         detail_line("receiver", receiver_thread_id.to_string()),
         status_line(&status),
     ];
+    append_agent_metadata_details(&receiver_thread_id.to_string(), known_agents, &mut details);
     collab_event("Agent closed", details)
 }
 
-pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
+pub(crate) fn resume_begin(
+    ev: CollabResumeBeginEvent,
+    known_agents: &HashMap<String, AgentMetadata>,
+) -> PlainHistoryCell {
     let CollabResumeBeginEvent {
         call_id,
         sender_thread_id: _,
         memory: _,
         receiver_thread_id,
     } = ev;
-    let details = vec![
+    let mut details = vec![
         detail_line("call", call_id),
         detail_line("receiver", receiver_thread_id.to_string()),
     ];
+    append_agent_metadata_details(&receiver_thread_id.to_string(), known_agents, &mut details);
     collab_event("Resuming agent", details)
 }
 
-pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
+pub(crate) fn resume_end(
+    ev: CollabResumeEndEvent,
+    known_agents: &HashMap<String, AgentMetadata>,
+) -> PlainHistoryCell {
     let CollabResumeEndEvent {
         call_id,
         sender_thread_id: _,
@@ -126,11 +163,12 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
         receiver_thread_id,
         status,
     } = ev;
-    let details = vec![
+    let mut details = vec![
         detail_line("call", call_id),
         detail_line("receiver", receiver_thread_id.to_string()),
         status_line(&status),
     ];
+    append_agent_metadata_details(&receiver_thread_id.to_string(), known_agents, &mut details);
     collab_event("Agent resumed", details)
 }
 
@@ -187,7 +225,10 @@ fn format_thread_ids(ids: &[ThreadId]) -> Span<'static> {
     Span::from(joined)
 }
 
-fn wait_complete_lines(statuses: &HashMap<ThreadId, AgentStatus>) -> Vec<Line<'static>> {
+fn wait_complete_lines(
+    statuses: &HashMap<ThreadId, AgentStatus>,
+    known_agents: &HashMap<String, AgentMetadata>,
+) -> Vec<Line<'static>> {
     if statuses.is_empty() {
         return vec![detail_line("agents", Span::from("none").dim())];
     }
@@ -252,7 +293,7 @@ fn wait_complete_lines(statuses: &HashMap<ThreadId, AgentStatus>) -> Vec<Line<'s
     lines.push(detail_line_spans("agents", summary));
     lines.extend(entries.into_iter().map(|(thread_id, status)| {
         let mut spans = vec![
-            Span::from(thread_id).dim(),
+            Span::from(thread_id.clone()).dim(),
             Span::from(" ").dim(),
             status_span(status),
         ];
@@ -275,9 +316,52 @@ fn wait_complete_lines(statuses: &HashMap<ThreadId, AgentStatus>) -> Vec<Line<'s
             }
             _ => {}
         }
+        if let Some(metadata) = known_agents.get(&thread_id)
+            && let Some(summary) = metadata_summary_inline(metadata)
+        {
+            spans.push(Span::from(" ").dim());
+            spans.push(Span::from(summary).dim());
+        }
         spans.into()
     }));
     lines
+}
+
+fn append_agent_metadata_details(
+    thread_id: &str,
+    known_agents: &HashMap<String, AgentMetadata>,
+    details: &mut Vec<Line<'static>>,
+) {
+    let Some(metadata) = known_agents.get(thread_id) else {
+        return;
+    };
+    if let Some(agent_type) = metadata.agent_type.as_deref() {
+        details.push(detail_line("role", agent_type.to_string()));
+    }
+    if let Some(model) = metadata.model.as_deref() {
+        details.push(detail_line("model", model.to_string()));
+    }
+    if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
+        details.push(detail_line("provider", model_provider_id.to_string()));
+    }
+}
+
+fn metadata_summary_inline(metadata: &AgentMetadata) -> Option<String> {
+    let mut pieces = Vec::new();
+    if let Some(agent_type) = metadata.agent_type.as_deref() {
+        pieces.push(format!("role={agent_type}"));
+    }
+    if let Some(model) = metadata.model.as_deref() {
+        pieces.push(format!("model={model}"));
+    }
+    if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
+        pieces.push(format!("provider={model_provider_id}"));
+    }
+    if pieces.is_empty() {
+        None
+    } else {
+        Some(format!("[{}]", pieces.join(", ")))
+    }
 }
 
 fn push_status_count(
@@ -299,4 +383,79 @@ fn detail_line_spans(label: &str, mut value: Vec<Span<'static>>) -> Line<'static
     spans.push(Span::from(format!("{label}: ")).dim());
     spans.append(&mut value);
     spans.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history_cell::HistoryCell;
+    use codex_core::protocol::CollabCloseEndEvent;
+    use codex_core::protocol::CollabWaitingEndEvent;
+    use insta::assert_snapshot;
+
+    fn render_cell(cell: PlainHistoryCell) -> String {
+        cell.display_lines(120)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn wait_complete_includes_known_agent_metadata() {
+        let thread_id =
+            ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").expect("valid thread id");
+        let mut statuses = HashMap::new();
+        statuses.insert(thread_id, AgentStatus::Completed(None));
+        let event = CollabWaitingEndEvent {
+            call_id: "call-1".to_string(),
+            sender_thread_id: ThreadId::from_string("9e107d9d-372b-4b8c-a2a4-1d9bb3fce0c1")
+                .expect("valid sender thread id"),
+            memory: None,
+            statuses,
+        };
+        let mut known_agents = HashMap::new();
+        known_agents.insert(
+            "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+            AgentMetadata {
+                agent_type: Some("explorer".to_string()),
+                model: Some("claude-opus-4-6".to_string()),
+                model_provider_id: Some("anthropic".to_string()),
+            },
+        );
+
+        let cell = waiting_end(event, &known_agents);
+        assert_snapshot!(render_cell(cell));
+    }
+
+    #[test]
+    fn close_end_includes_known_agent_metadata() {
+        let receiver_thread_id =
+            ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").expect("valid thread id");
+        let event = CollabCloseEndEvent {
+            call_id: "close-1".to_string(),
+            sender_thread_id: ThreadId::from_string("9e107d9d-372b-4b8c-a2a4-1d9bb3fce0c1")
+                .expect("valid sender thread id"),
+            memory: None,
+            receiver_thread_id,
+            status: AgentStatus::Shutdown,
+        };
+        let mut known_agents = HashMap::new();
+        known_agents.insert(
+            "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+            AgentMetadata {
+                agent_type: Some("worker".to_string()),
+                model: Some("claude-sonnet-4-6".to_string()),
+                model_provider_id: Some("anthropic".to_string()),
+            },
+        );
+
+        let cell = close_end(event, &known_agents);
+        assert_snapshot!(render_cell(cell));
+    }
 }
