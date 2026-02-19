@@ -343,7 +343,7 @@ mod tests {
     async fn dispatch_executes_hook_for_mcp_tool_call_event() {
         let calls = Arc::new(AtomicUsize::new(0));
         let hooks = Hooks {
-            after_mcp_tool_call: vec![counting_hook(&calls, HookResult::Success)],
+            after_mcp_tool_call: vec![counting_success_hook(&calls, "counting")],
             ..Hooks::default()
         };
 

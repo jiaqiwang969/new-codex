@@ -847,7 +847,10 @@ mod tests {
             },
         };
 
-        assert!(matches!(hook.execute(&payload).await, HookResult::Success));
+        assert!(matches!(
+            hook.execute(&payload).await.result,
+            HookResult::Success
+        ));
         wait_for_file(&output_path).await;
 
         let actual = std::fs::read_to_string(&output_path)?;
@@ -944,7 +947,10 @@ mod tests {
             },
         };
 
-        assert!(matches!(hook.execute(&payload).await, HookResult::Success));
+        assert!(matches!(
+            hook.execute(&payload).await.result,
+            HookResult::Success
+        ));
         wait_for_file(&output_path).await;
 
         let actual = std::fs::read_to_string(&output_path)?;
