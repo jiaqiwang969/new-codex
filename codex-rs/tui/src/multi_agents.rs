@@ -3,6 +3,8 @@ use crate::render::line_utils::prefix_lines;
 use crate::text_formatting::truncate_text;
 use codex_core::protocol::AgentStatus;
 use codex_core::protocol::CollabAgentInteractionEndEvent;
+use codex_core::protocol::CollabAgentModelSource;
+use codex_core::protocol::CollabAgentModelSourceDetail;
 use codex_core::protocol::CollabAgentSpawnEndEvent;
 use codex_core::protocol::CollabCloseEndEvent;
 use codex_core::protocol::CollabResumeBeginEvent;
@@ -24,6 +26,8 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_type: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) model_provider_id: Option<String>,
+    pub(crate) model_source: Option<CollabAgentModelSource>,
+    pub(crate) model_source_detail: Option<CollabAgentModelSourceDetail>,
 }
 
 pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
@@ -34,6 +38,8 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         agent_type,
         model,
         model_provider_id,
+        model_source,
+        model_source_detail,
         new_thread_id,
         prompt,
         status,
@@ -54,6 +60,18 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
     }
     if let Some(model_provider_id) = model_provider_id {
         details.push(detail_line("provider", model_provider_id));
+    }
+    if let Some(model_source) = model_source {
+        let source = if let Some(source_detail) = model_source_detail {
+            format!(
+                "{} ({})",
+                model_source_label(model_source),
+                model_source_detail_label(source_detail)
+            )
+        } else {
+            model_source_label(model_source).to_string()
+        };
+        details.push(detail_line("route", source));
     }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
@@ -344,6 +362,18 @@ fn append_agent_metadata_details(
     if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
         details.push(detail_line("provider", model_provider_id.to_string()));
     }
+    if let Some(model_source) = metadata.model_source {
+        let route = if let Some(detail) = metadata.model_source_detail {
+            format!(
+                "{} ({})",
+                model_source_label(model_source),
+                model_source_detail_label(detail)
+            )
+        } else {
+            model_source_label(model_source).to_string()
+        };
+        details.push(detail_line("route", route));
+    }
 }
 
 fn metadata_summary_inline(metadata: &AgentMetadata) -> Option<String> {
@@ -356,6 +386,9 @@ fn metadata_summary_inline(metadata: &AgentMetadata) -> Option<String> {
     }
     if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
         pieces.push(format!("provider={model_provider_id}"));
+    }
+    if let Some(model_source) = metadata.model_source {
+        pieces.push(format!("route={}", model_source_label(model_source)));
     }
     if pieces.is_empty() {
         None
@@ -376,6 +409,27 @@ fn push_status_count(
 
     spans.push(Span::from(" · ").dim());
     spans.push(style(Span::from(format!("{count} {label}"))));
+}
+
+pub(crate) fn model_source_detail_label(detail: CollabAgentModelSourceDetail) -> &'static str {
+    match detail {
+        CollabAgentModelSourceDetail::ConfigModelSub => "config.model_sub",
+        CollabAgentModelSourceDetail::SessionCache => "session cache",
+        CollabAgentModelSourceDetail::ModelSubVouch => "model_sub_vouch",
+        CollabAgentModelSourceDetail::AutoCalibration => "auto_calibration",
+        CollabAgentModelSourceDetail::ToolModelOverride => "tool model override",
+        CollabAgentModelSourceDetail::RoleConfig => "agent role config",
+    }
+}
+
+pub(crate) fn model_source_label(source: CollabAgentModelSource) -> &'static str {
+    match source {
+        CollabAgentModelSource::Parent => "parent",
+        CollabAgentModelSource::Role => "role",
+        CollabAgentModelSource::ModelSub => "model_sub",
+        CollabAgentModelSource::ModelSubAuto => "model_sub_auto",
+        CollabAgentModelSource::Explicit => "explicit",
+    }
 }
 
 fn detail_line_spans(label: &str, mut value: Vec<Span<'static>>) -> Line<'static> {
@@ -426,6 +480,8 @@ mod tests {
                 agent_type: Some("explorer".to_string()),
                 model: Some("claude-opus-4-6".to_string()),
                 model_provider_id: Some("anthropic".to_string()),
+                model_source: None,
+                model_source_detail: None,
             },
         );
 
@@ -452,6 +508,8 @@ mod tests {
                 agent_type: Some("worker".to_string()),
                 model: Some("claude-sonnet-4-6".to_string()),
                 model_provider_id: Some("anthropic".to_string()),
+                model_source: None,
+                model_source_detail: None,
             },
         );
 

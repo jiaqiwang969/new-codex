@@ -35,6 +35,7 @@ pub(crate) struct SessionState {
     auto_model_sub_selection: Option<String>,
     auto_model_sub_calibration_attempted: bool,
     last_model_sub_calibration_models: Vec<String>,
+    last_model_sub_calibration_recommended_for_session: Option<String>,
     active_reference_images: Vec<String>,
     image_size: Option<GeminiImageSize>,
     aspect_ratio: Option<GeminiAspectRatio>,
@@ -59,6 +60,7 @@ impl SessionState {
             auto_model_sub_selection: None,
             auto_model_sub_calibration_attempted: false,
             last_model_sub_calibration_models: Vec::new(),
+            last_model_sub_calibration_recommended_for_session: None,
             active_reference_images: Vec::new(),
             image_size: None,
             aspect_ratio: None,
@@ -272,6 +274,18 @@ impl SessionState {
         self.last_model_sub_calibration_models.clone()
     }
 
+    pub(crate) fn set_last_model_sub_calibration_recommended_for_session(
+        &mut self,
+        model: Option<String>,
+    ) {
+        self.last_model_sub_calibration_recommended_for_session = model;
+    }
+
+    pub(crate) fn get_last_model_sub_calibration_recommended_for_session(&self) -> Option<String> {
+        self.last_model_sub_calibration_recommended_for_session
+            .clone()
+    }
+
     // Adds connector IDs to the active set and returns the merged selection.
     pub(crate) fn merge_connector_selection<I>(&mut self, connector_ids: I) -> HashSet<String>
     where
@@ -447,6 +461,21 @@ mod tests {
         assert_eq!(
             state.get_last_model_sub_calibration_models(),
             vec!["claude-sonnet-4-6".to_string(), "gpt-5.2-codex".to_string(),]
+        );
+    }
+
+    #[tokio::test]
+    async fn stores_last_model_sub_calibration_recommended_for_session() {
+        let session_configuration = make_session_configuration_for_tests().await;
+        let mut state = SessionState::new(session_configuration);
+
+        state.set_last_model_sub_calibration_recommended_for_session(Some(
+            "claude-sonnet-4-6".to_string(),
+        ));
+
+        assert_eq!(
+            state.get_last_model_sub_calibration_recommended_for_session(),
+            Some("claude-sonnet-4-6".to_string())
         );
     }
 

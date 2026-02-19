@@ -20,6 +20,8 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CollabAgentInteractionBeginEvent;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
+use codex_protocol::protocol::CollabAgentModelSource;
+use codex_protocol::protocol::CollabAgentModelSourceDetail;
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabCloseBeginEvent;
@@ -167,22 +169,14 @@ mod spawn {
     }
 
     #[derive(Debug, Serialize)]
-    #[serde(rename_all = "snake_case")]
-    enum SpawnModelSource {
-        Parent,
-        Role,
-        ModelSub,
-        ModelSubAuto,
-        Explicit,
-    }
-
-    #[derive(Debug, Serialize)]
     struct SpawnAgentResult {
         agent_id: String,
         agent_type: String,
         model: String,
         model_provider_id: String,
-        model_source: SpawnModelSource,
+        model_source: CollabAgentModelSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_source_detail: Option<CollabAgentModelSourceDetail>,
         parent_thread_id: String,
         spawn_depth: i32,
         worktree_path: Option<String>,
@@ -242,6 +236,8 @@ mod spawn {
                 .into(),
             )
             .await;
+        let mut model_source: Option<CollabAgentModelSource> = None;
+        let mut model_source_detail: Option<CollabAgentModelSourceDetail> = None;
         let (mut config, mut model_for_events, mut model_provider_id_for_events) =
             match build_agent_spawn_config(
                 &session.get_base_instructions().await,
@@ -264,6 +260,8 @@ mod spawn {
                                 agent_type: Some(agent_type),
                                 model: None,
                                 model_provider_id: None,
+                                model_source: None,
+                                model_source_detail: None,
                                 new_thread_id: None,
                                 prompt: prompt_for_events,
                                 status: AgentStatus::Errored(err.to_string()),
@@ -288,6 +286,8 @@ mod spawn {
                         agent_type: Some(agent_type),
                         model: model_for_events,
                         model_provider_id: model_provider_id_for_events,
+                        model_source,
+                        model_source_detail,
                         new_thread_id: None,
                         prompt: prompt_for_events,
                         status: AgentStatus::Errored(err.to_string()),
@@ -297,12 +297,16 @@ mod spawn {
                 .await;
             return Err(err);
         }
-        let mut model_source =
+        model_source = Some(
             if role_name.is_some_and(|role| !role.eq_ignore_ascii_case("default")) {
-                SpawnModelSource::Role
+                CollabAgentModelSource::Role
             } else {
-                SpawnModelSource::Parent
-            };
+                CollabAgentModelSource::Parent
+            },
+        );
+        model_source_detail = role_name
+            .is_some_and(|role| !role.eq_ignore_ascii_case("default"))
+            .then_some(CollabAgentModelSourceDetail::RoleConfig);
         let mut auto_calibration = None;
         let uses_default_role = role_name.is_none_or(|role| role.eq_ignore_ascii_case("default"));
         let uses_explorer_role =
@@ -311,16 +315,16 @@ mod spawn {
             let mut selected_model_sub = turn.config.model_sub.clone().map(|model_sub| {
                 (
                     model_sub,
-                    SpawnModelSource::ModelSub,
-                    "config.model_sub".to_string(),
+                    CollabAgentModelSource::ModelSub,
+                    CollabAgentModelSourceDetail::ConfigModelSub,
                 )
             });
             if selected_model_sub.is_none() {
                 if let Some(auto_model_sub) = session.get_auto_model_sub_selection().await {
                     selected_model_sub = Some((
                         auto_model_sub,
-                        SpawnModelSource::ModelSubAuto,
-                        "session cache".to_string(),
+                        CollabAgentModelSource::ModelSubAuto,
+                        CollabAgentModelSourceDetail::SessionCache,
                     ));
                 } else {
                     for candidate in
@@ -332,8 +336,8 @@ mod spawn {
                                 .await;
                             selected_model_sub = Some((
                                 candidate,
-                                SpawnModelSource::ModelSubAuto,
-                                "model_sub_vouch".to_string(),
+                                CollabAgentModelSource::ModelSubAuto,
+                                CollabAgentModelSourceDetail::ModelSubVouch,
                             ));
                             break;
                         }
@@ -363,10 +367,19 @@ mod spawn {
                         if let Ok(result) =
                             serde_json::from_str::<AutoCalibrationRawResult>(&content)
                         {
+                            let completed_models = result
+                                .runs
+                                .iter()
+                                .filter(|run| matches!(run.status, AgentStatus::Completed(_)))
+                                .map(|run| run.model.to_ascii_lowercase())
+                                .collect::<std::collections::BTreeSet<_>>();
                             let recommended_model_sub = result
                                 .recommended_for_session
                                 .clone()
-                                .or_else(|| result.recommended_for_latency.clone());
+                                .or_else(|| result.recommended_for_latency.clone())
+                                .filter(|model_sub| {
+                                    completed_models.contains(&model_sub.to_ascii_lowercase())
+                                });
                             let runs = result
                                 .runs
                                 .iter()
@@ -444,8 +457,8 @@ mod spawn {
                                     .await;
                                 selected_model_sub = Some((
                                     model_sub,
-                                    SpawnModelSource::ModelSubAuto,
-                                    "auto_calibration".to_string(),
+                                    CollabAgentModelSource::ModelSubAuto,
+                                    CollabAgentModelSourceDetail::AutoCalibration,
                                 ));
                             }
                         }
@@ -456,20 +469,20 @@ mod spawn {
                     }
                 }
             }
-            if let Some((model_sub, source, selection_origin)) = selected_model_sub {
-                if let Some((provider_id, provider)) =
+            if let Some((model_sub, source, selection_origin)) = selected_model_sub
+                && let Some((provider_id, provider)) =
                     utility_model::provider_for_model_slug(&config, &model_sub)
-                {
-                    tracing::info!(
-                        model_sub = model_sub.as_str(),
-                        selection_origin,
-                        "spawn_agent selected default child model"
-                    );
-                    config.model = Some(model_sub);
-                    config.model_provider_id = provider_id;
-                    config.model_provider = provider;
-                    model_source = source;
-                }
+            {
+                tracing::info!(
+                    model_sub = model_sub.as_str(),
+                    selection_origin = ?selection_origin,
+                    "spawn_agent selected default child model"
+                );
+                config.model = Some(model_sub);
+                config.model_provider_id = provider_id;
+                config.model_provider = provider;
+                model_source = Some(source);
+                model_source_detail = Some(selection_origin);
             }
         }
         if let Some(requested_model) = requested_model.as_deref() {
@@ -479,7 +492,8 @@ mod spawn {
                 config.model = Some(requested_model.to_string());
                 config.model_provider_id = provider_id;
                 config.model_provider = provider;
-                model_source = SpawnModelSource::Explicit;
+                model_source = Some(CollabAgentModelSource::Explicit);
+                model_source_detail = Some(CollabAgentModelSourceDetail::ToolModelOverride);
             } else {
                 let err = FunctionCallError::RespondToModel(format!(
                     "Model override `{requested_model}` is unavailable for spawn_agent."
@@ -494,6 +508,8 @@ mod spawn {
                             agent_type: Some(agent_type),
                             model: config.model.clone(),
                             model_provider_id: Some(config.model_provider_id.clone()),
+                            model_source,
+                            model_source_detail,
                             new_thread_id: None,
                             prompt: prompt_for_events,
                             status: AgentStatus::Errored(err.to_string()),
@@ -542,6 +558,8 @@ mod spawn {
                                 agent_type: Some(agent_type),
                                 model: model_for_events,
                                 model_provider_id: model_provider_id_for_events,
+                                model_source,
+                                model_source_detail,
                                 new_thread_id: None,
                                 prompt: prompt_for_events,
                                 status: AgentStatus::Errored(err.to_string()),
@@ -610,6 +628,8 @@ mod spawn {
                     agent_type: Some(agent_type.clone()),
                     model: model_for_events,
                     model_provider_id: model_provider_id_for_events,
+                    model_source,
+                    model_source_detail,
                     new_thread_id,
                     prompt: prompt_for_events,
                     status,
@@ -635,7 +655,8 @@ mod spawn {
             agent_type,
             model: model_for_result,
             model_provider_id: model_provider_id_for_result,
-            model_source,
+            model_source: model_source.unwrap_or(CollabAgentModelSource::Parent),
+            model_source_detail,
             parent_thread_id: session.conversation_id.to_string(),
             spawn_depth: child_depth,
             worktree_path: worktree
@@ -862,7 +883,8 @@ mod spawn {
                 agent_type: "explorer".to_string(),
                 model: "gpt-5.3-codex".to_string(),
                 model_provider_id: "openai".to_string(),
-                model_source: SpawnModelSource::Role,
+                model_source: CollabAgentModelSource::Role,
+                model_source_detail: Some(CollabAgentModelSourceDetail::RoleConfig),
                 parent_thread_id: "parent-1".to_string(),
                 spawn_depth: 1,
                 worktree_path: Some("/tmp/worktree".to_string()),
@@ -883,6 +905,7 @@ mod spawn {
                 "model": "gpt-5.3-codex",
                 "model_provider_id": "openai",
                 "model_source": "role",
+                "model_source_detail": "role_config",
                 "parent_thread_id": "parent-1",
                 "spawn_depth": 1,
                 "worktree_path": "/tmp/worktree",
@@ -900,7 +923,8 @@ mod spawn {
                 agent_type: "explorer".to_string(),
                 model: "gpt-5.3-codex".to_string(),
                 model_provider_id: "openai".to_string(),
-                model_source: SpawnModelSource::Parent,
+                model_source: CollabAgentModelSource::Parent,
+                model_source_detail: None,
                 parent_thread_id: "parent-1".to_string(),
                 spawn_depth: 1,
                 worktree_path: None,
@@ -1883,8 +1907,17 @@ mod calibrate_model_sub {
         let recommended_for_session = recommended_for_vouch
             .clone()
             .or_else(|| recommended_for_latency.clone());
+        let recommended_for_session_cache = recommended_for_session.clone().filter(|model| {
+            runs.iter().any(|run| {
+                run.model.eq_ignore_ascii_case(model)
+                    && matches!(run.status, AgentStatus::Completed(_))
+            })
+        });
+        session
+            .set_last_model_sub_calibration_recommended_for_session(recommended_for_session_cache)
+            .await;
         let next_step =
-            "Compare completed outputs, then call `record_model_sub_winner` (or `record_model_sub_duel`) to persist the winner."
+            "Compare completed outputs, then call `record_model_sub_winner` (or `record_model_sub_duel`) to persist the winner; `record_model_sub_winner` can omit winner/candidates to reuse this round's cached recommendation."
                 .to_string();
 
         let content = serde_json::to_string(&CalibrateModelSubResult {
@@ -2114,7 +2147,7 @@ mod record_model_sub_winner {
 
     #[derive(Debug, Deserialize)]
     struct RecordModelSubWinnerArgs {
-        winner_model: String,
+        winner_model: Option<String>,
         compared_models: Option<Vec<String>>,
         task_bucket: Option<String>,
         note: Option<String>,
@@ -2123,6 +2156,7 @@ mod record_model_sub_winner {
     #[derive(Debug, Serialize)]
     struct RecordModelSubWinnerResult {
         winner_model: String,
+        winner_model_source: String,
         compared_models_source: String,
         losers_recorded: Vec<String>,
         task_bucket: Option<String>,
@@ -2137,16 +2171,38 @@ mod record_model_sub_winner {
         arguments: String,
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: RecordModelSubWinnerArgs = parse_arguments(&arguments)?;
-        let winner_model = args.winner_model.trim();
-        if winner_model.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "winner_model must be non-empty".to_string(),
-            ));
-        }
+        let RecordModelSubWinnerArgs {
+            winner_model,
+            compared_models,
+            task_bucket,
+            note,
+        } = args;
+        let (winner_model, winner_model_source) = match winner_model {
+            Some(winner_model) => {
+                let winner_model = winner_model.trim();
+                if winner_model.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "winner_model must be non-empty when provided".to_string(),
+                    ));
+                }
+                (winner_model.to_string(), "provided".to_string())
+            }
+            None => {
+                let Some(winner_model) = session
+                    .get_last_model_sub_calibration_recommended_for_session()
+                    .await
+                else {
+                    return Err(FunctionCallError::RespondToModel(
+                        "winner_model is required unless calibrate_model_sub has already run in this session.".to_string(),
+                    ));
+                };
+                (winner_model, "session_last_calibration".to_string())
+            }
+        };
 
-        let task_bucket = normalize_task_bucket(args.task_bucket)?;
+        let task_bucket = normalize_task_bucket(task_bucket)?;
         let (compared_models, compared_models_source) =
-            if let Some(compared_models) = args.compared_models {
+            if let Some(compared_models) = compared_models {
                 (compared_models, "provided".to_string())
             } else {
                 (
@@ -2154,7 +2210,7 @@ mod record_model_sub_winner {
                     "session_last_calibration".to_string(),
                 )
             };
-        let losers = normalize_losers(winner_model, compared_models);
+        let losers = normalize_losers(winner_model.as_str(), compared_models);
         if losers.is_empty() {
             return Err(FunctionCallError::RespondToModel(
                 "compared_models must include at least one model different from winner_model; if omitted, run calibrate_model_sub first in this session."
@@ -2166,10 +2222,10 @@ mod record_model_sub_winner {
         for loser in &losers {
             winner_stats = crate::model_sub_vouch::record_model_sub_vouch(
                 &turn.config.codex_home,
-                winner_model,
+                winner_model.as_str(),
                 ModelSubVouchVerdict::Win,
                 task_bucket.as_deref(),
-                args.note.as_deref(),
+                note.as_deref(),
             )
             .map_err(FunctionCallError::RespondToModel)?;
             crate::model_sub_vouch::record_model_sub_vouch(
@@ -2177,7 +2233,7 @@ mod record_model_sub_winner {
                 loser,
                 ModelSubVouchVerdict::Loss,
                 task_bucket.as_deref(),
-                args.note.as_deref(),
+                note.as_deref(),
             )
             .map_err(FunctionCallError::RespondToModel)?;
         }
@@ -2186,7 +2242,8 @@ mod record_model_sub_winner {
             .await;
 
         let content = serde_json::to_string(&RecordModelSubWinnerResult {
-            winner_model: winner_model.to_string(),
+            winner_model: winner_model.clone(),
+            winner_model_source,
             compared_models_source,
             losers_recorded: losers,
             task_bucket,
@@ -2625,6 +2682,7 @@ mod tests {
         #[derive(Debug, Deserialize)]
         struct WinnerResult {
             winner_model: String,
+            winner_model_source: String,
             compared_models_source: String,
             losers_recorded: Vec<String>,
             winner_wins: u32,
@@ -2659,6 +2717,7 @@ mod tests {
         let result: WinnerResult =
             serde_json::from_str(&content).expect("winner result should parse");
         assert_eq!(result.winner_model, "claude-sonnet-4-6");
+        assert_eq!(result.winner_model_source, "provided");
         assert_eq!(result.compared_models_source, "provided");
         assert_eq!(result.losers_recorded.len(), 2);
         assert_eq!(result.winner_wins, 2);
@@ -2690,6 +2749,8 @@ mod tests {
     async fn record_model_sub_winner_uses_session_calibration_models_when_compared_omitted() {
         #[derive(Debug, Deserialize)]
         struct WinnerResult {
+            winner_model: String,
+            winner_model_source: String,
             compared_models_source: String,
             losers_recorded: Vec<String>,
         }
@@ -2704,12 +2765,16 @@ mod tests {
                 "gpt-5.1-codex-mini".to_string(),
             ])
             .await;
+        session
+            .set_last_model_sub_calibration_recommended_for_session(Some(
+                "claude-sonnet-4-6".to_string(),
+            ))
+            .await;
         let invocation = invocation(
             session.clone(),
             Arc::new(turn),
             "record_model_sub_winner",
             function_payload(json!({
-                "winner_model": "claude-sonnet-4-6",
                 "task_bucket": "general",
                 "note": "best overall output"
             })),
@@ -2727,6 +2792,8 @@ mod tests {
         };
         let result: WinnerResult =
             serde_json::from_str(&content).expect("winner result should parse");
+        assert_eq!(result.winner_model, "claude-sonnet-4-6");
+        assert_eq!(result.winner_model_source, "session_last_calibration");
         assert_eq!(result.compared_models_source, "session_last_calibration");
         assert_eq!(result.losers_recorded.len(), 2);
 
@@ -2771,12 +2838,55 @@ mod tests {
             Arc::new(session),
             Arc::new(turn),
             "record_model_sub_winner",
+            function_payload(json!({})),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("winner record should fail without a winner model fallback");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "winner_model is required unless calibrate_model_sub has already run in this session."
+                    .to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_rejects_when_winner_is_empty() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "record_model_sub_winner",
+            function_payload(json!({
+                "winner_model": "   "
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("winner record should fail for empty winner");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "winner_model must be non-empty when provided".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_rejects_when_omitted_compared_models_without_cache() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "record_model_sub_winner",
             function_payload(json!({
                 "winner_model": "claude-sonnet-4-6"
             })),
         );
         let Err(err) = MultiAgentHandler.handle(invocation).await else {
-            panic!("winner record should fail without compared models");
+            panic!("winner record should fail without compared models cache");
         };
         assert_eq!(
             err,
@@ -2937,6 +3047,11 @@ mod tests {
 
     #[tokio::test]
     async fn calibrate_model_sub_caches_candidate_models_for_follow_up_recording() {
+        #[derive(Debug, Deserialize)]
+        struct CalibrateResult {
+            recommended_for_session: Option<String>,
+        }
+
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
@@ -2951,10 +3066,19 @@ mod tests {
                 "wait_timeout_ms": 100
             })),
         );
-        let _ = MultiAgentHandler
+        let output = MultiAgentHandler
             .handle(invocation)
             .await
             .expect("calibration should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: CalibrateResult =
+            serde_json::from_str(&content).expect("calibration result should parse");
         assert_eq!(
             session.get_last_model_sub_calibration_models().await,
             vec![
@@ -2962,6 +3086,12 @@ mod tests {
                 "gpt-5.1-codex-mini".to_string(),
             ]
         );
+        let cached_recommended = session
+            .get_last_model_sub_calibration_recommended_for_session()
+            .await;
+        if let Some(cached_recommended) = cached_recommended {
+            assert_eq!(Some(cached_recommended), result.recommended_for_session);
+        }
     }
 
     #[tokio::test]

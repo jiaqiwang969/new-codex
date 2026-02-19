@@ -90,6 +90,10 @@ mod metrics {
     /// Number of stage-1 memories included in each phase-2 consolidation step.
     pub(super) const MEMORY_PHASE_TWO_INPUT: &str = "codex.memory.phase2.input";
 }
+
+pub const DEFAULT_MEMORY_PHASE_ONE_MODEL: &str = phase_one::MODEL;
+pub const DEFAULT_MEMORY_PHASE_TWO_MODEL: &str = phase_two::MODEL;
+
 pub fn memory_root(codex_home: &Path) -> PathBuf {
     codex_home.join("memories")
 }

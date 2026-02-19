@@ -6,11 +6,13 @@ use codex_protocol::openai_models::ReasoningEffort;
 const COLLABORATION_MODE_PLAN: &str = include_str!("../../templates/collaboration_mode/plan.md");
 const COLLABORATION_MODE_DEFAULT: &str =
     include_str!("../../templates/collaboration_mode/default.md");
+const COLLABORATION_MODE_COLLABORATIVE: &str =
+    include_str!("../../templates/collaboration_mode/collaborative.md");
 const KNOWN_MODE_NAMES_PLACEHOLDER: &str = "{{KNOWN_MODE_NAMES}}";
 const REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER: &str = "{{REQUEST_USER_INPUT_AVAILABILITY}}";
 
 pub(crate) fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
-    vec![plan_preset(), default_preset()]
+    vec![default_preset(), collaborative_preset(), plan_preset()]
 }
 
 fn plan_preset() -> CollaborationModeMask {
@@ -33,11 +35,33 @@ fn default_preset() -> CollaborationModeMask {
     }
 }
 
+fn collaborative_preset() -> CollaborationModeMask {
+    CollaborationModeMask {
+        name: ModeKind::Collaborative.display_name().to_string(),
+        mode: Some(ModeKind::Collaborative),
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: Some(Some(collaborative_mode_instructions())),
+    }
+}
+
 fn default_mode_instructions() -> String {
     let known_mode_names = format_mode_names(&TUI_VISIBLE_COLLABORATION_MODES);
     let request_user_input_availability =
         request_user_input_availability_message(ModeKind::Default);
     COLLABORATION_MODE_DEFAULT
+        .replace(KNOWN_MODE_NAMES_PLACEHOLDER, &known_mode_names)
+        .replace(
+            REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER,
+            &request_user_input_availability,
+        )
+}
+
+fn collaborative_mode_instructions() -> String {
+    let known_mode_names = format_mode_names(&TUI_VISIBLE_COLLABORATION_MODES);
+    let request_user_input_availability =
+        request_user_input_availability_message(ModeKind::Collaborative);
+    COLLABORATION_MODE_COLLABORATIVE
         .replace(KNOWN_MODE_NAMES_PLACEHOLDER, &known_mode_names)
         .replace(
             REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER,
@@ -75,6 +99,10 @@ mod tests {
     fn preset_names_use_mode_display_names() {
         assert_eq!(plan_preset().name, ModeKind::Plan.display_name());
         assert_eq!(default_preset().name, ModeKind::Default.display_name());
+        assert_eq!(
+            collaborative_preset().name,
+            ModeKind::Collaborative.display_name()
+        );
     }
 
     #[test]
@@ -94,5 +122,24 @@ mod tests {
         let expected_availability_message =
             request_user_input_availability_message(ModeKind::Default);
         assert!(default_instructions.contains(&expected_availability_message));
+    }
+
+    #[test]
+    fn collaborative_mode_instructions_replace_mode_names_placeholder() {
+        let collaborative_instructions = collaborative_preset()
+            .developer_instructions
+            .expect("collaborative preset should include instructions")
+            .expect("collaborative instructions should be set");
+
+        assert!(!collaborative_instructions.contains(KNOWN_MODE_NAMES_PLACEHOLDER));
+        assert!(!collaborative_instructions.contains(REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER));
+
+        let known_mode_names = format_mode_names(&TUI_VISIBLE_COLLABORATION_MODES);
+        let expected_snippet = format!("Known mode names are {known_mode_names}.");
+        assert!(collaborative_instructions.contains(&expected_snippet));
+
+        let expected_availability_message =
+            request_user_input_availability_message(ModeKind::Collaborative);
+        assert!(collaborative_instructions.contains(&expected_availability_message));
     }
 }

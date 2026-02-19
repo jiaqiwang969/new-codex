@@ -1883,6 +1883,21 @@ impl Session {
         state.get_last_model_sub_calibration_models()
     }
 
+    pub(crate) async fn set_last_model_sub_calibration_recommended_for_session(
+        &self,
+        model: Option<String>,
+    ) {
+        let mut state = self.state.lock().await;
+        state.set_last_model_sub_calibration_recommended_for_session(model);
+    }
+
+    pub(crate) async fn get_last_model_sub_calibration_recommended_for_session(
+        &self,
+    ) -> Option<String> {
+        let state = self.state.lock().await;
+        state.get_last_model_sub_calibration_recommended_for_session()
+    }
+
     // Merges connector IDs into the session-level explicit connector selection.
     pub(crate) async fn merge_connector_selection(
         &self,

@@ -373,6 +373,10 @@ pub struct MemoriesToml {
     pub phase_1_model: Option<String>,
     /// Model used for memory consolidation.
     pub phase_2_model: Option<String>,
+    /// Enable AI-generated WHY-focused summaries for Entire checkpoints.
+    pub entire_summary_enabled: Option<bool>,
+    /// Model used for Entire checkpoint summarization (defaults to model_sub).
+    pub entire_summary_model: Option<String>,
 }
 
 /// Effective memories settings after defaults are applied.
@@ -384,6 +388,8 @@ pub struct MemoriesConfig {
     pub min_rollout_idle_hours: i64,
     pub phase_1_model: Option<String>,
     pub phase_2_model: Option<String>,
+    pub entire_summary_enabled: bool,
+    pub entire_summary_model: Option<String>,
 }
 
 impl Default for MemoriesConfig {
@@ -395,6 +401,8 @@ impl Default for MemoriesConfig {
             min_rollout_idle_hours: DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS,
             phase_1_model: None,
             phase_2_model: None,
+            entire_summary_enabled: true,
+            entire_summary_model: None,
         }
     }
 }
@@ -421,6 +429,8 @@ impl From<MemoriesToml> for MemoriesConfig {
                 .clamp(1, 48),
             phase_1_model: toml.phase_1_model,
             phase_2_model: toml.phase_2_model,
+            entire_summary_enabled: toml.entire_summary_enabled.unwrap_or(true),
+            entire_summary_model: toml.entire_summary_model,
         }
     }
 }

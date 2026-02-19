@@ -30,6 +30,8 @@ pub enum ConfigEdit {
     /// Update the active (or default) utility ("sub") model used for internal tasks that require
     /// the Responses API.
     SetModelSubResponses { model_sub_responses: Option<String> },
+    /// Update the model used for Entire checkpoint WHY-focused summaries.
+    SetEntireSummaryModel { entire_summary_model: Option<String> },
     /// Update memories phase model overrides under `[memories]`.
     SetMemoriesPhaseModels {
         phase_1_model: Option<String>,
@@ -321,6 +323,14 @@ impl ConfigDocument {
                 model_sub_responses
                     .as_ref()
                     .map(|model_sub_value| value(model_sub_value.clone())),
+            )),
+            ConfigEdit::SetEntireSummaryModel {
+                entire_summary_model,
+            } => Ok(self.write_profile_value(
+                &["memories", "entire_summary_model"],
+                entire_summary_model
+                    .as_ref()
+                    .map(|model_value| value(model_value.clone())),
             )),
             ConfigEdit::SetMemoriesPhaseModels {
                 phase_1_model,
@@ -817,6 +827,13 @@ impl ConfigEditsBuilder {
     pub fn set_model_sub_responses(mut self, model_sub_responses: Option<&str>) -> Self {
         self.edits.push(ConfigEdit::SetModelSubResponses {
             model_sub_responses: model_sub_responses.map(ToOwned::to_owned),
+        });
+        self
+    }
+
+    pub fn set_entire_summary_model(mut self, entire_summary_model: Option<&str>) -> Self {
+        self.edits.push(ConfigEdit::SetEntireSummaryModel {
+            entire_summary_model: entire_summary_model.map(ToOwned::to_owned),
         });
         self
     }

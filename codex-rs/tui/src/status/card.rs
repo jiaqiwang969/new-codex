@@ -5,6 +5,7 @@ use crate::history_cell::with_border_with_inner_width;
 use crate::version::CODEX_CLI_VERSION;
 use chrono::DateTime;
 use chrono::Local;
+use codex_core::ModelProviderInfo;
 use codex_core::WireApi;
 use codex_core::config::Config;
 use codex_core::protocol::AskForApproval;
@@ -40,6 +41,7 @@ use super::rate_limits::compose_rate_limit_data;
 use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
+use crate::model_sub_vouch;
 use crate::team_profile;
 use crate::team_profile_vouch;
 use crate::wrapping::RtOptions;
@@ -61,6 +63,18 @@ pub(crate) struct StatusTokenUsageData {
     context_window: Option<StatusContextWindowData>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusUtilityRoutingHint {
+    pub(crate) model: String,
+    pub(crate) source_label: String,
+}
+
+#[derive(Debug, Clone)]
+struct StatusMemoryModel {
+    model: String,
+    source_label: String,
+}
+
 #[derive(Debug)]
 struct StatusHistoryCell {
     model_name: String,
@@ -70,11 +84,18 @@ struct StatusHistoryCell {
     team_profile_auto: Option<String>,
     utility_model_name: String,
     utility_model_configured: bool,
+    utility_model_auto_selected: bool,
+    utility_model_source: String,
     utility_model_provider: Option<String>,
     show_utility_model_responses: bool,
     utility_model_responses_name: String,
     utility_model_responses_configured: bool,
     utility_model_responses_provider: Option<String>,
+    memory_scope: String,
+    entire_tracing: String,
+    memory_phase_one: StatusMemoryModel,
+    memory_phase_two: StatusMemoryModel,
+    entire_summary_model: StatusMemoryModel,
     directory: PathBuf,
     permissions: String,
     agents_summary: String,
@@ -106,7 +127,7 @@ pub(crate) fn new_status_output(
     reasoning_effort_override: Option<Option<ReasoningEffort>>,
 ) -> CompositeHistoryCell {
     let snapshots = rate_limits.map(std::slice::from_ref).unwrap_or_default();
-    new_status_output_with_rate_limits(
+    new_status_output_with_rate_limits_and_utility_routing(
         config,
         auth_manager,
         token_info,
@@ -120,11 +141,12 @@ pub(crate) fn new_status_output(
         model_name,
         collaboration_mode,
         reasoning_effort_override,
+        None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn new_status_output_with_rate_limits(
+pub(crate) fn new_status_output_with_rate_limits_and_utility_routing(
     config: &Config,
     auth_manager: &AuthManager,
     token_info: Option<&TokenUsageInfo>,
@@ -138,6 +160,7 @@ pub(crate) fn new_status_output_with_rate_limits(
     model_name: &str,
     collaboration_mode: Option<&str>,
     reasoning_effort_override: Option<Option<ReasoningEffort>>,
+    utility_routing_hint: Option<StatusUtilityRoutingHint>,
 ) -> CompositeHistoryCell {
     let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
     let card = StatusHistoryCell::new(
@@ -154,6 +177,7 @@ pub(crate) fn new_status_output_with_rate_limits(
         model_name,
         collaboration_mode,
         reasoning_effort_override,
+        utility_routing_hint,
     );
 
     CompositeHistoryCell::new(vec![Box::new(command), Box::new(card)])
@@ -175,11 +199,20 @@ impl StatusHistoryCell {
         model_name: &str,
         collaboration_mode: Option<&str>,
         reasoning_effort_override: Option<Option<ReasoningEffort>>,
+        utility_routing_hint: Option<StatusUtilityRoutingHint>,
     ) -> Self {
+        let (active_model_provider_id, active_model_provider) =
+            codex_core::utility_provider_for_model_slug(config, model_name).unwrap_or_else(|| {
+                (
+                    config.model_provider_id.clone(),
+                    config.model_provider.clone(),
+                )
+            });
+        let active_model_wire_api = active_model_provider.wire_api;
         let mut config_entries = vec![
             ("workdir", config.cwd.display().to_string()),
             ("model", model_name.to_string()),
-            ("provider", config.model_provider_id.clone()),
+            ("provider", active_model_provider_id.clone()),
             (
                 "approval",
                 config.permissions.approval_policy.value().to_string(),
@@ -189,7 +222,7 @@ impl StatusHistoryCell {
                 summarize_sandbox_policy(config.permissions.sandbox_policy.get()),
             ),
         ];
-        if config.model_provider.wire_api == WireApi::Responses {
+        if active_model_wire_api == WireApi::Responses {
             let effort_value = reasoning_effort_override
                 .unwrap_or(None)
                 .map(|effort| effort.to_string())
@@ -235,7 +268,8 @@ impl StatusHistoryCell {
             format!("Custom ({sandbox}, {approval})")
         };
         let agents_summary = compose_agents_summary(config);
-        let model_provider = format_model_provider(config);
+        let model_provider =
+            format_model_provider(&active_model_provider_id, &active_model_provider);
         let account = compose_account_display(auth_manager, plan_type);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
         let forked_from = forked_from.map(|id| id.to_string());
@@ -262,8 +296,18 @@ impl StatusHistoryCell {
             compose_rate_limit_data_many(rate_limits, now)
         };
 
-        let utility_model_name = config
+        let utility_model_vouch = if config.model_sub.is_none() && utility_routing_hint.is_none() {
+            let vouch_snapshot = model_sub_vouch::load_model_sub_vouch(&config.codex_home);
+            model_sub_vouch::recommended_model_sub_from_snapshot(&vouch_snapshot, None)
+        } else {
+            None
+        };
+        let utility_model_runtime = config
             .model_sub
+            .clone()
+            .or_else(|| utility_routing_hint.as_ref().map(|hint| hint.model.clone()))
+            .or_else(|| utility_model_vouch.clone());
+        let utility_model_name = utility_model_runtime
             .clone()
             .unwrap_or_else(|| "task defaults".to_string());
         let active_team_profile = team_profile::profile_for_config(config);
@@ -343,8 +387,18 @@ impl StatusHistoryCell {
             None
         };
         let utility_model_configured = config.model_sub.is_some();
-        let utility_model_provider = config
-            .model_sub
+        let utility_model_auto_selected = !utility_model_configured
+            && (utility_routing_hint.is_some() || utility_model_vouch.is_some());
+        let utility_model_source = if utility_model_configured {
+            "config.model_sub".to_string()
+        } else if let Some(hint) = utility_routing_hint.as_ref() {
+            format!("auto ({})", hint.source_label)
+        } else if utility_model_vouch.is_some() {
+            "auto (model_sub_vouch)".to_string()
+        } else {
+            "task defaults (parent/role)".to_string()
+        };
+        let utility_model_provider = utility_model_runtime
             .as_deref()
             .and_then(|model| format_utility_model_provider(config, model));
         let utility_model_responses_name =
@@ -352,14 +406,35 @@ impl StatusHistoryCell {
         let utility_model_responses_configured = config
             .model_sub_responses
             .as_deref()
-            .is_some_and(|model| codex_core::is_openai_model_slug(model));
+            .is_some_and(codex_core::is_openai_model_slug);
         let utility_model_responses_provider =
             format_utility_model_provider(config, &utility_model_responses_name);
         let show_utility_model_responses = utility_model_responses_configured
-            || (!utility_model_configured && config.model_provider.wire_api != WireApi::Responses)
-            || (utility_model_configured
-                && (utility_model_responses_name != utility_model_name
-                    || utility_model_responses_provider != utility_model_provider));
+            || (!utility_model_configured && active_model_wire_api != WireApi::Responses)
+            || utility_model_runtime.is_some_and(|_| {
+                utility_model_responses_name != utility_model_name
+                    || utility_model_responses_provider != utility_model_provider
+            });
+        let memory_scope = "auto (cwd -> user -> global)".to_string();
+        let entire_tracing = describe_entire_tracing(config);
+        let memory_phase_one = resolve_memory_model_display(
+            config.memories.phase_1_model.as_deref(),
+            config.model_sub.as_deref(),
+            codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL,
+            "memories.phase_1_model",
+        );
+        let memory_phase_two = resolve_memory_model_display(
+            config.memories.phase_2_model.as_deref(),
+            config.model_sub.as_deref(),
+            codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL,
+            "memories.phase_2_model",
+        );
+        let entire_summary_model = resolve_memory_model_display(
+            config.memories.entire_summary_model.as_deref(),
+            config.model_sub.as_deref(),
+            codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL,
+            "memories.entire_summary_model",
+        );
 
         Self {
             model_name,
@@ -369,11 +444,18 @@ impl StatusHistoryCell {
             team_profile_auto,
             utility_model_name,
             utility_model_configured,
+            utility_model_auto_selected,
+            utility_model_source,
             utility_model_provider,
             show_utility_model_responses,
             utility_model_responses_name,
             utility_model_responses_configured,
             utility_model_responses_provider,
+            memory_scope,
+            entire_tracing,
+            memory_phase_one,
+            memory_phase_two,
+            entire_summary_model,
             directory: config.cwd.clone(),
             permissions,
             agents_summary,
@@ -571,7 +653,11 @@ impl HistoryCell for StatusHistoryCell {
         if self.team_profile_auto.is_some() {
             push_label(&mut labels, &mut seen, "Team profile auto");
         }
+        if self.model_provider.is_some() {
+            push_label(&mut labels, &mut seen, "Model provider");
+        }
         push_label(&mut labels, &mut seen, "Utility/sub-agent");
+        push_label(&mut labels, &mut seen, "Utility source");
         if self.utility_model_provider.is_some() {
             push_label(&mut labels, &mut seen, "Utility provider");
         }
@@ -581,10 +667,10 @@ impl HistoryCell for StatusHistoryCell {
                 push_label(&mut labels, &mut seen, "Resp. util prov");
             }
         }
-
-        if self.model_provider.is_some() {
-            push_label(&mut labels, &mut seen, "Model provider");
-        }
+        push_label(&mut labels, &mut seen, "Memory scope");
+        push_label(&mut labels, &mut seen, "Entire tracing");
+        push_label(&mut labels, &mut seen, "Memory phase-1");
+        push_label(&mut labels, &mut seen, "Memory phase-2");
         if account_value.is_some() {
             push_label(&mut labels, &mut seen, "Account");
         }
@@ -654,12 +740,17 @@ impl HistoryCell for StatusHistoryCell {
         }
         let mut utility_model_spans = vec![Span::from(self.utility_model_name.clone())];
         if !self.utility_model_configured {
-            utility_model_spans.push(Span::from(" (inherit)").dim());
+            if self.utility_model_auto_selected {
+                utility_model_spans.push(Span::from(" (auto)").dim());
+            } else {
+                utility_model_spans.push(Span::from(" (inherit)").dim());
+            }
         }
         lines.push(formatter.line("Utility/sub-agent", utility_model_spans));
-        if let Some(provider) = self.utility_model_provider.as_ref() {
-            lines.push(formatter.line("Utility provider", vec![Span::from(provider.clone())]));
-        }
+        lines.push(formatter.line(
+            "Utility source",
+            vec![Span::from(self.utility_model_source.clone())],
+        ));
         if self.show_utility_model_responses {
             let mut utility_model_responses_spans =
                 vec![Span::from(self.utility_model_responses_name.clone())];
@@ -667,13 +758,27 @@ impl HistoryCell for StatusHistoryCell {
                 utility_model_responses_spans.push(Span::from(" (inherit)").dim());
             }
             lines.push(formatter.line("Resp. util model", utility_model_responses_spans));
-            if let Some(provider) = self.utility_model_responses_provider.as_ref() {
-                lines.push(formatter.line("Resp. util prov", vec![Span::from(provider.clone())]));
-            }
         }
-        if let Some(model_provider) = self.model_provider.as_ref() {
-            lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));
-        }
+        lines.push(formatter.line("Memory scope", vec![Span::from(self.memory_scope.clone())]));
+        lines.push(formatter.line(
+            "Entire tracing",
+            vec![Span::from(self.entire_tracing.clone())],
+        ));
+        let mut memory_phase_one_spans = vec![Span::from(self.memory_phase_one.model.clone())];
+        memory_phase_one_spans.push(Span::from(" (").dim());
+        memory_phase_one_spans.push(Span::from(self.memory_phase_one.source_label.clone()).dim());
+        memory_phase_one_spans.push(Span::from(")").dim());
+        lines.push(formatter.line("Memory phase-1", memory_phase_one_spans));
+        let mut memory_phase_two_spans = vec![Span::from(self.memory_phase_two.model.clone())];
+        memory_phase_two_spans.push(Span::from(" (").dim());
+        memory_phase_two_spans.push(Span::from(self.memory_phase_two.source_label.clone()).dim());
+        memory_phase_two_spans.push(Span::from(")").dim());
+        lines.push(formatter.line("Memory phase-2", memory_phase_two_spans));
+        let mut entire_summary_spans = vec![Span::from(self.entire_summary_model.model.clone())];
+        entire_summary_spans.push(Span::from(" (").dim());
+        entire_summary_spans.push(Span::from(self.entire_summary_model.source_label.clone()).dim());
+        entire_summary_spans.push(Span::from(")").dim());
+        lines.push(formatter.line("Entire summary", entire_summary_spans));
         lines.push(formatter.line("Directory", vec![Span::from(directory_value)]));
         lines.push(formatter.line("Permissions", vec![Span::from(self.permissions.clone())]));
         lines.push(formatter.line("Agents.md", vec![Span::from(self.agents_summary.clone())]));
@@ -720,14 +825,9 @@ impl HistoryCell for StatusHistoryCell {
     }
 }
 
-fn format_model_provider(config: &Config) -> Option<String> {
-    let provider = &config.model_provider;
+fn format_model_provider(provider_id: &str, provider: &ModelProviderInfo) -> Option<String> {
     let name = provider.name.trim();
-    let provider_name = if name.is_empty() {
-        config.model_provider_id.as_str()
-    } else {
-        name
-    };
+    let provider_name = if name.is_empty() { provider_id } else { name };
     let base_url = provider.base_url.as_deref().and_then(sanitize_base_url);
     let is_default_openai = provider.is_openai() && base_url.is_none();
     if is_default_openai {
@@ -759,6 +859,48 @@ fn format_utility_model_provider(config: &Config, model_slug: &str) -> Option<St
         Some(base_url) => format!("{provider_name} - {base_url}"),
         None => provider_name.to_string(),
     })
+}
+
+fn describe_entire_tracing(config: &Config) -> String {
+    let Some(notify_cmd) = config.notify.as_ref() else {
+        return "not configured (set notify=[\"entire\", \"hooks\", \"codex\", \"notify\"])"
+            .to_string();
+    };
+
+    if notify_cmd
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("entire"))
+    {
+        "notify hook -> git checkpoints (entire/*, Entire-Checkpoint trailers)".to_string()
+    } else {
+        "notify hook configured (non-entire command)".to_string()
+    }
+}
+
+fn resolve_memory_model_display(
+    explicit_model: Option<&str>,
+    model_sub: Option<&str>,
+    default_model: &str,
+    explicit_source_label: &str,
+) -> StatusMemoryModel {
+    if let Some(model) = explicit_model {
+        return StatusMemoryModel {
+            model: model.to_string(),
+            source_label: explicit_source_label.to_string(),
+        };
+    }
+
+    if let Some(model) = model_sub {
+        return StatusMemoryModel {
+            model: model.to_string(),
+            source_label: "config.model_sub".to_string(),
+        };
+    }
+
+    StatusMemoryModel {
+        model: default_model.to_string(),
+        source_label: "memory default".to_string(),
+    }
 }
 
 fn sanitize_base_url(raw: &str) -> Option<String> {

@@ -1,6 +1,5 @@
 ---
 source: tui/src/status/tests.rs
-assertion_line: 849
 expression: sanitized
 ---
 /status
@@ -13,6 +12,11 @@ expression: sanitized
 │                                                                    │
 │  Model:               gpt-5.1-codex-max (reasoning high, summaries │
 │  Utility/sub-agent:   task defaults (inherit)                      │
+│  Utility source:      task defaults (parent/role)                  │
+│  Memory scope:        auto (cwd -> user -> global)                 │
+│  Entire tracing:      not configured (set notify=["entire", "hooks │
+│  Memory phase-1:      gpt-5.3-codex-spark (memory default)         │
+│  Memory phase-2:      gpt-5.3-codex (memory default)               │
 │  Directory: [[workspace]]                                          │
 │  Permissions:         Custom (read-only, on-request)               │
 │  Agents.md:           <none>                                       │

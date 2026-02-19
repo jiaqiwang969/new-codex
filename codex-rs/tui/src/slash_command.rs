@@ -17,6 +17,7 @@ pub enum SlashCommand {
     TeamVouch,
     ModelSub,
     ModelSubResponses,
+    ModelEntire,
     Approvals,
     Permissions,
     #[strum(serialize = "setup-default-sandbox")]
@@ -105,9 +106,12 @@ impl SlashCommand {
             SlashCommand::ModelSubResponses => {
                 "choose Responses fallback utility model when needed"
             }
+            SlashCommand::ModelEntire => {
+                "choose model for Entire checkpoint WHY-focused summaries"
+            }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
-            SlashCommand::Collab => "change collaboration mode (experimental)",
+            SlashCommand::Collab => "change collaboration mode (Default / Collaborative / Plan)",
             SlashCommand::Agent => "switch the active agent thread",
             SlashCommand::RalphLoop => "start a Ralph loop that repeats the same prompt until done",
             SlashCommand::CancelRalph => "cancel the active Ralph loop",
@@ -173,6 +177,7 @@ impl SlashCommand {
             | SlashCommand::TeamVouch
             | SlashCommand::ModelSub
             | SlashCommand::ModelSubResponses
+            | SlashCommand::ModelEntire
             | SlashCommand::Personality
             | SlashCommand::Approvals
             | SlashCommand::Permissions

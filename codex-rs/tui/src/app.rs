@@ -2667,6 +2667,53 @@ impl App {
                     }
                 }
             }
+            AppEvent::PersistModelEntireSelection { model_entire } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_entire_summary_model(model_entire.as_deref())
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.memories.entire_summary_model = model_entire.clone();
+                        self.chat_widget
+                            .set_entire_summary_model(model_entire.clone());
+                        let effective = model_entire
+                            .as_deref()
+                            .or(self.config.model_sub.as_deref())
+                            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+                        let mut message = if model_entire.is_some() {
+                            format!("Entire summary model changed to {effective}")
+                        } else {
+                            format!("Entire summary model set to inherit ({effective})")
+                        };
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist Entire summary model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save Entire summary model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default Entire summary model: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
             AppEvent::PersistPersonalitySelection { personality } => {
                 let profile = self.active_profile.as_deref();
                 match ConfigEditsBuilder::new(&self.config.codex_home)

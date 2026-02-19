@@ -336,6 +336,18 @@ pub(crate) fn recommended_model_sub<'a>(
     recommended
 }
 
+pub(crate) fn recommended_model_sub_from_snapshot(
+    vouch_snapshot: &ModelSubVouchSnapshot,
+    task_bucket: Option<TeamProfileTaskBucket>,
+) -> Option<String> {
+    let candidates = vouch_snapshot
+        .entries
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    recommended_model_sub(vouch_snapshot, task_bucket, candidates)
+}
+
 fn model_sub_vouch_path(codex_home: &Path) -> PathBuf {
     codex_home.join(MODEL_SUB_VOUCH_REL_PATH)
 }
@@ -344,6 +356,7 @@ fn model_sub_vouch_path(codex_home: &Path) -> PathBuf {
 mod tests {
     use super::load_model_sub_vouch;
     use super::recommended_model_sub;
+    use super::recommended_model_sub_from_snapshot;
     use super::record_model_sub_vouch;
     use crate::team_profile_vouch::TeamProfileTaskBucket;
     use crate::team_profile_vouch::TeamProfileVouchVerdict;
@@ -437,5 +450,37 @@ mod tests {
         let candidates = vec!["claude-sonnet-4-6", "gpt-5.2-codex"];
         let recommended = recommended_model_sub(&snapshot, None, candidates.iter().copied());
         assert_eq!(recommended, None);
+    }
+
+    #[test]
+    fn recommended_model_from_snapshot_uses_all_known_entries() {
+        let home = tempdir().expect("tempdir");
+        let memories_dir = home.path().join("memories");
+        fs::create_dir_all(&memories_dir).expect("create memories dir");
+        fs::write(
+            memories_dir.join("model_sub_vouch.json"),
+            r#"{
+  "models": {
+    "claude-sonnet-4-6": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [
+        { "verdict": "Win" }
+      ]
+    },
+    "gpt-5.2-codex": {
+      "wins": 1,
+      "losses": 2,
+      "recent_events": [
+        { "verdict": "Loss" }
+      ]
+    }
+  }
+}"#,
+        )
+        .expect("write vouch file");
+        let snapshot = load_model_sub_vouch(home.path());
+        let recommended = recommended_model_sub_from_snapshot(&snapshot, None);
+        assert_eq!(recommended.as_deref(), Some("claude-sonnet-4-6"));
     }
 }

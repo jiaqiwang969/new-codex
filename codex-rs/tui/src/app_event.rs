@@ -184,6 +184,11 @@ pub(crate) enum AppEvent {
         model_sub_responses: Option<String>,
     },
 
+    /// Persist the selected model for Entire checkpoint WHY-focused summaries.
+    PersistModelEntireSelection {
+        model_entire: Option<String>,
+    },
+
     /// Persist the selected personality to the appropriate config.
     PersistPersonalitySelection {
         personality: Personality,

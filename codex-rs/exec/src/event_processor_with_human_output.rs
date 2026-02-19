@@ -750,6 +750,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 agent_type,
                 model,
                 model_provider_id,
+                model_source: _,
+                model_source_detail: _,
                 new_thread_id,
                 prompt,
                 status,

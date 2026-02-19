@@ -410,7 +410,7 @@ model_sub_responses = "gpt-5.1-codex-mini"
 建议 leader 在查看候选输出后调用 `record_model_sub_winner`（或 `record_model_sub_duel`）落盘功过，这样同会话后续协作可直接复用最优小弟。
 可手工调用：
 - `calibrate_model_sub`（同题跑多模型）
-- `record_model_sub_winner`（一次记录 winner vs 所有候选；若省略 `compared_models`，会复用本 session 最近一次 `calibrate_model_sub` 的候选集）
+- `record_model_sub_winner`（一次记录 winner vs 所有候选；可省略 `winner_model` 与 `compared_models`，自动复用本 session 最近一次 `calibrate_model_sub` 的推荐 winner 与候选集）
 - `record_model_sub_duel`（单对单记分）
 `/status` 会在有功过数据时展示 `Team profile auto`，给出 `general/debug/review` 的推荐 profile。
 

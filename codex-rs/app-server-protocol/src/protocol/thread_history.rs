@@ -1744,6 +1744,8 @@ mod tests {
                 agent_type: Some("explorer".into()),
                 model: Some("claude-opus-4-6".into()),
                 model_provider_id: Some("anthropic".into()),
+                model_source: None,
+                model_source_detail: None,
                 new_thread_id: Some(
                     ThreadId::try_from("00000000-0000-0000-0000-000000000002")
                         .expect("valid receiver thread id"),
@@ -1806,6 +1808,8 @@ mod tests {
                 agent_type: Some("explorer".into()),
                 model: Some("claude-sonnet-4-6".into()),
                 model_provider_id: Some("anthropic".into()),
+                model_source: None,
+                model_source_detail: None,
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
@@ -1878,6 +1882,8 @@ mod tests {
                 agent_type: Some("explorer".into()),
                 model: Some("claude-opus-4-6".into()),
                 model_provider_id: Some("anthropic".into()),
+                model_source: None,
+                model_source_detail: None,
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,

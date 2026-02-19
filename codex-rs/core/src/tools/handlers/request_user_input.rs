@@ -120,6 +120,7 @@ mod tests {
     fn request_user_input_mode_availability_is_plan_only() {
         assert!(ModeKind::Plan.allows_request_user_input());
         assert!(!ModeKind::Default.allows_request_user_input());
+        assert!(!ModeKind::Collaborative.allows_request_user_input());
         assert!(!ModeKind::Execute.allows_request_user_input());
         assert!(!ModeKind::PairProgramming.allows_request_user_input());
     }
@@ -130,6 +131,10 @@ mod tests {
         assert_eq!(
             request_user_input_unavailable_message(ModeKind::Default),
             Some("request_user_input is unavailable in Default mode".to_string())
+        );
+        assert_eq!(
+            request_user_input_unavailable_message(ModeKind::Collaborative),
+            Some("request_user_input is unavailable in Collaborative mode".to_string())
         );
         assert_eq!(
             request_user_input_unavailable_message(ModeKind::Execute),

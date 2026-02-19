@@ -72,6 +72,7 @@ use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::CodexErrorInfo;
+use codex_core::protocol::CollabAgentModelSource;
 use codex_core::protocol::CollabAgentSpawnEndEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::DeprecationNoticeEvent;
@@ -999,6 +1000,10 @@ impl ChatWidget {
         self.config.model_sub_responses = model_sub_responses;
     }
 
+    pub(crate) fn set_entire_summary_model(&mut self, entire_summary_model: Option<String>) {
+        self.config.memories.entire_summary_model = entire_summary_model;
+    }
+
     /// Stores async git-branch lookup results for the current status-line cwd.
     ///
     /// Results are dropped when they target an out-of-date cwd to avoid rendering stale branch
@@ -1332,10 +1337,14 @@ impl ChatWidget {
             agent_type: ev.agent_type.clone(),
             model: ev.model.clone(),
             model_provider_id: ev.model_provider_id.clone(),
+            model_source: ev.model_source,
+            model_source_detail: ev.model_source_detail,
         };
         if metadata.agent_type.is_none()
             && metadata.model.is_none()
             && metadata.model_provider_id.is_none()
+            && metadata.model_source.is_none()
+            && metadata.model_source_detail.is_none()
         {
             return;
         }
@@ -3460,6 +3469,9 @@ impl ChatWidget {
             }
             SlashCommand::ModelSubResponses => {
                 self.open_model_sub_responses_popup();
+            }
+            SlashCommand::ModelEntire => {
+                self.open_model_entire_popup();
             }
             SlashCommand::Personality => {
                 self.open_personality_popup();
@@ -5785,21 +5797,59 @@ impl ChatWidget {
             .values()
             .cloned()
             .collect();
-        self.add_to_history(crate::status::new_status_output_with_rate_limits(
-            &self.config,
-            self.auth_manager.as_ref(),
-            token_info,
-            total_usage,
-            &self.thread_id,
-            self.thread_name.clone(),
-            self.forked_from,
-            rate_limit_snapshots.as_slice(),
-            self.plan_type,
-            Local::now(),
-            self.model_display_name(),
-            collaboration_mode,
-            reasoning_effort_override,
-        ));
+        let utility_routing_hint = if self.config.model_sub.is_some() {
+            None
+        } else {
+            self.current_turn_known_collab_agent_changes
+                .last()
+                .map(|change| change.thread_id.clone())
+                .or_else(|| {
+                    self.known_collab_agent_changes_by_turn
+                        .iter()
+                        .rev()
+                        .find_map(|turn_changes| {
+                            turn_changes.last().map(|change| change.thread_id.clone())
+                        })
+                })
+                .and_then(|thread_id| self.known_collab_agents.get(&thread_id))
+                .and_then(|metadata| {
+                    let model = metadata.model.as_ref()?;
+                    let model_source = metadata.model_source?;
+                    if !matches!(
+                        model_source,
+                        CollabAgentModelSource::ModelSub | CollabAgentModelSource::ModelSubAuto
+                    ) {
+                        return None;
+                    }
+                    let source_label = metadata
+                        .model_source_detail
+                        .map(crate::multi_agents::model_source_detail_label)
+                        .unwrap_or_else(|| crate::multi_agents::model_source_label(model_source))
+                        .to_string();
+                    Some(crate::status::StatusUtilityRoutingHint {
+                        model: model.clone(),
+                        source_label,
+                    })
+                })
+        };
+        self.add_to_history(
+            crate::status::new_status_output_with_rate_limits_and_utility_routing(
+                &self.config,
+                self.auth_manager.as_ref(),
+                token_info,
+                total_usage,
+                &self.thread_id,
+                self.thread_name.clone(),
+                self.forked_from,
+                rate_limit_snapshots.as_slice(),
+                self.plan_type,
+                Local::now(),
+                self.model_display_name(),
+                collaboration_mode,
+                reasoning_effort_override,
+                utility_routing_hint,
+            ),
+        );
     }
 
     pub(crate) fn add_debug_config_output(&mut self) {
@@ -6792,6 +6842,101 @@ impl ChatWidget {
         let header = self.model_menu_header(
             "Select Responses Utility Model",
             "Fallback used by Responses-only internal tasks when the general utility/sub-agent model cannot be used.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
+    }
+
+    /// Open a popup to choose the model used for Entire checkpoint WHY-focused summaries.
+    pub(crate) fn open_model_entire_popup(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Model selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try /model-entire again in a moment."
+                        .to_string(),
+                    None,
+                );
+                return;
+            }
+        };
+        self.open_model_entire_popup_with_presets(presets);
+    }
+
+    pub(crate) fn open_model_entire_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
+        let configured = self.config.memories.entire_summary_model.as_deref();
+        let effective = configured
+            .or(self.config.model_sub.as_deref())
+            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+
+        let presets: Vec<ModelPreset> = presets
+            .into_iter()
+            .filter(|preset| preset.show_in_picker)
+            .collect();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        let inherit_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+            tx.send(AppEvent::PersistModelEntireSelection {
+                model_entire: None,
+            });
+        })];
+        items.push(SelectionItem {
+            name: format!("Inherit ({effective})"),
+            description: Some(
+                "Use model_sub if configured, otherwise fall back to the built-in default."
+                    .to_string(),
+            ),
+            is_current: configured.is_none(),
+            actions: inherit_actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+
+        for preset in presets.into_iter() {
+            let description =
+                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let model = preset.model.clone();
+            let model_for_action = model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistModelEntireSelection {
+                    model_entire: Some(model_for_action.clone()),
+                });
+            })];
+            items.push(SelectionItem {
+                name: preset.model,
+                description,
+                is_current: configured == Some(model.as_str()),
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        if configured.is_some() && !items.iter().any(|item| item.is_current) {
+            self.add_info_message(
+                format!(
+                    "Current Entire summary model ({effective}) is not listed in the picker. Edit config.toml to change it, or select a listed model."
+                ),
+                None,
+            );
+        }
+
+        let header = self.model_menu_header(
+            "Select Entire Summary Model",
+            "Model used to generate WHY-focused summaries for Entire checkpoints.",
         );
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),
@@ -8261,6 +8406,7 @@ impl ChatWidget {
             return None;
         }
         match self.active_mode_kind() {
+            ModeKind::Collaborative => Some(CollaborationModeIndicator::Collaborative),
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
             ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
         }
@@ -8287,7 +8433,7 @@ impl ChatWidget {
         }
     }
 
-    /// Cycle to the next collaboration mode variant (Plan -> Default -> Plan).
+    /// Cycle to the next collaboration mode preset in list order.
     fn cycle_collaboration_mode(&mut self) {
         if !self.collaboration_modes_enabled() {
             return;

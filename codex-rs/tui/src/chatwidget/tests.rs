@@ -2404,6 +2404,8 @@ async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_i
             agent_type: Some("explorer".to_string()),
             model: Some("claude-sonnet-4-6".to_string()),
             model_provider_id: Some("anthropic".to_string()),
+            model_source: None,
+            model_source_detail: None,
             new_thread_id: Some(receiver_thread_id),
             prompt: "inspect old".to_string(),
             status: AgentStatus::Running,
@@ -2436,6 +2438,8 @@ async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_i
             agent_type: Some("worker".to_string()),
             model: Some("claude-opus-4-6".to_string()),
             model_provider_id: Some("anthropic".to_string()),
+            model_source: None,
+            model_source_detail: None,
             new_thread_id: Some(receiver_thread_id),
             prompt: "inspect new".to_string(),
             status: AgentStatus::Running,
@@ -3682,6 +3686,13 @@ async fn collab_mode_shift_tab_cycles_only_when_enabled_and_idle() {
     chat.set_feature_enabled(Feature::CollaborationModes, true);
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(
+        chat.active_collaboration_mode_kind(),
+        ModeKind::Collaborative
+    );
+    assert_eq!(chat.current_collaboration_mode(), &initial);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert_eq!(chat.current_collaboration_mode(), &initial);
 
@@ -3706,6 +3717,10 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
     assert!(
         popup.contains("Select Collaboration Mode"),
         "expected collaboration picker: {popup}"
+    );
+    assert!(
+        popup.contains("Collaborative"),
+        "expected collaboration picker to include Collaborative mode: {popup}"
     );
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
@@ -3899,6 +3914,58 @@ async fn experimental_mode_plan_applies_on_startup() {
 
     let chat = ChatWidget::new(init, thread_manager);
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(chat.current_model(), resolved_model);
+}
+
+#[tokio::test]
+async fn experimental_mode_collaborative_applies_on_startup() {
+    let codex_home = tempdir().expect("tempdir");
+    let cfg = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(vec![
+            (
+                "features.collaboration_modes".to_string(),
+                TomlValue::Boolean(true),
+            ),
+            (
+                "tui.experimental_mode".to_string(),
+                TomlValue::String("collaborative".to_string()),
+            ),
+        ])
+        .build()
+        .await
+        .expect("config");
+    let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
+    let otel_manager = test_otel_manager(&cfg, resolved_model.as_str());
+    let thread_manager = Arc::new(
+        codex_core::test_support::thread_manager_with_models_provider(
+            CodexAuth::from_api_key("test"),
+            cfg.model_provider.clone(),
+        ),
+    );
+    let auth_manager =
+        codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test"));
+    let init = ChatWidgetInit {
+        config: cfg,
+        frame_requester: FrameRequester::test_dummy(),
+        app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
+        initial_user_message: None,
+        enhanced_keys_supported: false,
+        auth_manager,
+        models_manager: thread_manager.get_models_manager(),
+        feedback: codex_feedback::CodexFeedback::new(),
+        is_first_run: true,
+        feedback_audience: FeedbackAudience::External,
+        model: Some(resolved_model.clone()),
+        status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        otel_manager,
+    };
+
+    let chat = ChatWidget::new(init, thread_manager);
+    assert_eq!(
+        chat.active_collaboration_mode_kind(),
+        ModeKind::Collaborative
+    );
     assert_eq!(chat.current_model(), resolved_model);
 }
 

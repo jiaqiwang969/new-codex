@@ -598,7 +598,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
         description:
-            "Spawn a sub-agent for a well-scoped task. Returns the agent id plus agent_type + model + model_provider_id + model_source + parent_thread_id + spawn_depth; on first-use auto calibration it may also include auto_calibration run summaries + recommendation hints; and when memory is active also returns memory_scope_version + memory_binding_key so orchestrators can preserve memory continuity."
+            "Spawn a sub-agent for a well-scoped task. Returns the agent id plus agent_type + model + model_provider_id + model_source + model_source_detail + parent_thread_id + spawn_depth; on first-use auto calibration it may also include auto_calibration run summaries + recommendation hints; and when memory is active also returns memory_scope_version + memory_binding_key so orchestrators can preserve memory continuity."
                 .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -868,7 +868,10 @@ fn create_record_model_sub_winner_tool() -> ToolSpec {
         (
             "winner_model".to_string(),
             JsonSchema::String {
-                description: Some("Winner model slug selected by the leader.".to_string()),
+                description: Some(
+                    "Optional winner model slug selected by the leader. If omitted, falls back to the latest calibrate_model_sub recommended_for_session model cached in this session."
+                        .to_string(),
+                ),
             },
         ),
         (
@@ -899,12 +902,12 @@ fn create_record_model_sub_winner_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "record_model_sub_winner".to_string(),
-        description: "Record the chosen winner against all compared models in one call and pin this session's auto model_sub selection to the winner. If compared_models is omitted, uses the latest calibrate_model_sub candidate set cached in this session."
+        description: "Record the chosen winner against all compared models in one call and pin this session's auto model_sub selection to the winner. If winner_model and/or compared_models are omitted, uses the latest calibrate_model_sub recommendation/candidate set cached in this session."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["winner_model".to_string()]),
+            required: None,
             additional_properties: Some(false.into()),
         },
     })

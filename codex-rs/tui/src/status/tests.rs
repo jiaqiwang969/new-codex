@@ -1,4 +1,6 @@
+use super::StatusUtilityRoutingHint;
 use super::new_status_output;
+use super::new_status_output_with_rate_limits_and_utility_routing;
 use super::rate_limit_snapshot_display;
 use crate::history_cell::HistoryCell;
 use chrono::Duration as ChronoDuration;
@@ -237,6 +239,85 @@ async fn status_shows_utility_provider_for_non_default_setup() {
 }
 
 #[tokio::test]
+async fn status_model_provider_tracks_active_model_and_is_listed_under_model() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("claude-sonnet-4-6".to_string());
+    config.model_provider_id = "anthropic".to_string();
+    config.model_provider = config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+    {
+        let openai_provider = config
+            .model_providers
+            .get_mut("openai")
+            .expect("openai provider should exist");
+        openai_provider.name = "codex".to_string();
+        openai_provider.base_url = Some("https://code.ppchat.vip/v1/".to_string());
+    }
+    config.user_configured_provider = ModelProviderInfo {
+        name: "codex".to_string(),
+        base_url: Some("https://code.ppchat.vip/v1/".to_string()),
+        env_key: Some("OPENAI_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        account_pool: Vec::new(),
+    };
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        "gpt-5.3-codex",
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let model_provider_line = rendered
+        .iter()
+        .find(|line| line.contains("Model provider:"))
+        .expect("status card should include model provider line");
+    assert_eq!(
+        model_provider_line.contains("codex - https://code.ppchat.vip/v1"),
+        true
+    );
+
+    let model_provider_index = rendered
+        .iter()
+        .position(|line| line.contains("Model provider:"))
+        .expect("status card should include model provider line");
+    let utility_model_index = rendered
+        .iter()
+        .position(|line| line.contains("Utility/sub-agent:"))
+        .expect("status card should include utility/sub-agent line");
+    assert_eq!(model_provider_index < utility_model_index, true);
+}
+
+#[tokio::test]
 async fn status_shows_responses_utility_model_when_general_utility_model_is_non_responses() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
@@ -367,6 +448,113 @@ async fn status_shows_responses_utility_when_non_responses_provider_inherits_tas
 }
 
 #[tokio::test]
+async fn status_shows_memory_scope_and_phase_model_sources() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.3-codex".to_string());
+    config.model_sub = Some("claude-sonnet-4-6".to_string());
+    config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        &model_slug,
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let scope_line = rendered
+        .iter()
+        .find(|line| line.contains("Memory scope:"))
+        .expect("status card should include memory scope line");
+    assert_eq!(scope_line.contains("cwd -> user -> global"), true);
+
+    let entire_line = rendered
+        .iter()
+        .find(|line| line.contains("Entire tracing:"))
+        .expect("status card should include entire tracing line");
+    assert_eq!(entire_line.contains("not configured"), true);
+
+    let phase_one_line = rendered
+        .iter()
+        .find(|line| line.contains("Memory phase-1:"))
+        .expect("status card should include memory phase-1 line");
+    assert_eq!(
+        phase_one_line.contains("claude-sonnet-4-6 (config.model_sub)"),
+        true
+    );
+
+    let phase_two_line = rendered
+        .iter()
+        .find(|line| line.contains("Memory phase-2:"))
+        .expect("status card should include memory phase-2 line");
+    assert_eq!(
+        phase_two_line.contains("claude-opus-4-6 (memories.phase_2_model)"),
+        true
+    );
+}
+
+#[tokio::test]
+async fn status_shows_entire_tracing_when_notify_uses_entire_hook() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.3-codex".to_string());
+    config.notify = Some(vec![
+        "entire".to_string(),
+        "hooks".to_string(),
+        "codex".to_string(),
+        "notify".to_string(),
+    ]);
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        &model_slug,
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let tracing_line = rendered
+        .iter()
+        .find(|line| line.contains("Entire tracing:"))
+        .expect("status card should include entire tracing line");
+    assert_eq!(
+        tracing_line.contains("git checkpoints (entire/*, Entire-Checkpoint trailers)"),
+        true
+    );
+}
+
+#[tokio::test]
 async fn status_shows_team_profile_when_routing_matches_a_preset() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
@@ -404,6 +592,112 @@ async fn status_shows_team_profile_when_routing_matches_a_preset() {
         .find(|line| line.contains("Team profile:"))
         .expect("status card should include team profile line");
     assert_eq!(team_profile_line.contains("Leader-Quality"), true);
+}
+
+#[tokio::test]
+async fn status_shows_auto_utility_routing_source_when_hint_is_available() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("claude-sonnet-4-6".to_string());
+    config.model_provider_id = "anthropic".to_string();
+    config.model_provider = config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output_with_rate_limits_and_utility_routing(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        &[],
+        None,
+        captured_at,
+        "claude-sonnet-4-6",
+        None,
+        None,
+        Some(StatusUtilityRoutingHint {
+            model: "claude-sonnet-4-6".to_string(),
+            source_label: "session cache".to_string(),
+        }),
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let utility_line = rendered
+        .iter()
+        .find(|line| line.contains("Utility/sub-agent:"))
+        .expect("status card should include utility/sub-agent line");
+    assert_eq!(utility_line.contains("claude-sonnet-4-6 (auto)"), true);
+    let source_line = rendered
+        .iter()
+        .find(|line| line.contains("Utility source:"))
+        .expect("status card should include utility source line");
+    assert_eq!(source_line.contains("auto (session cache)"), true);
+}
+
+#[tokio::test]
+async fn status_shows_vouch_recommended_utility_source_without_runtime_hint() {
+    let temp_home = TempDir::new().expect("temp home");
+    let config = test_config(&temp_home).await;
+    let memories_dir = config.codex_home.join("memories");
+    fs::create_dir_all(&memories_dir).expect("create memories dir");
+    fs::write(
+        memories_dir.join("model_sub_vouch.json"),
+        r#"{
+  "models": {
+    "claude-sonnet-4-6": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [
+        { "verdict": "Win" }
+      ]
+    }
+  }
+}"#,
+    )
+    .expect("write model-sub vouch");
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        "gpt-5.3-codex",
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let utility_line = rendered
+        .iter()
+        .find(|line| line.contains("Utility/sub-agent:"))
+        .expect("status card should include utility/sub-agent line");
+    assert_eq!(utility_line.contains("claude-sonnet-4-6 (auto)"), true);
+    let source_line = rendered
+        .iter()
+        .find(|line| line.contains("Utility source:"))
+        .expect("status card should include utility source line");
+    assert_eq!(source_line.contains("auto (model_sub_vouch)"), true);
 }
 
 #[tokio::test]
