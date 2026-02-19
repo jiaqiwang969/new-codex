@@ -270,12 +270,12 @@ async fn maybe_inject_mcp_agent_context(
     if let Some(context_key) = context_key
         && should_inject_string_argument(&args, context_key)
     {
-        let context = context_packet::build_context_packet(
-            sess,
-            turn_context,
-            context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
-        )
-        .await;
+        let packet_config = if server == CLAUDE_CODE_SERVER_NAME {
+            context_packet::CLAUDE_CODE_LARGE_CONTEXT_PACKET_CONFIG
+        } else {
+            context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG
+        };
+        let context = context_packet::build_context_packet(sess, turn_context, packet_config).await;
         if !context.trim().is_empty() {
             args.insert(context_key.to_string(), Value::String(context));
         }

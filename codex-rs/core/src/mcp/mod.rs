@@ -149,12 +149,38 @@ pub(crate) fn with_codex_apps_mcp(
     config: &Config,
 ) -> HashMap<String, McpServerConfig> {
     if connectors_enabled {
-        // Respect an explicitly configured `codex_apps` entry (e.g. tests or
-        // custom deployments) and only insert the default ChatGPT Apps MCP
-        // server when missing.
+        let desired = codex_apps_mcp_server_config(config, auth);
+        let desired_url = match &desired.transport {
+            McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
+            _ => String::new(),
+        };
+
         servers
             .entry(CODEX_APPS_MCP_SERVER_NAME.to_string())
-            .or_insert_with(|| codex_apps_mcp_server_config(config, auth));
+            .and_modify(|existing| {
+                // Preserve explicitly configured `codex_apps` entries while still allowing the
+                // built-in default to track config/feature changes.
+                let Some(existing_url) = (match &existing.transport {
+                    McpServerTransportConfig::StreamableHttp { url, .. } => Some(url.as_str()),
+                    _ => None,
+                }) else {
+                    return;
+                };
+
+                let legacy_url = codex_apps_mcp_url_for_gateway(
+                    &config.chatgpt_base_url,
+                    CodexAppsMcpGateway::LegacyMCPGateway,
+                );
+                let gateway_url =
+                    format!("{OPENAI_CONNECTORS_MCP_BASE_URL}{OPENAI_CONNECTORS_MCP_PATH}");
+                let is_default_url =
+                    existing_url == legacy_url.as_str() || existing_url == gateway_url.as_str();
+
+                if is_default_url && existing_url != desired_url.as_str() {
+                    *existing = desired.clone();
+                }
+            })
+            .or_insert(desired);
     }
     servers
 }

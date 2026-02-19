@@ -5,9 +5,9 @@ use crate::client_common::tools::ToolSpec;
 use crate::config::AgentRoleConfig;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::mcp_connection_manager::ToolInfo;
 use crate::model_compat::model_supports_web_search_external_web_access;
 use crate::model_compat::model_supports_web_search_tool;
-use crate::mcp_connection_manager::ToolInfo;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::SEARCH_TOOL_BM25_DEFAULT_LIMIT;
 use crate::tools::handlers::SEARCH_TOOL_BM25_TOOL_NAME;
@@ -584,12 +584,21 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
                 )),
             },
         ),
+        (
+            "model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional model slug override for this child only. When set, overrides role/default model routing (including `model_sub`) for this spawn."
+                        .to_string(),
+                ),
+            },
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
         description:
-            "Spawn a sub-agent for a well-scoped task. Returns the agent id and, when memory is active, memory_scope_version + memory_binding_key so orchestrators can preserve memory continuity."
+            "Spawn a sub-agent for a well-scoped task. Returns the agent id plus agent_type + model + model_provider_id + model_source + parent_thread_id + spawn_depth; on first-use auto calibration it may also include auto_calibration run summaries + recommendation hints; and when memory is active also returns memory_scope_version + memory_binding_key so orchestrators can preserve memory continuity."
                 .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -798,6 +807,158 @@ fn create_close_agent_tool() -> ToolSpec {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_record_model_sub_duel_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "winner_model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Winning utility/sub-agent model slug for this same-task comparison."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "loser_model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Losing utility/sub-agent model slug for this same-task comparison."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "task_bucket".to_string(),
+            JsonSchema::String {
+                description: Some("Optional task bucket: general, debug, or review.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional short leader note explaining why the winner beat the loser."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "record_model_sub_duel".to_string(),
+        description:
+            "Record a leader-judged duel between two utility/sub-agent models into the model-sub vouch ledger. Use after comparing same-task outputs from multiple child models."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["winner_model".to_string(), "loser_model".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_record_model_sub_winner_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "winner_model".to_string(),
+            JsonSchema::String {
+                description: Some("Winner model slug selected by the leader.".to_string()),
+            },
+        ),
+        (
+            "compared_models".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    "Optional model slugs compared in this round (winner included is fine). If omitted, falls back to the latest calibrate_model_sub candidates from this session."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "task_bucket".to_string(),
+            JsonSchema::String {
+                description: Some("Optional task bucket: general, debug, or review.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional short leader note explaining why this winner was chosen.".to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "record_model_sub_winner".to_string(),
+        description: "Record the chosen winner against all compared models in one call and pin this session's auto model_sub selection to the winner. If compared_models is omitted, uses the latest calibrate_model_sub candidate set cached in this session."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["winner_model".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_calibrate_model_sub_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "message".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Task prompt to run against each candidate model. Use either message or items."
+                        .to_string(),
+                ),
+            },
+        ),
+        ("items".to_string(), create_collab_input_items_schema()),
+        (
+            "candidates".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    "Optional candidate utility/sub-agent model slugs to benchmark on the same task."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "task_bucket".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional task bucket label: general, debug, or review.".to_string(),
+                ),
+            },
+        ),
+        (
+            "wait_timeout_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Per-candidate wait timeout in milliseconds (clamped between 100 and 30000)."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "calibrate_model_sub".to_string(),
+        description: "Run one same-task calibration round across multiple candidate utility/sub-agent models, then return per-model status/output/latency plus recommended_for_vouch/recommended_for_latency/recommended_for_session hints for leader judgment."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
             additional_properties: Some(false.into()),
         },
     })
@@ -1628,11 +1789,17 @@ pub(crate) fn build_specs(
         builder.push_spec(create_resume_agent_tool());
         builder.push_spec(create_wait_tool());
         builder.push_spec(create_close_agent_tool());
+        builder.push_spec(create_calibrate_model_sub_tool());
+        builder.push_spec(create_record_model_sub_duel_tool());
+        builder.push_spec(create_record_model_sub_winner_tool());
         builder.register_handler("spawn_agent", multi_agent_handler.clone());
         builder.register_handler("send_input", multi_agent_handler.clone());
         builder.register_handler("resume_agent", multi_agent_handler.clone());
         builder.register_handler("wait", multi_agent_handler.clone());
-        builder.register_handler("close_agent", multi_agent_handler);
+        builder.register_handler("close_agent", multi_agent_handler.clone());
+        builder.register_handler("calibrate_model_sub", multi_agent_handler.clone());
+        builder.register_handler("record_model_sub_duel", multi_agent_handler.clone());
+        builder.register_handler("record_model_sub_winner", multi_agent_handler);
     }
 
     // Keep a dedicated MCP handler registered even when no MCP tools were available at
@@ -1935,6 +2102,9 @@ mod tests {
                 "resume_agent",
                 "wait",
                 "close_agent",
+                "calibrate_model_sub",
+                "record_model_sub_duel",
+                "record_model_sub_winner",
             ],
         );
     }
@@ -2025,6 +2195,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let filtered = filter_tools_for_model(
@@ -2051,6 +2222,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let dynamic_tools = vec![DynamicToolSpec {
             name: "dynamic_echo".to_string(),
@@ -2178,7 +2350,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
         });
-        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -2202,7 +2374,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
         });
-        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -2225,7 +2397,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
         });
-        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         assert!(
             !tools.iter().any(|tool| tool.spec.name() == "web_search"),
@@ -2246,7 +2418,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
         });
-        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         let tool = find_tool(&tools, "apply_patch");
         let ToolSpec::Function(ResponsesApiTool { .. }) = &tool.spec else {
@@ -2265,6 +2437,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2288,6 +2461,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
@@ -2701,6 +2875,7 @@ mod tests {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
         });
 
         let (tools, _) = build_specs(
