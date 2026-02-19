@@ -2503,6 +2503,12 @@
         {
           "description": "Collab interaction: agent spawn begin.",
           "properties": {
+            "agent_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -2549,6 +2555,12 @@
         {
           "description": "Collab interaction: agent spawn end.",
           "properties": {
+            "agent_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -2561,6 +2573,18 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_provider_id": {
+              "type": [
+                "string",
+                "null"
               ]
             },
             "new_thread_id": {
@@ -7615,6 +7639,12 @@
     {
       "description": "Collab interaction: agent spawn begin.",
       "properties": {
+        "agent_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
@@ -7661,6 +7691,12 @@
     {
       "description": "Collab interaction: agent spawn end.",
       "properties": {
+        "agent_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
@@ -7673,6 +7709,18 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider_id": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "new_thread_id": {

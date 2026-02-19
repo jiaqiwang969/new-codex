@@ -13,7 +13,7 @@ call_id: string,
 /**
  * Thread ID of the sender.
  */
-sender_thread_id: ThreadId, memory: MemoryLink | null, 
+sender_thread_id: ThreadId, memory: MemoryLink | null, agent_type: string | null, model: string | null, model_provider_id: string | null, 
 /**
  * Thread ID of the newly spawned agent, if it was created.
  */

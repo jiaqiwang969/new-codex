@@ -355,6 +355,8 @@ pub struct DynamicToolSpec {
 #[ts(export_to = "v2/")]
 pub struct ProfileV2 {
     pub model: Option<String>,
+    pub model_sub: Option<String>,
+    pub model_sub_responses: Option<String>,
     pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
@@ -414,6 +416,8 @@ const fn default_include_platform_defaults() -> bool {
 #[ts(export_to = "v2/")]
 pub struct Config {
     pub model: Option<String>,
+    pub model_sub: Option<String>,
+    pub model_sub_responses: Option<String>,
     pub review_model: Option<String>,
     pub model_context_window: Option<i64>,
     pub model_auto_compact_token_limit: Option<i64>,
@@ -2877,35 +2881,27 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+    pub agent_type: Option<String>,
+    pub model: Option<String>,
+    pub model_provider_id: Option<String>,
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
     fn from(value: CoreAgentStatus) -> Self {
-        match value {
-            CoreAgentStatus::PendingInit => Self {
-                status: CollabAgentStatus::PendingInit,
-                message: None,
-            },
-            CoreAgentStatus::Running => Self {
-                status: CollabAgentStatus::Running,
-                message: None,
-            },
-            CoreAgentStatus::Completed(message) => Self {
-                status: CollabAgentStatus::Completed,
-                message,
-            },
-            CoreAgentStatus::Errored(message) => Self {
-                status: CollabAgentStatus::Errored,
-                message: Some(message),
-            },
-            CoreAgentStatus::Shutdown => Self {
-                status: CollabAgentStatus::Shutdown,
-                message: None,
-            },
-            CoreAgentStatus::NotFound => Self {
-                status: CollabAgentStatus::NotFound,
-                message: None,
-            },
+        let (status, message) = match value {
+            CoreAgentStatus::PendingInit => (CollabAgentStatus::PendingInit, None),
+            CoreAgentStatus::Running => (CollabAgentStatus::Running, None),
+            CoreAgentStatus::Completed(message) => (CollabAgentStatus::Completed, message),
+            CoreAgentStatus::Errored(message) => (CollabAgentStatus::Errored, Some(message)),
+            CoreAgentStatus::Shutdown => (CollabAgentStatus::Shutdown, None),
+            CoreAgentStatus::NotFound => (CollabAgentStatus::NotFound, None),
+        };
+        Self {
+            status,
+            message,
+            agent_type: None,
+            model: None,
+            model_provider_id: None,
         }
     }
 }

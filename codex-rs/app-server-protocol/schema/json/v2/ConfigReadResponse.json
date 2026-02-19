@@ -158,6 +158,18 @@
             }
           ]
         },
+        "model_sub": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_sub_responses": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model_verbosity": {
           "anyOf": [
             {
@@ -480,6 +492,18 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "model_sub": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_sub_responses": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "model_verbosity": {

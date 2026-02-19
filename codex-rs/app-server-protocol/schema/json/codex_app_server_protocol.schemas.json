@@ -4523,6 +4523,12 @@
         {
           "description": "Collab interaction: agent spawn begin.",
           "properties": {
+            "agent_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -4569,6 +4575,12 @@
         {
           "description": "Collab interaction: agent spawn end.",
           "properties": {
+            "agent_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -4581,6 +4593,18 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_provider_id": {
+              "type": [
+                "string",
+                "null"
               ]
             },
             "new_thread_id": {
@@ -11055,7 +11079,25 @@
       },
       "CollabAgentState": {
         "properties": {
+          "agentType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelProviderId": {
             "type": [
               "string",
               "null"
@@ -11472,6 +11514,18 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "model_sub": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_sub_responses": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "model_verbosity": {
@@ -13574,6 +13628,18 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "model_sub": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_sub_responses": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "model_verbosity": {

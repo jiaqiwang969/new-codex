@@ -61,6 +61,18 @@ struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
     next_item_index: i64,
+    known_agents: HashMap<String, KnownAgentMetadata>,
+}
+
+#[derive(Clone, Debug)]
+struct KnownAgentMetadata {
+    agent_type: Option<String>,
+    model: Option<String>,
+    model_provider_id: Option<String>,
+}
+
+fn has_agent_metadata(state: &CollabAgentState) -> bool {
+    state.agent_type.is_some() || state.model.is_some() || state.model_provider_id.is_some()
 }
 
 impl ThreadHistoryBuilder {
@@ -69,6 +81,7 @@ impl ThreadHistoryBuilder {
             turns: Vec::new(),
             current_turn: None,
             next_item_index: 1,
+            known_agents: HashMap::new(),
         }
     }
 
@@ -333,6 +346,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentSpawnEndEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let has_receiver = payload.new_thread_id.is_some();
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
@@ -342,7 +356,11 @@ impl ThreadHistoryBuilder {
         let (receiver_thread_ids, agents_states) = match &payload.new_thread_id {
             Some(id) => {
                 let receiver_id = id.to_string();
-                let received_status = CollabAgentState::from(payload.status.clone());
+                let mut received_status = CollabAgentState::from(payload.status.clone());
+                received_status.agent_type = payload.agent_type.clone();
+                received_status.model = payload.model.clone();
+                received_status.model_provider_id = payload.model_provider_id.clone();
+                self.remember_agent_metadata(&receiver_id, &received_status);
                 (
                     vec![receiver_id.clone()],
                     [(receiver_id, received_status)].into_iter().collect(),
@@ -360,7 +378,7 @@ impl ThreadHistoryBuilder {
                 receiver_thread_ids,
                 prompt: Some(payload.prompt.clone()),
                 agents_states,
-                memory: None,
+                memory,
             });
     }
 
@@ -368,12 +386,14 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentInteractionEndEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let received_status = CollabAgentState::from(payload.status.clone());
+        let mut received_status = CollabAgentState::from(payload.status.clone());
+        self.apply_known_agent_metadata(&receiver_id, &mut received_status);
         self.ensure_turn()
             .items
             .push(ThreadItem::CollabAgentToolCall {
@@ -384,7 +404,7 @@ impl ThreadHistoryBuilder {
                 receiver_thread_ids: vec![receiver_id.clone()],
                 prompt: Some(payload.prompt.clone()),
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
-                memory: None,
+                memory,
             });
     }
 
@@ -392,6 +412,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingEndEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let status = if payload
             .statuses
             .values()
@@ -407,7 +428,12 @@ impl ThreadHistoryBuilder {
         let agents_states = payload
             .statuses
             .iter()
-            .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
+            .map(|(id, status)| {
+                let thread_id = id.to_string();
+                let mut state = CollabAgentState::from(status.clone());
+                self.apply_known_agent_metadata(&thread_id, &mut state);
+                (thread_id, state)
+            })
             .collect();
         self.ensure_turn()
             .items
@@ -419,22 +445,20 @@ impl ThreadHistoryBuilder {
                 receiver_thread_ids,
                 prompt: None,
                 agents_states,
-                memory: None,
+                memory,
             });
     }
 
     fn handle_collab_close_end(&mut self, payload: &codex_protocol::protocol::CollabCloseEndEvent) {
+        let memory = payload.memory.clone().map(Into::into);
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let agents_states = [(
-            receiver_id.clone(),
-            CollabAgentState::from(payload.status.clone()),
-        )]
-        .into_iter()
-        .collect();
+        let mut state = CollabAgentState::from(payload.status.clone());
+        self.apply_known_agent_metadata(&receiver_id, &mut state);
+        let agents_states = [(receiver_id.clone(), state)].into_iter().collect();
         self.ensure_turn()
             .items
             .push(ThreadItem::CollabAgentToolCall {
@@ -445,7 +469,7 @@ impl ThreadHistoryBuilder {
                 receiver_thread_ids: vec![receiver_id],
                 prompt: None,
                 agents_states,
-                memory: None,
+                memory,
             });
     }
 
@@ -453,17 +477,15 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabResumeEndEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let agents_states = [(
-            receiver_id.clone(),
-            CollabAgentState::from(payload.status.clone()),
-        )]
-        .into_iter()
-        .collect();
+        let mut state = CollabAgentState::from(payload.status.clone());
+        self.apply_known_agent_metadata(&receiver_id, &mut state);
+        let agents_states = [(receiver_id.clone(), state)].into_iter().collect();
         self.ensure_turn()
             .items
             .push(ThreadItem::CollabAgentToolCall {
@@ -474,8 +496,54 @@ impl ThreadHistoryBuilder {
                 receiver_thread_ids: vec![receiver_id],
                 prompt: None,
                 agents_states,
-                memory: None,
+                memory,
             });
+    }
+
+    fn remember_agent_metadata(&mut self, thread_id: &str, state: &CollabAgentState) {
+        if !has_agent_metadata(state) {
+            return;
+        }
+        self.known_agents.insert(
+            thread_id.to_string(),
+            KnownAgentMetadata {
+                agent_type: state.agent_type.clone(),
+                model: state.model.clone(),
+                model_provider_id: state.model_provider_id.clone(),
+            },
+        );
+    }
+
+    fn apply_known_agent_metadata(&self, thread_id: &str, state: &mut CollabAgentState) {
+        if let Some(metadata) = self.known_agents.get(thread_id) {
+            state.agent_type = metadata.agent_type.clone();
+            state.model = metadata.model.clone();
+            state.model_provider_id = metadata.model_provider_id.clone();
+        }
+    }
+
+    fn rebuild_known_agents_from_turns(&mut self) {
+        let mut known_agents = HashMap::new();
+        for turn in &self.turns {
+            for item in &turn.items {
+                if let ThreadItem::CollabAgentToolCall { agents_states, .. } = item {
+                    for (thread_id, state) in agents_states {
+                        if !has_agent_metadata(state) {
+                            continue;
+                        }
+                        known_agents.insert(
+                            thread_id.clone(),
+                            KnownAgentMetadata {
+                                agent_type: state.agent_type.clone(),
+                                model: state.model.clone(),
+                                model_provider_id: state.model_provider_id.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        self.known_agents = known_agents;
     }
 
     fn handle_context_compacted(&mut self, _payload: &ContextCompactedEvent) {
@@ -567,7 +635,10 @@ impl ThreadHistoryBuilder {
             if let Some(memory) = memory_value.clone() {
                 current_turn.memory = Some(memory);
             }
-            if matches!(current_turn.status, TurnStatus::Completed | TurnStatus::InProgress) {
+            if matches!(
+                current_turn.status,
+                TurnStatus::Completed | TurnStatus::InProgress
+            ) {
                 current_turn.status = TurnStatus::Completed;
             }
             self.finish_current_turn();
@@ -593,7 +664,10 @@ impl ThreadHistoryBuilder {
             if let Some(memory) = memory_value {
                 current_turn.memory = Some(memory);
             }
-            if matches!(current_turn.status, TurnStatus::Completed | TurnStatus::InProgress) {
+            if matches!(
+                current_turn.status,
+                TurnStatus::Completed | TurnStatus::InProgress
+            ) {
                 current_turn.status = TurnStatus::Completed;
             }
             self.finish_current_turn();
@@ -618,6 +692,7 @@ impl ThreadHistoryBuilder {
         } else {
             self.turns.truncate(self.turns.len().saturating_sub(n));
         }
+        self.rebuild_known_agents_from_turns();
 
         let item_count: usize = self.turns.iter().map(|t| t.items.len()).sum();
         self.next_item_index = i64::try_from(item_count.saturating_add(1)).unwrap_or(i64::MAX);
@@ -1283,6 +1358,7 @@ mod tests {
                     message: "boom".into(),
                 }),
                 duration_ms: Some(8),
+                memory: None,
             }
         );
     }
@@ -1375,6 +1451,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -1385,11 +1462,13 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -1419,6 +1498,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -1457,6 +1537,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -1467,11 +1548,13 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -1482,6 +1565,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
@@ -1489,6 +1573,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -1510,6 +1595,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -1520,11 +1606,13 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -1602,6 +1690,7 @@ mod tests {
                 receiver_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000002")
                     .expect("valid receiver thread id"),
                 status: AgentStatus::Completed(None),
+                memory: None,
             }),
         ];
 
@@ -1626,6 +1715,229 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Completed,
                         message: None,
+                        agent_type: None,
+                        model: None,
+                        model_provider_id: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                memory: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_collab_spawn_end_item_with_agent_metadata() {
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "spawn agent".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-1".into(),
+                sender_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+                    .expect("valid sender thread id"),
+                memory: None,
+                agent_type: Some("explorer".into()),
+                model: Some("claude-opus-4-6".into()),
+                model_provider_id: Some("anthropic".into()),
+                new_thread_id: Some(
+                    ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+                        .expect("valid receiver thread id"),
+                ),
+                prompt: "analyze repository".into(),
+                status: AgentStatus::Running,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "spawn-1".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                prompt: Some("analyze repository".into()),
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Running,
+                        message: None,
+                        agent_type: Some("explorer".into()),
+                        model: Some("claude-opus-4-6".into()),
+                        model_provider_id: Some("anthropic".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                memory: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_collab_close_end_item_with_spawned_agent_metadata() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "spawn then close".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-1".into(),
+                sender_thread_id: sender_thread_id.clone(),
+                memory: None,
+                agent_type: Some("explorer".into()),
+                model: Some("claude-sonnet-4-6".into()),
+                model_provider_id: Some("anthropic".into()),
+                new_thread_id: Some(receiver_thread_id.clone()),
+                prompt: "inspect code".into(),
+                status: AgentStatus::Running,
+            }),
+            EventMsg::CollabCloseEnd(codex_protocol::protocol::CollabCloseEndEvent {
+                call_id: "close-1".into(),
+                sender_thread_id,
+                receiver_thread_id,
+                status: AgentStatus::Shutdown,
+                memory: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 3);
+        assert_eq!(
+            turns[0].items[2],
+            ThreadItem::CollabAgentToolCall {
+                id: "close-1".into(),
+                tool: CollabAgentTool::CloseAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                prompt: None,
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Shutdown,
+                        message: None,
+                        agent_type: Some("explorer".into()),
+                        model: Some("claude-sonnet-4-6".into()),
+                        model_provider_id: Some("anthropic".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                memory: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_clears_spawned_agent_metadata_cache() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                memory: None,
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "spawn".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-1".into(),
+                sender_thread_id: sender_thread_id.clone(),
+                memory: None,
+                agent_type: Some("explorer".into()),
+                model: Some("claude-opus-4-6".into()),
+                model_provider_id: Some("anthropic".into()),
+                new_thread_id: Some(receiver_thread_id.clone()),
+                prompt: "inspect code".into(),
+                status: AgentStatus::Running,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                last_agent_message: None,
+                memory: None,
+            }),
+            EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-b".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                memory: None,
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "close".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabCloseEnd(codex_protocol::protocol::CollabCloseEndEvent {
+                call_id: "close-1".into(),
+                sender_thread_id,
+                receiver_thread_id,
+                status: AgentStatus::Shutdown,
+                memory: None,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-b".into(),
+                last_agent_message: None,
+                memory: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "close-1".into(),
+                tool: CollabAgentTool::CloseAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                prompt: None,
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Shutdown,
+                        message: None,
+                        agent_type: None,
+                        model: None,
+                        model_provider_id: None,
                     },
                 )]
                 .into_iter()
@@ -1670,6 +1982,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -1680,6 +1993,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::Error(ErrorEvent {
                 message: "request-level failure".into(),
@@ -1697,6 +2011,7 @@ mod tests {
             turns[0],
             Turn {
                 id: "turn-a".into(),
+                memory: None,
                 status: TurnStatus::Completed,
                 error: None,
                 items: vec![ThreadItem::UserMessage {
@@ -1717,6 +2032,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -1733,6 +2049,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 

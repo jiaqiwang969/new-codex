@@ -12,7 +12,7 @@ call_id: string,
 /**
  * Thread ID of the sender.
  */
-sender_thread_id: ThreadId, memory: MemoryLink | null, 
+sender_thread_id: ThreadId, memory: MemoryLink | null, agent_type: string | null, 
 /**
  * Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
  * beginning.
