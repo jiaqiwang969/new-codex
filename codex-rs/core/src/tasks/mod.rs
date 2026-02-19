@@ -201,7 +201,6 @@ impl Session {
             .turn_metadata_state
             .cancel_git_enrichment_task();
 
-
         let mut active = self.active_turn.lock().await;
         let mut pending_input = Vec::<ResponseInputItem>::new();
         let mut should_clear_active_turn = false;

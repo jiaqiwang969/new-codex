@@ -1,5 +1,6 @@
 use crate::Prompt;
 use crate::RolloutRecorder;
+use crate::client::ModelClient;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
@@ -10,6 +11,7 @@ use crate::memories::phase_one;
 use crate::memories::prompts::build_stage_one_input_message;
 use crate::rollout::INTERACTIVE_SESSION_SOURCES;
 use crate::rollout::policy::should_persist_response_item_for_memories;
+use crate::utility_model;
 use codex_api::ResponseEvent;
 use codex_otel::OtelManager;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -32,6 +34,7 @@ use tracing::warn;
 
 #[derive(Clone, Debug)]
 pub(in crate::memories) struct RequestContext {
+    pub(in crate::memories) model_client: ModelClient,
     pub(in crate::memories) model_info: ModelInfo,
     pub(in crate::memories) otel_manager: OtelManager,
     pub(in crate::memories) reasoning_effort: Option<ReasoningEffortConfig>,
@@ -128,11 +131,13 @@ pub fn output_schema() -> Value {
 
 impl RequestContext {
     pub(in crate::memories) fn from_turn_context(
+        model_client: ModelClient,
         turn_context: &TurnContext,
         turn_metadata_header: Option<String>,
         model_info: ModelInfo,
     ) -> Self {
         Self {
+            model_client,
             model_info,
             turn_metadata_header,
             otel_manager: turn_context.otel_manager.clone(),
@@ -189,14 +194,40 @@ async fn build_request_context(session: &Arc<Session>, config: &Config) -> Reque
         .memories
         .phase_1_model
         .clone()
+        .or_else(|| config.model_sub.clone())
         .unwrap_or(phase_one::MODEL.to_string());
-    let model = session
-        .services
-        .models_manager
-        .get_model_info(&model_name, config)
-        .await;
+    let (model_client, model) = if let Some((model_client, model, provider_id)) =
+        utility_model::client_and_model_for_slug(
+            &session.services.model_client,
+            &session.services.models_manager,
+            config,
+            &model_name,
+        )
+        .await
+    {
+        info!(
+            model = model_name.as_str(),
+            provider_id = provider_id.as_str(),
+            "memory phase-1 using utility provider"
+        );
+        (model_client, model)
+    } else {
+        warn!(
+            "memory phase-1 could not resolve provider for model {}; using session provider as fallback",
+            model_name
+        );
+        (
+            session.services.model_client.clone(),
+            session
+                .services
+                .models_manager
+                .get_model_info(&model_name, config)
+                .await,
+        )
+    };
     let turn_context = session.new_default_turn().await;
     RequestContext::from_turn_context(
+        model_client,
         turn_context.as_ref(),
         turn_context.turn_metadata_state.current_header_value(),
         model,
@@ -228,29 +259,23 @@ mod job {
         stage_one_context: &RequestContext,
     ) -> JobResult {
         let thread = claim.thread;
-        let (stage_one_output, token_usage) = match sample(
-            session,
-            &thread.rollout_path,
-            &thread.cwd,
-            stage_one_context,
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(reason) => {
-                result::failed(
-                    session,
-                    thread.id,
-                    &claim.ownership_token,
-                    &reason.to_string(),
-                )
-                .await;
-                return JobResult {
-                    outcome: JobOutcome::Failed,
-                    token_usage: None,
-                };
-            }
-        };
+        let (stage_one_output, token_usage) =
+            match sample(&thread.rollout_path, &thread.cwd, stage_one_context).await {
+                Ok(output) => output,
+                Err(reason) => {
+                    result::failed(
+                        session,
+                        thread.id,
+                        &claim.ownership_token,
+                        &reason.to_string(),
+                    )
+                    .await;
+                    return JobResult {
+                        outcome: JobOutcome::Failed,
+                        token_usage: None,
+                    };
+                }
+            };
 
         if stage_one_output.raw_memory.is_empty() || stage_one_output.rollout_summary.is_empty() {
             return JobResult {
@@ -276,7 +301,6 @@ mod job {
 
     /// Extract the rollout and perform the actual sampling.
     async fn sample(
-        session: &Session,
         rollout_path: &Path,
         rollout_cwd: &Path,
         stage_one_context: &RequestContext,
@@ -312,7 +336,7 @@ mod job {
             aspect_ratio: None,
         };
 
-        let mut client_session = session.services.model_client.new_session();
+        let mut client_session = stage_one_context.model_client.new_session();
         let mut stream = client_session
             .stream(
                 &prompt,

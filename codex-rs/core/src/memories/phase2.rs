@@ -8,6 +8,7 @@ use crate::memories::phase_two;
 use crate::memories::prompts::build_consolidation_prompt;
 use crate::memories::storage::rebuild_raw_memories_file_from_memories;
 use crate::memories::storage::sync_rollout_summaries_from_memories;
+use crate::utility_model;
 use codex_config::Constrained;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AskForApproval;
@@ -243,8 +244,26 @@ mod agent {
                 .memories
                 .phase_2_model
                 .clone()
+                .or_else(|| config.model_sub.clone())
                 .unwrap_or(phase_two::MODEL.to_string()),
         );
+
+        if let Some(ref model) = agent_config.model {
+            if let Some((provider_id, provider)) =
+                utility_model::provider_for_model_slug(&agent_config, model)
+            {
+                agent_config.model_provider_id = provider_id;
+                agent_config.model_provider = provider.clone();
+                // Keep the consolidation agent self-consistent; it does not need auto-switch
+                // restore semantics.
+                agent_config.user_configured_provider = provider;
+            } else {
+                warn!(
+                    "memory phase-2 consolidation could not resolve provider for model {}; using existing provider",
+                    model
+                );
+            }
+        }
 
         Some(agent_config)
     }
@@ -389,4 +408,42 @@ fn emit_metrics(session: &Arc<Session>, counters: Counters) {
         1,
         &[("status", "agent_spawned")],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::test_config;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn phase2_config_defaults_to_openai_for_gpt_model() {
+        let mut config = test_config();
+        config.model = Some("claude-opus-4-6".to_string());
+        config.model_provider_id = "anthropic".to_string();
+        config.model_provider = config
+            .model_providers
+            .get("anthropic")
+            .expect("anthropic provider should exist")
+            .clone();
+        config.user_configured_provider = config.model_provider.clone();
+        let agent_config =
+            agent::get_config(Arc::new(config)).expect("phase2 agent config should resolve");
+
+        assert_eq!(agent_config.model.as_deref(), Some(phase_two::MODEL));
+        assert_eq!(agent_config.model_provider_id, "openai");
+        assert!(agent_config.model_provider.is_openai());
+    }
+
+    #[test]
+    fn phase2_config_uses_anthropic_provider_for_claude_phase2_model() {
+        let mut config = test_config();
+        config.memories.phase_2_model = Some("claude-sonnet-4-6".to_string());
+        let agent_config =
+            agent::get_config(Arc::new(config)).expect("phase2 agent config should resolve");
+
+        assert_eq!(agent_config.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(agent_config.model_provider_id, "anthropic");
+        assert!(agent_config.model_provider.is_anthropic());
+    }
 }

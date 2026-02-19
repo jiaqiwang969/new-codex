@@ -13,8 +13,8 @@ use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::compact;
 use crate::features::Feature;
-use crate::model_compat::model_supports_memory_trace_summarize;
 use crate::state_db;
+use crate::utility_model;
 
 const THREAD_MEMORY_MAX_TRACE_ITEMS: usize = 200;
 const THREAD_MEMORY_MAX_TRACE_BYTES: usize = 60_000;
@@ -182,41 +182,9 @@ async fn update_thread_memory_after_compaction(
         return;
     }
 
-    if !model_supports_memory_trace_summarize(turn_context.model_info.slug.as_str()) {
+    let Some(output) = summarize_trace_items(&sess, &turn_context, thread_id, trace_items).await
+    else {
         return;
-    }
-
-    let trace = RawMemory {
-        id: format!("trace_{thread_id}"),
-        metadata: RawMemoryMetadata {
-            source_path: turn_context.cwd.display().to_string(),
-        },
-        items: trace_items,
-    };
-
-    let summary_output = sess
-        .services
-        .model_client
-        .summarize_memories(
-            vec![trace],
-            &turn_context.model_info,
-            turn_context.reasoning_effort,
-            &turn_context.otel_manager,
-        )
-        .await;
-
-    let output = match summary_output {
-        Ok(mut outputs) => match outputs.pop() {
-            Some(output) if outputs.is_empty() => output,
-            _ => {
-                warn!("unexpected memory trace summarize output length");
-                return;
-            }
-        },
-        Err(err) => {
-            warn!("memory trace summarization failed: {err}");
-            return;
-        }
     };
 
     if output.raw_memory.trim().is_empty() && output.memory_summary.trim().is_empty() {
@@ -284,40 +252,9 @@ async fn update_thread_memory_after_turn(
         .await;
     }
 
-    let trace = RawMemory {
-        id: format!("trace_{thread_id}"),
-        metadata: RawMemoryMetadata {
-            source_path: turn_context.cwd.display().to_string(),
-        },
-        items: trace_items,
-    };
-
-    if !model_supports_memory_trace_summarize(turn_context.model_info.slug.as_str()) {
+    let Some(output) = summarize_trace_items(&sess, &turn_context, thread_id, trace_items).await
+    else {
         return;
-    }
-
-    let output = match sess
-        .services
-        .model_client
-        .summarize_memories(
-            vec![trace],
-            &turn_context.model_info,
-            turn_context.reasoning_effort,
-            &turn_context.otel_manager,
-        )
-        .await
-    {
-        Ok(mut outputs) => match outputs.pop() {
-            Some(output) if outputs.is_empty() => output,
-            _ => {
-                warn!("unexpected memory trace summarize output length");
-                return;
-            }
-        },
-        Err(err) => {
-            warn!("memory trace summarization failed: {err}");
-            return;
-        }
     };
 
     if output.raw_memory.trim().is_empty() && output.memory_summary.trim().is_empty() {
@@ -332,6 +269,105 @@ async fn update_thread_memory_after_turn(
         "thread_memory_trace_summarize",
     )
     .await;
+}
+
+async fn summarize_trace_items(
+    sess: &Session,
+    turn_context: &TurnContext,
+    thread_id: codex_protocol::ThreadId,
+    trace_items: Vec<Value>,
+) -> Option<codex_api::MemorySummarizeOutput> {
+    if trace_items.is_empty() {
+        return None;
+    }
+
+    let primary = sess
+        .services
+        .model_client
+        .summarize_memories(
+            vec![RawMemory {
+                id: format!("trace_{thread_id}"),
+                metadata: RawMemoryMetadata {
+                    source_path: turn_context.cwd.display().to_string(),
+                },
+                items: trace_items.clone(),
+            }],
+            &turn_context.model_info,
+            turn_context.reasoning_effort,
+            &turn_context.otel_manager,
+        )
+        .await;
+
+    match primary {
+        Ok(mut outputs) => match outputs.pop() {
+            Some(output) if outputs.is_empty() => Some(output),
+            _ => {
+                warn!("unexpected memory trace summarize output length");
+                None
+            }
+        },
+        Err(err) => {
+            if !matches!(err, crate::error::CodexErr::UnsupportedOperation(_)) {
+                warn!("memory trace summarization failed: {err}");
+                return None;
+            }
+
+            // Memory trace summarization is a Responses-only endpoint. Prefer the dedicated
+            // Responses utility model override when configured. Otherwise, fall back to the
+            // general utility model when it is Responses-compatible.
+            let fallback_model_slug =
+                utility_model::responses_utility_model_slug(turn_context.config.as_ref());
+
+            let Some((utility_client, utility_model_info, provider_id)) =
+                utility_model::client_and_model_for_slug(
+                    &sess.services.model_client,
+                    &sess.services.models_manager,
+                    turn_context.config.as_ref(),
+                    fallback_model_slug,
+                )
+                .await
+            else {
+                warn!("memory trace summarize fallback unavailable; skipping");
+                return None;
+            };
+
+            warn!(
+                primary_model = turn_context.model_info.slug.as_str(),
+                primary_provider = turn_context.provider.name.as_str(),
+                fallback_model = fallback_model_slug,
+                fallback_provider_id = provider_id.as_str(),
+                "memory trace summarize falling back to utility provider"
+            );
+
+            match utility_client
+                .summarize_memories(
+                    vec![RawMemory {
+                        id: format!("trace_{thread_id}"),
+                        metadata: RawMemoryMetadata {
+                            source_path: turn_context.cwd.display().to_string(),
+                        },
+                        items: trace_items,
+                    }],
+                    &utility_model_info,
+                    turn_context.reasoning_effort,
+                    &turn_context.otel_manager,
+                )
+                .await
+            {
+                Ok(mut outputs) => match outputs.pop() {
+                    Some(output) if outputs.is_empty() => Some(output),
+                    _ => {
+                        warn!("unexpected memory trace summarize output length");
+                        None
+                    }
+                },
+                Err(err) => {
+                    warn!("memory trace summarize fallback failed: {err}");
+                    None
+                }
+            }
+        }
+    }
 }
 
 async fn wait_for_thread_metadata(
