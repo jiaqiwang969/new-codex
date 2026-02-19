@@ -1,8 +1,14 @@
+mod entire_summary;
 mod registry;
 mod types;
 mod user_notification;
-mod entire_summary;
 
+pub use entire_summary::EntireSummary;
+pub use entire_summary::EntireSummaryInput;
+pub use entire_summary::build_why_prompt;
+pub use entire_summary::generate_summary;
+pub use entire_summary::load_summary;
+pub use entire_summary::save_summary;
 pub use registry::Hooks;
 pub use registry::HooksConfig;
 pub use registry::command_from_argv;
@@ -21,4 +27,3 @@ pub use types::HookToolInputLocalShell;
 pub use types::HookToolKind;
 pub use user_notification::legacy_notify_json;
 pub use user_notification::notify_hook;
-pub use entire_summary::{EntireSummary, EntireSummaryInput, build_why_prompt, generate_summary, save_summary, load_summary};

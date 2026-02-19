@@ -244,8 +244,7 @@ mod agent {
                 .memories
                 .phase_2_model
                 .clone()
-                .or_else(|| config.model_sub.clone())
-                .unwrap_or(phase_two::MODEL.to_string()),
+                .unwrap_or_else(|| crate::memories::DEFAULT_MEMORY_PHASE_TWO_MODEL.to_string()),
         );
 
         if let Some(ref model) = agent_config.model {

@@ -1004,6 +1004,14 @@ impl ChatWidget {
         self.config.memories.entire_summary_model = entire_summary_model;
     }
 
+    pub(crate) fn set_memory_phase1_model(&mut self, phase_1_model: Option<String>) {
+        self.config.memories.phase_1_model = phase_1_model;
+    }
+
+    pub(crate) fn set_memory_phase2_model(&mut self, phase_2_model: Option<String>) {
+        self.config.memories.phase_2_model = phase_2_model;
+    }
+
     /// Stores async git-branch lookup results for the current status-line cwd.
     ///
     /// Results are dropped when they target an out-of-date cwd to avoid rendering stale branch
@@ -1589,7 +1597,7 @@ impl ChatWidget {
 
     fn context_remaining_percent(&self, info: &TokenUsageInfo) -> Option<i64> {
         info.model_context_window.map(|window| {
-            info.last_token_usage
+            info.total_token_usage
                 .percent_of_context_window_remaining(window)
         })
     }
@@ -3472,6 +3480,12 @@ impl ChatWidget {
             }
             SlashCommand::ModelEntire => {
                 self.open_model_entire_popup();
+            }
+            SlashCommand::ModelMemoryPhase1 => {
+                self.open_model_memory_phase1_popup();
+            }
+            SlashCommand::ModelMemoryPhase2 => {
+                self.open_model_memory_phase2_popup();
             }
             SlashCommand::Personality => {
                 self.open_personality_popup();
@@ -6040,7 +6054,7 @@ impl ChatWidget {
         let usage = self
             .token_info
             .as_ref()
-            .map(|info| &info.last_token_usage)
+            .map(|info| &info.total_token_usage)
             .unwrap_or(&default_usage);
         Some(
             usage
@@ -6878,8 +6892,7 @@ impl ChatWidget {
     pub(crate) fn open_model_entire_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
         let configured = self.config.memories.entire_summary_model.as_deref();
         let effective = configured
-            .or(self.config.model_sub.as_deref())
-            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+            .unwrap_or(codex_core::DEFAULT_ENTIRE_SUMMARY_MODEL);
 
         let presets: Vec<ModelPreset> = presets
             .into_iter()
@@ -6889,14 +6902,12 @@ impl ChatWidget {
         let mut items: Vec<SelectionItem> = Vec::new();
 
         let inherit_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
-            tx.send(AppEvent::PersistModelEntireSelection {
-                model_entire: None,
-            });
+            tx.send(AppEvent::PersistModelEntireSelection { model_entire: None });
         })];
         items.push(SelectionItem {
-            name: format!("Inherit ({effective})"),
+            name: format!("Default ({effective})"),
             description: Some(
-                "Use model_sub if configured, otherwise fall back to the built-in default."
+                "Use the built-in default model for Entire summaries."
                     .to_string(),
             ),
             is_current: configured.is_none(),
@@ -6937,6 +6948,188 @@ impl ChatWidget {
         let header = self.model_menu_header(
             "Select Entire Summary Model",
             "Model used to generate WHY-focused summaries for Entire checkpoints.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn open_model_memory_phase1_popup(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Model selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try /model-memory-phase1 again in a moment."
+                        .to_string(),
+                    None,
+                );
+                return;
+            }
+        };
+        self.open_model_memory_phase1_popup_with_presets(presets);
+    }
+
+    pub(crate) fn open_model_memory_phase1_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
+        let configured = self.config.memories.phase_1_model.as_deref();
+        let effective = configured
+            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL);
+
+        let presets: Vec<ModelPreset> = presets
+            .into_iter()
+            .filter(|preset| preset.show_in_picker)
+            .collect();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        let default_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+            tx.send(AppEvent::PersistModelMemoryPhase1Selection { model_phase1: None });
+        })];
+        items.push(SelectionItem {
+            name: format!("Default ({effective})"),
+            description: Some(
+                "Use the built-in default model for Memory phase-1 (fast code scanning)."
+                    .to_string(),
+            ),
+            is_current: configured.is_none(),
+            actions: default_actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+
+        for preset in presets.into_iter() {
+            let description =
+                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let model = preset.model.clone();
+            let model_for_action = model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistModelMemoryPhase1Selection {
+                    model_phase1: Some(model_for_action.clone()),
+                });
+            })];
+            items.push(SelectionItem {
+                name: preset.model,
+                description,
+                is_current: configured == Some(model.as_str()),
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        if configured.is_some() && !items.iter().any(|item| item.is_current) {
+            self.add_info_message(
+                format!(
+                    "Current Memory phase-1 model ({effective}) is not listed in the picker. Edit config.toml to change it, or select a listed model."
+                ),
+                None,
+            );
+        }
+
+        let header = self.model_menu_header(
+            "Select Memory Phase-1 Model",
+            "Model used for fast code repository scanning.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn open_model_memory_phase2_popup(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Model selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try /model-memory-phase2 again in a moment."
+                        .to_string(),
+                    None,
+                );
+                return;
+            }
+        };
+        self.open_model_memory_phase2_popup_with_presets(presets);
+    }
+
+    pub(crate) fn open_model_memory_phase2_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
+        let configured = self.config.memories.phase_2_model.as_deref();
+        let effective = configured
+            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+
+        let presets: Vec<ModelPreset> = presets
+            .into_iter()
+            .filter(|preset| preset.show_in_picker)
+            .collect();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        let default_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+            tx.send(AppEvent::PersistModelMemoryPhase2Selection { model_phase2: None });
+        })];
+        items.push(SelectionItem {
+            name: format!("Default ({effective})"),
+            description: Some(
+                "Use the built-in default model for Memory phase-2 (deep code analysis)."
+                    .to_string(),
+            ),
+            is_current: configured.is_none(),
+            actions: default_actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+
+        for preset in presets.into_iter() {
+            let description =
+                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let model = preset.model.clone();
+            let model_for_action = model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistModelMemoryPhase2Selection {
+                    model_phase2: Some(model_for_action.clone()),
+                });
+            })];
+            items.push(SelectionItem {
+                name: preset.model,
+                description,
+                is_current: configured == Some(model.as_str()),
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        if configured.is_some() && !items.iter().any(|item| item.is_current) {
+            self.add_info_message(
+                format!(
+                    "Current Memory phase-2 model ({effective}) is not listed in the picker. Edit config.toml to change it, or select a listed model."
+                ),
+                None,
+            );
+        }
+
+        let header = self.model_menu_header(
+            "Select Memory Phase-2 Model",
+            "Model used for deep code analysis and consolidation.",
         );
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),

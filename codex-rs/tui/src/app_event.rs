@@ -189,6 +189,16 @@ pub(crate) enum AppEvent {
         model_entire: Option<String>,
     },
 
+    /// Persist the selected model for Memory phase-1 (fast code scanning).
+    PersistModelMemoryPhase1Selection {
+        model_phase1: Option<String>,
+    },
+
+    /// Persist the selected model for Memory phase-2 (deep code analysis).
+    PersistModelMemoryPhase2Selection {
+        model_phase2: Option<String>,
+    },
+
     /// Persist the selected personality to the appropriate config.
     PersistPersonalitySelection {
         personality: Personality,

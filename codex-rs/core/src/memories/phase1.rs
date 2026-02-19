@@ -194,8 +194,7 @@ async fn build_request_context(session: &Arc<Session>, config: &Config) -> Reque
         .memories
         .phase_1_model
         .clone()
-        .or_else(|| config.model_sub.clone())
-        .unwrap_or(phase_one::MODEL.to_string());
+        .unwrap_or_else(|| crate::memories::DEFAULT_MEMORY_PHASE_ONE_MODEL.to_string());
     let (model_client, model) = if let Some((model_client, model, provider_id)) =
         utility_model::client_and_model_for_slug(
             &session.services.model_client,

@@ -5,9 +5,12 @@
 //! are stored alongside Entire checkpoints to provide future context about the
 //! reasoning behind code changes.
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use anyhow::Context;
+use anyhow::Result;
+use serde::Deserialize;
+use serde::Serialize;
+use std::path::Path;
+use std::path::PathBuf;
 use tokio::fs;
 
 /// Input data for generating an Entire summary.
@@ -90,16 +93,13 @@ fn truncate_response(response: &str, max_chars: usize) -> String {
 ///
 /// This function should be called asynchronously after the Entire checkpoint
 /// is created, so it doesn't block the main notify flow.
-pub async fn generate_summary(
-    input: EntireSummaryInput,
-    _model: &str,
-) -> Result<EntireSummary> {
+pub async fn generate_summary(input: EntireSummaryInput, _model: &str) -> Result<EntireSummary> {
     let _prompt = build_why_prompt(&input);
-    
+
     // TODO: Call the actual model via codex_core's utility_model system
     // For now, this is a placeholder that will be implemented when we integrate
     // with the model provider infrastructure
-    
+
     // Placeholder implementation
     let summary = EntireSummary {
         motivation: "Placeholder: User requested feature implementation".to_string(),
@@ -108,7 +108,7 @@ pub async fn generate_summary(
         tradeoffs: None,
         outcome: "Placeholder: Feature successfully implemented".to_string(),
     };
-    
+
     Ok(summary)
 }
 
@@ -124,8 +124,8 @@ pub async fn save_summary(
         .context("Failed to create .entire/summaries directory")?;
 
     let summary_path = summaries_dir.join(format!("{}.json", checkpoint_id));
-    let summary_json = serde_json::to_string_pretty(summary)
-        .context("Failed to serialize summary")?;
+    let summary_json =
+        serde_json::to_string_pretty(summary).context("Failed to serialize summary")?;
 
     fs::write(&summary_path, summary_json)
         .await
@@ -135,10 +135,7 @@ pub async fn save_summary(
 }
 
 /// Loads a summary from disk if it exists.
-pub async fn load_summary(
-    repo_root: &Path,
-    checkpoint_id: &str,
-) -> Result<Option<EntireSummary>> {
+pub async fn load_summary(repo_root: &Path, checkpoint_id: &str) -> Result<Option<EntireSummary>> {
     let summary_path = repo_root
         .join(".entire")
         .join("summaries")
@@ -152,8 +149,8 @@ pub async fn load_summary(
         .await
         .context("Failed to read summary file")?;
 
-    let summary: EntireSummary = serde_json::from_str(&content)
-        .context("Failed to parse summary JSON")?;
+    let summary: EntireSummary =
+        serde_json::from_str(&content).context("Failed to parse summary JSON")?;
 
     Ok(Some(summary))
 }

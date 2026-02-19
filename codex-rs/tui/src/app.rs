@@ -2681,12 +2681,11 @@ impl App {
                             .set_entire_summary_model(model_entire.clone());
                         let effective = model_entire
                             .as_deref()
-                            .or(self.config.model_sub.as_deref())
-                            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+                            .unwrap_or(codex_core::DEFAULT_ENTIRE_SUMMARY_MODEL);
                         let mut message = if model_entire.is_some() {
                             format!("Entire summary model changed to {effective}")
                         } else {
-                            format!("Entire summary model set to inherit ({effective})")
+                            format!("Entire summary model reset to default ({effective})")
                         };
                         if let Some(profile) = profile {
                             message.push_str(" for ");
@@ -2709,6 +2708,98 @@ impl App {
                         } else {
                             self.chat_widget.add_error_message(format!(
                                 "Failed to save default Entire summary model: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistModelMemoryPhase1Selection { model_phase1 } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_memory_phase1_model(model_phase1.as_deref())
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.memories.phase_1_model = model_phase1.clone();
+                        self.chat_widget
+                            .set_memory_phase1_model(model_phase1.clone());
+                        let effective = model_phase1
+                            .as_deref()
+                            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL);
+                        let mut message = if model_phase1.is_some() {
+                            format!("Memory phase-1 model changed to {effective}")
+                        } else {
+                            format!("Memory phase-1 model reset to default ({effective})")
+                        };
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist Memory phase-1 model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save Memory phase-1 model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default Memory phase-1 model: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistModelMemoryPhase2Selection { model_phase2 } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_memory_phase2_model(model_phase2.as_deref())
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.memories.phase_2_model = model_phase2.clone();
+                        self.chat_widget
+                            .set_memory_phase2_model(model_phase2.clone());
+                        let effective = model_phase2
+                            .as_deref()
+                            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+                        let mut message = if model_phase2.is_some() {
+                            format!("Memory phase-2 model changed to {effective}")
+                        } else {
+                            format!("Memory phase-2 model reset to default ({effective})")
+                        };
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist Memory phase-2 model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save Memory phase-2 model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default Memory phase-2 model: {err}"
                             ));
                         }
                     }

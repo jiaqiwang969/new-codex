@@ -31,7 +31,17 @@ pub enum ConfigEdit {
     /// the Responses API.
     SetModelSubResponses { model_sub_responses: Option<String> },
     /// Update the model used for Entire checkpoint WHY-focused summaries.
-    SetEntireSummaryModel { entire_summary_model: Option<String> },
+    SetEntireSummaryModel {
+        entire_summary_model: Option<String>,
+    },
+    /// Update the model used for Memory phase-1 (fast code scanning).
+    SetMemoryPhase1Model {
+        phase_1_model: Option<String>,
+    },
+    /// Update the model used for Memory phase-2 (deep code analysis).
+    SetMemoryPhase2Model {
+        phase_2_model: Option<String>,
+    },
     /// Update memories phase model overrides under `[memories]`.
     SetMemoriesPhaseModels {
         phase_1_model: Option<String>,
@@ -329,6 +339,22 @@ impl ConfigDocument {
             } => Ok(self.write_profile_value(
                 &["memories", "entire_summary_model"],
                 entire_summary_model
+                    .as_ref()
+                    .map(|model_value| value(model_value.clone())),
+            )),
+            ConfigEdit::SetMemoryPhase1Model {
+                phase_1_model,
+            } => Ok(self.write_profile_value(
+                &["memories", "phase_1_model"],
+                phase_1_model
+                    .as_ref()
+                    .map(|model_value| value(model_value.clone())),
+            )),
+            ConfigEdit::SetMemoryPhase2Model {
+                phase_2_model,
+            } => Ok(self.write_profile_value(
+                &["memories", "phase_2_model"],
+                phase_2_model
                     .as_ref()
                     .map(|model_value| value(model_value.clone())),
             )),
@@ -834,6 +860,20 @@ impl ConfigEditsBuilder {
     pub fn set_entire_summary_model(mut self, entire_summary_model: Option<&str>) -> Self {
         self.edits.push(ConfigEdit::SetEntireSummaryModel {
             entire_summary_model: entire_summary_model.map(ToOwned::to_owned),
+        });
+        self
+    }
+
+    pub fn set_memory_phase1_model(mut self, phase_1_model: Option<&str>) -> Self {
+        self.edits.push(ConfigEdit::SetMemoryPhase1Model {
+            phase_1_model: phase_1_model.map(ToOwned::to_owned),
+        });
+        self
+    }
+
+    pub fn set_memory_phase2_model(mut self, phase_2_model: Option<&str>) -> Self {
+        self.edits.push(ConfigEdit::SetMemoryPhase2Model {
+            phase_2_model: phase_2_model.map(ToOwned::to_owned),
         });
         self
     }

@@ -419,20 +419,20 @@ impl StatusHistoryCell {
         let entire_tracing = describe_entire_tracing(config);
         let memory_phase_one = resolve_memory_model_display(
             config.memories.phase_1_model.as_deref(),
-            config.model_sub.as_deref(),
+            None,
             codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL,
             "memories.phase_1_model",
         );
         let memory_phase_two = resolve_memory_model_display(
             config.memories.phase_2_model.as_deref(),
-            config.model_sub.as_deref(),
+            None,
             codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL,
             "memories.phase_2_model",
         );
         let entire_summary_model = resolve_memory_model_display(
             config.memories.entire_summary_model.as_deref(),
-            config.model_sub.as_deref(),
-            codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL,
+            None,
+            codex_core::DEFAULT_ENTIRE_SUMMARY_MODEL,
             "memories.entire_summary_model",
         );
 

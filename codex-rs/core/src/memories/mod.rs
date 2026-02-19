@@ -78,6 +78,11 @@ mod phase_two {
     pub(super) const JOB_HEARTBEAT_SECONDS: u64 = 90;
 }
 
+mod entire_summary {
+    /// Default model used for Entire checkpoint summarization.
+    pub(super) const MODEL: &str = "claude-sonnet-4-6";
+}
+
 mod metrics {
     /// Number of phase-1 startup jobs grouped by status.
     pub(super) const MEMORY_PHASE_ONE_JOBS: &str = "codex.memory.phase1";
@@ -93,6 +98,7 @@ mod metrics {
 
 pub const DEFAULT_MEMORY_PHASE_ONE_MODEL: &str = phase_one::MODEL;
 pub const DEFAULT_MEMORY_PHASE_TWO_MODEL: &str = phase_two::MODEL;
+pub const DEFAULT_ENTIRE_SUMMARY_MODEL: &str = entire_summary::MODEL;
 
 pub fn memory_root(codex_home: &Path) -> PathBuf {
     codex_home.join("memories")

@@ -83,6 +83,7 @@ pub mod windows_sandbox;
 pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 pub use memories::DEFAULT_MEMORY_PHASE_ONE_MODEL;
 pub use memories::DEFAULT_MEMORY_PHASE_TWO_MODEL;
+pub use memories::DEFAULT_ENTIRE_SUMMARY_MODEL;
 pub use model_provider_info::ANTHROPIC_PROVIDER_ID;
 pub use model_provider_info::DEFAULT_LMSTUDIO_PORT;
 pub use model_provider_info::DEFAULT_OLLAMA_PORT;
