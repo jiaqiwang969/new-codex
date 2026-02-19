@@ -11,6 +11,7 @@ use std::time::UNIX_EPOCH;
 use codex_core::CodexAuth;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
+use codex_core::features::Feature;
 use codex_core::models_manager::manager::RefreshStrategy;
 
 use codex_core::protocol::AskForApproval;

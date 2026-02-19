@@ -56,6 +56,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             display_name: "gpt-5.3-codex".to_string(),
             description: "Latest frontier agentic coding model with enhanced reasoning."
                 .to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -81,11 +82,45 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             is_default: true,
         },
         Model {
-            id: "gpt-5.2-codex".to_string(),
-            model: "gpt-5.2-codex".to_string(),
+            id: "gpt-5.3-codex-spark|[pro]".to_string(),
+            model: "gpt-5.3-codex-spark|[pro]".to_string(),
+            upgrade: None,
+            display_name: "gpt-5.3-codex-spark|[pro]".to_string(),
+            description:
+                "Realtime coding model optimized for low-latency edits (text only, Pro, 128K context)."
+                    .to_string(),
+            hidden: false,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks"
+                        .to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Medium,
+            input_modalities: vec![InputModality::Text],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
+            id: "gpt-5.1-codex-max".to_string(),
+            model: "gpt-5.1-codex-max".to_string(),
             upgrade: Some("gpt-5.3-codex".to_string()),
-            display_name: "gpt-5.2-codex".to_string(),
-            description: "Frontier agentic coding model.".to_string(),
+            display_name: "gpt-5.1-codex-max".to_string(),
+            description: "Codex-optimized flagship for deep and fast reasoning.".to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -111,11 +146,12 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             is_default: false,
         },
         Model {
-            id: "gpt-5.1-codex-max".to_string(),
-            model: "gpt-5.1-codex-max".to_string(),
+            id: "gpt-5.2-codex".to_string(),
+            model: "gpt-5.2-codex".to_string(),
             upgrade: Some("gpt-5.3-codex".to_string()),
-            display_name: "gpt-5.1-codex-max".to_string(),
-            description: "Codex-optimized flagship for deep and fast reasoning.".to_string(),
+            display_name: "gpt-5.2-codex".to_string(),
+            description: "Frontier agentic coding model.".to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -183,6 +219,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             upgrade: None,
             display_name: "Gemini 3 Pro".to_string(),
             description: "Google Gemini 3 Pro with deep reasoning and 1M context.".to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -209,6 +246,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             upgrade: None,
             display_name: "Gemini 3 Flash".to_string(),
             description: "Google Gemini 3 Flash — fast and efficient with 1M context.".to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -236,6 +274,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             display_name: "Gemini 3 Pro Image".to_string(),
             description: "Gemini 3 Pro for text, image understanding, and image generation."
                 .to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![ReasoningEffortOption {
                 reasoning_effort: ReasoningEffort::Medium,
                 description: "Default Gemini reasoning behaviour for image workflows.".to_string(),
@@ -251,6 +290,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             upgrade: None,
             display_name: "Gemma 3n (Local)".to_string(),
             description: "Local Gemma 3n served via Gemini-compatible API.".to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Low,
@@ -276,7 +316,9 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             model: "grok-4-latest".to_string(),
             upgrade: None,
             display_name: "Grok 4 Latest".to_string(),
-            description: "xAI Grok 4 via OpenAI-compatible Responses API.".to_string(),
+            description: "xAI Grok 4 via OpenAI-compatible Responses API (256K context)."
+                .to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![ReasoningEffortOption {
                 reasoning_effort: ReasoningEffort::None,
                 description: "Reasoning effort is not configurable on this model.".to_string(),
@@ -291,8 +333,9 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             model: "grok-4-1-fast-reasoning".to_string(),
             upgrade: None,
             display_name: "Grok 4.1 Fast Reasoning".to_string(),
-            description: "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API."
+            description: "xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API (2M context)."
                 .to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![ReasoningEffortOption {
                 reasoning_effort: ReasoningEffort::None,
                 description: "Reasoning effort is not configurable on this model.".to_string(),
@@ -303,11 +346,39 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             is_default: false,
         },
         Model {
+            id: "claude-opus-4-6".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            upgrade: None,
+            display_name: "Claude Opus 4.6".to_string(),
+            description: "Anthropic Claude Opus 4.6 — deep reasoning with 1M context."
+                .to_string(),
+            hidden: false,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning for general tasks".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Deep reasoning for complex problems".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::XHigh,
+                    description: "Maximum reasoning depth with extended thinking".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::High,
+            input_modalities: vec![InputModality::Text],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
             id: "gpt-5.1-codex-mini".to_string(),
             model: "gpt-5.1-codex-mini".to_string(),
             upgrade: Some("gpt-5.3-codex".to_string()),
             display_name: "gpt-5.1-codex-mini".to_string(),
             description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
+            hidden: false,
             supported_reasoning_efforts: vec![
                 ReasoningEffortOption {
                     reasoning_effort: ReasoningEffort::Medium,
@@ -321,6 +392,33 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             ],
             default_reasoning_effort: ReasoningEffort::Medium,
             input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
+            id: "claude-sonnet-4-6".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            upgrade: None,
+            display_name: "Claude Sonnet 4.6".to_string(),
+            description: "Anthropic Claude Sonnet 4.6 — fast execution with 1M context."
+                .to_string(),
+            hidden: false,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Medium,
+            input_modalities: vec![InputModality::Text],
             supports_personality: false,
             is_default: false,
         },
@@ -371,251 +469,54 @@ async fn list_models_pagination_works() -> Result<()> {
 
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
-    let first_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: None,
-            include_hidden: None,
-        })
-        .await?;
+    let expected_ids = vec![
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark|[pro]",
+        "gpt-5.1-codex-max",
+        "gpt-5.2-codex",
+        "gpt-5.2",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3-pro-image-preview",
+        "gemma-3n",
+        "grok-4-latest",
+        "grok-4-1-fast-reasoning",
+        "claude-opus-4-6",
+        "gpt-5.1-codex-mini",
+        "claude-sonnet-4-6",
+    ];
 
-    let first_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(first_request)),
-    )
-    .await??;
+    let mut cursor: Option<String> = None;
+    for (index, expected_id) in expected_ids.iter().enumerate() {
+        let request_id = mcp
+            .send_list_models_request(ModelListParams {
+                limit: Some(1),
+                cursor: cursor.clone(),
+                include_hidden: None,
+            })
+            .await?;
 
-    let ModelListResponse {
-        data: first_items,
-        next_cursor: first_cursor,
-    } = to_response::<ModelListResponse>(first_response)?;
+        let response: JSONRPCResponse = timeout(
+            DEFAULT_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??;
 
-    assert_eq!(first_items.len(), 1);
-    assert_eq!(first_items[0].id, "gpt-5.3-codex");
-    let next_cursor = first_cursor.ok_or_else(|| anyhow!("cursor for second page"))?;
+        let ModelListResponse {
+            data: items,
+            next_cursor,
+        } = to_response::<ModelListResponse>(response)?;
 
-    let second_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(next_cursor.clone()),
-            include_hidden: None,
-        })
-        .await?;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, *expected_id);
+        if index + 1 == expected_ids.len() {
+            assert!(next_cursor.is_none());
+        } else {
+            let next_page = index + 2;
+            cursor = Some(next_cursor.ok_or_else(|| anyhow!("cursor for page {next_page}"))?);
+        }
+    }
 
-    let second_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(second_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: second_items,
-        next_cursor: second_cursor,
-    } = to_response::<ModelListResponse>(second_response)?;
-
-    assert_eq!(second_items.len(), 1);
-    assert_eq!(second_items[0].id, "gpt-5.2-codex");
-    let third_cursor = second_cursor.ok_or_else(|| anyhow!("cursor for third page"))?;
-
-    let third_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(third_cursor.clone()),
-            include_hidden: None,
-        })
-        .await?;
-
-    let third_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(third_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: third_items,
-        next_cursor: third_cursor,
-    } = to_response::<ModelListResponse>(third_response)?;
-
-    assert_eq!(third_items.len(), 1);
-    assert_eq!(third_items[0].id, "gpt-5.1-codex-max");
-    let fourth_cursor = third_cursor.ok_or_else(|| anyhow!("cursor for fourth page"))?;
-
-    let fourth_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(fourth_cursor.clone()),
-            include_hidden: None,
-        })
-        .await?;
-
-    let fourth_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(fourth_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: fourth_items,
-        next_cursor: fourth_cursor,
-    } = to_response::<ModelListResponse>(fourth_response)?;
-
-    assert_eq!(fourth_items.len(), 1);
-    assert_eq!(fourth_items[0].id, "gpt-5.2");
-    let fifth_cursor = fourth_cursor.ok_or_else(|| anyhow!("cursor for fifth page"))?;
-
-    let fifth_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(fifth_cursor.clone()),
-        })
-        .await?;
-
-    let fifth_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(fifth_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: fifth_items,
-        next_cursor: fifth_cursor,
-    } = to_response::<ModelListResponse>(fifth_response)?;
-
-    assert_eq!(fifth_items.len(), 1);
-    assert_eq!(fifth_items[0].id, "gemini-3-pro-preview");
-    let sixth_cursor = fifth_cursor.ok_or_else(|| anyhow!("cursor for sixth page"))?;
-
-    let sixth_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(sixth_cursor.clone()),
-        })
-        .await?;
-
-    let sixth_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(sixth_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: sixth_items,
-        next_cursor: sixth_cursor,
-    } = to_response::<ModelListResponse>(sixth_response)?;
-
-    assert_eq!(sixth_items.len(), 1);
-    assert_eq!(sixth_items[0].id, "gemini-3-flash-preview");
-    let seventh_cursor = sixth_cursor.ok_or_else(|| anyhow!("cursor for seventh page"))?;
-
-    let seventh_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(seventh_cursor.clone()),
-        })
-        .await?;
-
-    let seventh_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(seventh_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: seventh_items,
-        next_cursor: seventh_cursor,
-    } = to_response::<ModelListResponse>(seventh_response)?;
-
-    assert_eq!(seventh_items.len(), 1);
-    assert_eq!(seventh_items[0].id, "gemini-3-pro-image-preview");
-    let eighth_cursor = seventh_cursor.ok_or_else(|| anyhow!("cursor for eighth page"))?;
-
-    let eighth_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(eighth_cursor.clone()),
-        })
-        .await?;
-
-    let eighth_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(eighth_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: eighth_items,
-        next_cursor: eighth_cursor,
-    } = to_response::<ModelListResponse>(eighth_response)?;
-
-    assert_eq!(eighth_items.len(), 1);
-    assert_eq!(eighth_items[0].id, "gemma-3n");
-    let ninth_cursor = eighth_cursor.ok_or_else(|| anyhow!("cursor for ninth page"))?;
-
-    let ninth_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(ninth_cursor.clone()),
-        })
-        .await?;
-
-    let ninth_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(ninth_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: ninth_items,
-        next_cursor: tenth_cursor,
-    } = to_response::<ModelListResponse>(ninth_response)?;
-
-    assert_eq!(ninth_items.len(), 1);
-    assert_eq!(ninth_items[0].id, "grok-4-latest");
-    let tenth_cursor = tenth_cursor.ok_or_else(|| anyhow!("cursor for tenth page"))?;
-
-    let tenth_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(tenth_cursor.clone()),
-        })
-        .await?;
-
-    let tenth_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(tenth_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: tenth_items,
-        next_cursor: eleventh_cursor,
-    } = to_response::<ModelListResponse>(tenth_response)?;
-
-    assert_eq!(tenth_items.len(), 1);
-    assert_eq!(tenth_items[0].id, "grok-4-1-fast-reasoning");
-    let eleventh_cursor = eleventh_cursor.ok_or_else(|| anyhow!("cursor for eleventh page"))?;
-
-    let eleventh_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(eleventh_cursor.clone()),
-        })
-        .await?;
-
-    let eleventh_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(eleventh_request)),
-    )
-    .await??;
-
-    let ModelListResponse {
-        data: eleventh_items,
-        next_cursor: twelfth_cursor,
-    } = to_response::<ModelListResponse>(eleventh_response)?;
-
-    assert_eq!(eleventh_items.len(), 1);
-    assert_eq!(eleventh_items[0].id, "gpt-5.1-codex-mini");
-    assert!(twelfth_cursor.is_none());
     Ok(())
 }
 

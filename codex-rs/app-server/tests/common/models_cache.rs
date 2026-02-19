@@ -6,7 +6,6 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::TruncationPolicyConfig;
-use codex_protocol::openai_models::default_input_modalities;
 use serde_json::json;
 use std::path::Path;
 
@@ -39,7 +38,7 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         auto_compact_token_limit: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
-        input_modalities: default_input_modalities(),
+        input_modalities: preset.input_modalities.clone(),
         prefer_websockets: false,
         used_fallback_model_metadata: false,
     }

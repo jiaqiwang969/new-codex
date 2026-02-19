@@ -17,6 +17,7 @@ use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::MergeStrategy;
+use codex_app_server_protocol::ProfileV2;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ToolsV2;
@@ -46,6 +47,8 @@ async fn config_read_returns_effective_and_layers() -> Result<()> {
         &codex_home,
         r#"
 model = "gpt-user"
+model_sub = "claude-sonnet-4-6"
+model_sub_responses = "gpt-5.1-codex-mini"
 sandbox_mode = "workspace-write"
 "#,
     )?;
@@ -73,8 +76,25 @@ sandbox_mode = "workspace-write"
     } = to_response(resp)?;
 
     assert_eq!(config.model.as_deref(), Some("gpt-user"));
+    assert_eq!(config.model_sub.as_deref(), Some("claude-sonnet-4-6"));
+    assert_eq!(
+        config.model_sub_responses.as_deref(),
+        Some("gpt-5.1-codex-mini")
+    );
     assert_eq!(
         origins.get("model").expect("origin").name,
+        ConfigLayerSource::User {
+            file: user_file.clone(),
+        }
+    );
+    assert_eq!(
+        origins.get("model_sub").expect("origin").name,
+        ConfigLayerSource::User {
+            file: user_file.clone(),
+        }
+    );
+    assert_eq!(
+        origins.get("model_sub_responses").expect("origin").name,
         ConfigLayerSource::User {
             file: user_file.clone(),
         }
@@ -257,6 +277,57 @@ model_reasoning_effort = "high"
         ConfigLayerSource::Project {
             dot_codex_folder: project_config
         }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_read_includes_profile_utility_model_overrides() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"
+[profiles.fast]
+model = "gpt-5.3-codex-mini"
+model_sub = "claude-sonnet-4-6"
+model_sub_responses = "gpt-5.1-codex-mini"
+"#,
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ConfigReadResponse { config, .. } = to_response(resp)?;
+
+    let expected = ProfileV2 {
+        model: Some("gpt-5.3-codex-mini".to_string()),
+        model_sub: Some("claude-sonnet-4-6".to_string()),
+        model_sub_responses: Some("gpt-5.1-codex-mini".to_string()),
+        model_provider: None,
+        approval_policy: None,
+        model_reasoning_effort: None,
+        model_reasoning_summary: None,
+        model_verbosity: None,
+        web_search: None,
+        chatgpt_base_url: None,
+        additional: std::collections::HashMap::new(),
+    };
+    assert_eq!(
+        config.profiles.get("fast"),
+        Some(&expected),
+        "profile utility model overrides should round-trip through config/read"
     );
 
     Ok(())

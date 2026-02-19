@@ -382,6 +382,7 @@ async fn thread_resume_rejects_history_when_thread_is_running() -> Result<()> {
                 }],
                 end_turn: None,
                 phase: None,
+                thought_signature: None,
             }]),
             ..Default::default()
         })
