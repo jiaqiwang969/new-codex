@@ -82,6 +82,15 @@ impl ToolHandler for MultiAgentHandler {
             "resume_agent" => resume_agent::handle(session, turn, call_id, arguments).await,
             "wait" => wait::handle(session, turn, call_id, arguments).await,
             "close_agent" => close_agent::handle(session, turn, call_id, arguments).await,
+            "record_model_sub_duel" => {
+                record_model_sub_duel::handle(session, turn, call_id, arguments).await
+            }
+            "record_model_sub_winner" => {
+                record_model_sub_winner::handle(session, turn, call_id, arguments).await
+            }
+            "calibrate_model_sub" => {
+                calibrate_model_sub::handle(session, turn, call_id, arguments).await
+            }
             other => Err(FunctionCallError::RespondToModel(format!(
                 "unsupported collab tool {other}"
             ))),
@@ -91,9 +100,11 @@ impl ToolHandler for MultiAgentHandler {
 
 mod spawn {
     use super::*;
+    use crate::agent::MAX_THREAD_SPAWN_DEPTH;
     use crate::agent::role::apply_role_to_config;
     use crate::agent_worktree;
     use crate::context_packet;
+    use crate::utility_model;
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
@@ -104,17 +115,84 @@ mod spawn {
         message: Option<String>,
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
+        model: Option<String>,
+    }
+
+    const AUTO_CALIBRATION_PREVIEW_CHARS: usize = 240;
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct AutoCalibrationRawResult {
+        task_bucket: Option<String>,
+        #[serde(default)]
+        runs: Vec<AutoCalibrationRawRun>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_vouch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_latency: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_session: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct AutoCalibrationRawRun {
+        model: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        status: AgentStatus,
+        elapsed_ms: u64,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct AutoCalibrationResult {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        task_bucket: Option<String>,
+        runs: Vec<AutoCalibrationRunSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_vouch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_latency: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_session: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct AutoCalibrationRunSummary {
+        model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        status: String,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_preview: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum SpawnModelSource {
+        Parent,
+        Role,
+        ModelSub,
+        ModelSubAuto,
+        Explicit,
     }
 
     #[derive(Debug, Serialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        agent_type: String,
+        model: String,
+        model_provider_id: String,
+        model_source: SpawnModelSource,
+        parent_thread_id: String,
+        spawn_depth: i32,
         worktree_path: Option<String>,
         branch: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_scope_version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_binding_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auto_calibration: Option<AutoCalibrationResult>,
     }
 
     pub async fn handle(
@@ -124,12 +202,23 @@ mod spawn {
         arguments: String,
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-        let role_name = args
-            .agent_type
+        let SpawnAgentArgs {
+            message,
+            items,
+            agent_type,
+            model,
+        } = args;
+        let role_name = agent_type
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
-        let mut input_items = parse_collab_input(args.message, args.items)?;
+        let requested_model = model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model_slug| !model_slug.is_empty())
+            .map(ToOwned::to_owned);
+        let agent_type = role_name.unwrap_or("default").to_string();
+        let mut input_items = parse_collab_input(message, items)?;
         let prompt = input_preview(&input_items);
         let prompt_for_events = prompt.clone();
         let session_source = turn.session_source.clone();
@@ -147,24 +236,286 @@ mod spawn {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
                     memory: memory.clone(),
+                    agent_type: Some(agent_type.clone()),
                     prompt: prompt_for_events.clone(),
                 }
                 .into(),
             )
             .await;
-        let mut config = build_agent_spawn_config(
-            &session.get_base_instructions().await,
-            turn.as_ref(),
-            child_depth,
-        )?;
-        apply_role_to_config(&mut config, role_name)
+        let (mut config, mut model_for_events, mut model_provider_id_for_events) =
+            match build_agent_spawn_config(
+                &session.get_base_instructions().await,
+                turn.as_ref(),
+                child_depth,
+            ) {
+                Ok(config) => {
+                    let model_for_events = config.model.clone();
+                    let model_provider_id_for_events = Some(config.model_provider_id.clone());
+                    (config, model_for_events, model_provider_id_for_events)
+                }
+                Err(err) => {
+                    session
+                        .send_event(
+                            &turn,
+                            CollabAgentSpawnEndEvent {
+                                call_id,
+                                sender_thread_id: session.conversation_id,
+                                memory: memory.clone(),
+                                agent_type: Some(agent_type),
+                                model: None,
+                                model_provider_id: None,
+                                new_thread_id: None,
+                                prompt: prompt_for_events,
+                                status: AgentStatus::Errored(err.to_string()),
+                            }
+                            .into(),
+                        )
+                        .await;
+                    return Err(err);
+                }
+            };
+        if let Err(err) = apply_role_to_config(&mut config, role_name)
             .await
-            .map_err(FunctionCallError::RespondToModel)?;
+            .map_err(FunctionCallError::RespondToModel)
+        {
+            session
+                .send_event(
+                    &turn,
+                    CollabAgentSpawnEndEvent {
+                        call_id,
+                        sender_thread_id: session.conversation_id,
+                        memory: memory.clone(),
+                        agent_type: Some(agent_type),
+                        model: model_for_events,
+                        model_provider_id: model_provider_id_for_events,
+                        new_thread_id: None,
+                        prompt: prompt_for_events,
+                        status: AgentStatus::Errored(err.to_string()),
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(err);
+        }
+        let mut model_source =
+            if role_name.is_some_and(|role| !role.eq_ignore_ascii_case("default")) {
+                SpawnModelSource::Role
+            } else {
+                SpawnModelSource::Parent
+            };
+        let mut auto_calibration = None;
+        let uses_default_role = role_name.is_none_or(|role| role.eq_ignore_ascii_case("default"));
+        let uses_explorer_role =
+            role_name.is_some_and(|role| role.eq_ignore_ascii_case("explorer"));
+        if uses_default_role || uses_explorer_role {
+            let mut selected_model_sub = turn.config.model_sub.clone().map(|model_sub| {
+                (
+                    model_sub,
+                    SpawnModelSource::ModelSub,
+                    "config.model_sub".to_string(),
+                )
+            });
+            if selected_model_sub.is_none() {
+                if let Some(auto_model_sub) = session.get_auto_model_sub_selection().await {
+                    selected_model_sub = Some((
+                        auto_model_sub,
+                        SpawnModelSource::ModelSubAuto,
+                        "session cache".to_string(),
+                    ));
+                } else {
+                    for candidate in
+                        crate::model_sub_vouch::ranked_model_sub_candidates(&turn.config.codex_home)
+                    {
+                        if utility_model::provider_for_model_slug(&config, &candidate).is_some() {
+                            session
+                                .set_auto_model_sub_selection(Some(candidate.clone()))
+                                .await;
+                            selected_model_sub = Some((
+                                candidate,
+                                SpawnModelSource::ModelSubAuto,
+                                "model_sub_vouch".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+            if selected_model_sub.is_none()
+                && requested_model.is_none()
+                && !session.get_auto_model_sub_calibration_attempted().await
+            {
+                session.set_auto_model_sub_calibration_attempted(true).await;
+                let calibration_args = serde_json::json!({
+                    "items": input_items.clone(),
+                });
+                let calibration_call_id = format!("{call_id}-auto-calibration");
+                let calibration = Box::pin(super::calibrate_model_sub::handle(
+                    session.clone(),
+                    turn.clone(),
+                    calibration_call_id,
+                    calibration_args.to_string(),
+                ));
+                match calibration.await {
+                    Ok(ToolOutput::Function {
+                        body: FunctionCallOutputBody::Text(content),
+                        ..
+                    }) => {
+                        if let Ok(result) =
+                            serde_json::from_str::<AutoCalibrationRawResult>(&content)
+                        {
+                            let recommended_model_sub = result
+                                .recommended_for_session
+                                .clone()
+                                .or_else(|| result.recommended_for_latency.clone());
+                            let runs = result
+                                .runs
+                                .iter()
+                                .map(|run| {
+                                    let (status, output_preview) = match &run.status {
+                                        AgentStatus::PendingInit => ("pending_init", None),
+                                        AgentStatus::Running => ("running", None),
+                                        AgentStatus::Completed(message) => {
+                                            let preview = message.as_ref().and_then(|value| {
+                                                let trimmed = value.trim();
+                                                if trimmed.is_empty() {
+                                                    None
+                                                } else {
+                                                    let mut preview = trimmed
+                                                        .chars()
+                                                        .take(AUTO_CALIBRATION_PREVIEW_CHARS)
+                                                        .collect::<String>();
+                                                    if trimmed
+                                                        .chars()
+                                                        .nth(AUTO_CALIBRATION_PREVIEW_CHARS)
+                                                        .is_some()
+                                                    {
+                                                        preview.push('…');
+                                                    }
+                                                    Some(preview)
+                                                }
+                                            });
+                                            ("completed", preview)
+                                        }
+                                        AgentStatus::Errored(message) => {
+                                            let trimmed = message.trim();
+                                            let preview = if trimmed.is_empty() {
+                                                None
+                                            } else {
+                                                let mut preview = trimmed
+                                                    .chars()
+                                                    .take(AUTO_CALIBRATION_PREVIEW_CHARS)
+                                                    .collect::<String>();
+                                                if trimmed
+                                                    .chars()
+                                                    .nth(AUTO_CALIBRATION_PREVIEW_CHARS)
+                                                    .is_some()
+                                                {
+                                                    preview.push('…');
+                                                }
+                                                Some(preview)
+                                            };
+                                            ("errored", preview)
+                                        }
+                                        AgentStatus::Shutdown => ("shutdown", None),
+                                        AgentStatus::NotFound => ("not_found", None),
+                                    };
+                                    AutoCalibrationRunSummary {
+                                        model: run.model.clone(),
+                                        agent_id: run.agent_id.clone(),
+                                        status: status.to_string(),
+                                        elapsed_ms: run.elapsed_ms,
+                                        output_preview,
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            auto_calibration = Some(AutoCalibrationResult {
+                                task_bucket: result.task_bucket.clone(),
+                                runs,
+                                recommended_for_vouch: result.recommended_for_vouch.clone(),
+                                recommended_for_latency: result.recommended_for_latency.clone(),
+                                recommended_for_session: result.recommended_for_session.clone(),
+                            });
+                            if let Some(model_sub) = recommended_model_sub
+                                && utility_model::provider_for_model_slug(&config, &model_sub)
+                                    .is_some()
+                            {
+                                session
+                                    .set_auto_model_sub_selection(Some(model_sub.clone()))
+                                    .await;
+                                selected_model_sub = Some((
+                                    model_sub,
+                                    SpawnModelSource::ModelSubAuto,
+                                    "auto_calibration".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(error = %err, "spawn_agent auto calibration failed");
+                    }
+                }
+            }
+            if let Some((model_sub, source, selection_origin)) = selected_model_sub {
+                if let Some((provider_id, provider)) =
+                    utility_model::provider_for_model_slug(&config, &model_sub)
+                {
+                    tracing::info!(
+                        model_sub = model_sub.as_str(),
+                        selection_origin,
+                        "spawn_agent selected default child model"
+                    );
+                    config.model = Some(model_sub);
+                    config.model_provider_id = provider_id;
+                    config.model_provider = provider;
+                    model_source = source;
+                }
+            }
+        }
+        if let Some(requested_model) = requested_model.as_deref() {
+            if let Some((provider_id, provider)) =
+                utility_model::provider_for_model_slug(&config, requested_model)
+            {
+                config.model = Some(requested_model.to_string());
+                config.model_provider_id = provider_id;
+                config.model_provider = provider;
+                model_source = SpawnModelSource::Explicit;
+            } else {
+                let err = FunctionCallError::RespondToModel(format!(
+                    "Model override `{requested_model}` is unavailable for spawn_agent."
+                ));
+                session
+                    .send_event(
+                        &turn,
+                        CollabAgentSpawnEndEvent {
+                            call_id,
+                            sender_thread_id: session.conversation_id,
+                            memory: memory.clone(),
+                            agent_type: Some(agent_type),
+                            model: config.model.clone(),
+                            model_provider_id: Some(config.model_provider_id.clone()),
+                            new_thread_id: None,
+                            prompt: prompt_for_events,
+                            status: AgentStatus::Errored(err.to_string()),
+                        }
+                        .into(),
+                    )
+                    .await;
+                return Err(err);
+            }
+        }
         apply_spawn_agent_overrides(&mut config, child_depth);
+        model_for_events = config.model.clone();
+        model_provider_id_for_events = Some(config.model_provider_id.clone());
+        let model_for_result = config
+            .model
+            .clone()
+            .unwrap_or_else(|| turn.model_info.slug.clone());
+        let model_provider_id_for_result = config.model_provider_id.clone();
 
         let mut worktree = None;
         if turn.features.enabled(Feature::AgentWorktrees) {
-            worktree = agent_worktree::create_agent_worktree(
+            match agent_worktree::create_agent_worktree(
                 &config.cwd,
                 agent_worktree::WorktreePurpose::SpawnedAgent,
             )
@@ -173,17 +524,45 @@ mod spawn {
                 FunctionCallError::RespondToModel(format!(
                     "failed to create isolated agent worktree: {err}"
                 ))
-            })?;
-            if let Some(worktree) = worktree.as_ref() {
-                config.cwd = worktree.path.clone();
-            }
+            }) {
+                Ok(worktree_value) => {
+                    worktree = worktree_value;
+                    if let Some(worktree) = worktree.as_ref() {
+                        config.cwd = worktree.path.clone();
+                    }
+                }
+                Err(err) => {
+                    session
+                        .send_event(
+                            &turn,
+                            CollabAgentSpawnEndEvent {
+                                call_id,
+                                sender_thread_id: session.conversation_id,
+                                memory: memory.clone(),
+                                agent_type: Some(agent_type),
+                                model: model_for_events,
+                                model_provider_id: model_provider_id_for_events,
+                                new_thread_id: None,
+                                prompt: prompt_for_events,
+                                status: AgentStatus::Errored(err.to_string()),
+                            }
+                            .into(),
+                        )
+                        .await;
+                    return Err(err);
+                }
+            };
         }
 
         let prompt_for_agent = build_spawn_agent_prompt_with_context(
             session.as_ref(),
             turn.as_ref(),
+            &config,
             &prompt,
+            &memory,
+            child_depth,
             worktree.as_ref(),
+            &agent_type,
         )
         .await;
         if prompt_for_agent != prompt {
@@ -210,7 +589,16 @@ mod spawn {
                 Some(*thread_id),
                 session.services.agent_control.get_status(*thread_id).await,
             ),
-            Err(_) => (None, AgentStatus::NotFound),
+            Err(err) => (
+                None,
+                AgentStatus::Errored(match err {
+                    FunctionCallError::RespondToModel(message) => message.clone(),
+                    FunctionCallError::MissingLocalShellCallId => {
+                        "LocalShellCall without call_id or id".to_string()
+                    }
+                    FunctionCallError::Fatal(message) => format!("Fatal error: {message}"),
+                }),
+            ),
         };
         session
             .send_event(
@@ -219,6 +607,9 @@ mod spawn {
                     call_id,
                     sender_thread_id: session.conversation_id,
                     memory: memory.clone(),
+                    agent_type: Some(agent_type.clone()),
+                    model: model_for_events,
+                    model_provider_id: model_provider_id_for_events,
                     new_thread_id,
                     prompt: prompt_for_events,
                     status,
@@ -241,12 +632,19 @@ mod spawn {
 
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
+            agent_type,
+            model: model_for_result,
+            model_provider_id: model_provider_id_for_result,
+            model_source,
+            parent_thread_id: session.conversation_id.to_string(),
+            spawn_depth: child_depth,
             worktree_path: worktree
                 .as_ref()
                 .map(|worktree| worktree.path.display().to_string()),
             branch: worktree.as_ref().map(|worktree| worktree.branch.clone()),
             memory_scope_version,
             memory_binding_key,
+            auto_calibration,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -261,32 +659,80 @@ mod spawn {
     async fn build_spawn_agent_prompt_with_context(
         session: &Session,
         turn: &TurnContext,
+        config: &Config,
         prompt: &str,
+        memory: &Option<MemoryLink>,
+        child_depth: i32,
         worktree: Option<&agent_worktree::AgentWorktree>,
+        agent_type: &str,
     ) -> String {
         if prompt_already_has_context_packet(prompt) {
             return prompt.to_string();
         }
 
+        let mut handoff_lines = vec![
+            "Swarm handoff (from parent session):".to_string(),
+            format!("- Parent thread id: {}", session.conversation_id),
+            format!("- Spawn depth: {child_depth}/{MAX_THREAD_SPAWN_DEPTH}"),
+        ];
+        if let Some(memory_scope_version) = memory
+            .as_ref()
+            .and_then(|memory_link| memory_link.scope_version.as_deref())
+        {
+            handoff_lines.push(format!("- Memory scope version: {memory_scope_version}"));
+        }
+        if let Some(memory_binding_key) = memory
+            .as_ref()
+            .and_then(|memory_link| memory_link.binding_key.as_deref())
+        {
+            handoff_lines.push(format!("- Memory binding key: {memory_binding_key}"));
+        }
+        if let Some(worktree) = worktree {
+            handoff_lines.push(format!(
+                "- Workspace: isolated worktree at {}",
+                worktree.path.display()
+            ));
+        } else {
+            handoff_lines.push(
+                "- Workspace: shared with other agents, so do not overwrite or revert unrelated changes."
+                    .to_string(),
+            );
+        }
+        handoff_lines.push(
+            "- Coordination: stay within the assigned scope and include a concise handoff summary with touched files."
+                .to_string(),
+        );
+        let handoff_block = format!("{}\n\n", handoff_lines.join("\n"));
         let worktree_block = worktree.map(|worktree| {
             format!(
                 "Agent worktree:\nPath: {}\nBranch: {}\n\nNote: Commit your changes to the branch above when done.\n\n",
                 worktree.path.display(),
                 worktree.branch
             )
-        });
-        let context = context_packet::build_context_packet(
-            session,
-            turn,
-            context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
-        )
-        .await;
+       });
+        let packet_config =
+            if config.model_provider.wire_api == crate::model_provider_info::WireApi::Anthropic {
+                let mut cfg = context_packet::CLAUDE_CODE_LARGE_CONTEXT_PACKET_CONFIG;
+
+                // Enable entire summary for leader/default agents
+                if agent_type == "default" || agent_type == "leader" {
+                    cfg.include_entire_summary = true;
+                    cfg.max_entire_checkpoints = 5;
+                    cfg.max_entire_summary_bytes = 3_000;
+                }
+
+                cfg
+            } else {
+                context_packet::CLAUDE_CODE_CONTEXT_PACKET_CONFIG
+            };
+        let context = context_packet::build_context_packet(session, turn, packet_config).await;
         if context.trim().is_empty() && worktree_block.is_none() {
-            return prompt.to_string();
+            return format!("{}Task:\n{}", handoff_block, prompt.trim());
         }
 
         format!(
-            "{}Context packet (from parent session):\n{}\n\nTask:\n{}",
+            "{}{}Context packet (from parent session):\n{}\n\nTask:\n{}",
+            handoff_block,
             worktree_block.unwrap_or_default(),
             context.trim(),
             prompt.trim()
@@ -321,6 +767,8 @@ mod spawn {
     fn prompt_already_has_context_packet(prompt: &str) -> bool {
         let lower = prompt.to_ascii_lowercase();
         lower.contains("context packet")
+            || lower.contains("swarm handoff (from parent session):")
+            || lower.contains("parent thread id:")
             || lower.contains("working directory:")
             || lower.contains("active memory scope:")
             || lower.contains("active memory binding key:")
@@ -401,6 +849,9 @@ mod spawn {
             assert!(prompt_already_has_context_packet(
                 "active memory scope: user"
             ));
+            assert!(prompt_already_has_context_packet(
+                "Swarm handoff (from parent session):\n- Parent thread id: abc"
+            ));
             assert!(!prompt_already_has_context_packet("just do this task"));
         }
 
@@ -408,6 +859,12 @@ mod spawn {
         fn spawn_agent_result_serialization_includes_memory_keys_when_available() {
             let result = SpawnAgentResult {
                 agent_id: "agent-1".to_string(),
+                agent_type: "explorer".to_string(),
+                model: "gpt-5.3-codex".to_string(),
+                model_provider_id: "openai".to_string(),
+                model_source: SpawnModelSource::Role,
+                parent_thread_id: "parent-1".to_string(),
+                spawn_depth: 1,
                 worktree_path: Some("/tmp/worktree".to_string()),
                 branch: Some("agent/branch".to_string()),
                 memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
@@ -415,12 +872,19 @@ mod spawn {
                     "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         .to_string(),
                 ),
+                auto_calibration: None,
             };
 
             let actual =
                 serde_json::to_value(result).expect("spawn agent result to serialize to value");
             let expected = json!({
                 "agent_id": "agent-1",
+                "agent_type": "explorer",
+                "model": "gpt-5.3-codex",
+                "model_provider_id": "openai",
+                "model_source": "role",
+                "parent_thread_id": "parent-1",
+                "spawn_depth": 1,
                 "worktree_path": "/tmp/worktree",
                 "branch": "agent/branch",
                 "memory_scope_version": "cwd:aaaaaaaaaaaa",
@@ -433,16 +897,29 @@ mod spawn {
         fn spawn_agent_result_serialization_omits_memory_keys_when_unavailable() {
             let result = SpawnAgentResult {
                 agent_id: "agent-1".to_string(),
+                agent_type: "explorer".to_string(),
+                model: "gpt-5.3-codex".to_string(),
+                model_provider_id: "openai".to_string(),
+                model_source: SpawnModelSource::Parent,
+                parent_thread_id: "parent-1".to_string(),
+                spawn_depth: 1,
                 worktree_path: None,
                 branch: None,
                 memory_scope_version: None,
                 memory_binding_key: None,
+                auto_calibration: None,
             };
 
             let actual =
                 serde_json::to_value(result).expect("spawn agent result to serialize to value");
             let expected = json!({
                 "agent_id": "agent-1",
+                "agent_type": "explorer",
+                "model": "gpt-5.3-codex",
+                "model_provider_id": "openai",
+                "model_source": "parent",
+                "parent_thread_id": "parent-1",
+                "spawn_depth": 1,
                 "worktree_path": null,
                 "branch": null
             });
@@ -1189,6 +1666,583 @@ pub mod close_agent {
     }
 }
 
+mod calibrate_model_sub {
+    use super::*;
+    use crate::agent::status::is_final;
+    use crate::utility_model;
+    use codex_protocol::ThreadId;
+    use futures::future;
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    const DEFAULT_CALIBRATION_CANDIDATES: [&str; 4] = [
+        "claude-sonnet-4-6",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "claude-opus-4-6",
+    ];
+    const DEFAULT_WAIT_TIMEOUT_MS: i64 = 1_500;
+    const MIN_WAIT_TIMEOUT_MS: i64 = 100;
+    const MAX_WAIT_TIMEOUT_MS: i64 = 30_000;
+
+    #[derive(Debug, Deserialize)]
+    struct CalibrateModelSubArgs {
+        message: Option<String>,
+        items: Option<Vec<UserInput>>,
+        candidates: Option<Vec<String>>,
+        task_bucket: Option<String>,
+        wait_timeout_ms: Option<i64>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CalibrationRun {
+        model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        status: AgentStatus,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CalibrateModelSubResult {
+        task_bucket: Option<String>,
+        runs: Vec<CalibrationRun>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_vouch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_latency: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_session: Option<String>,
+        next_step: String,
+    }
+
+    struct ActiveRun {
+        model: String,
+        agent_id: ThreadId,
+        agent_id_string: String,
+        started_at: Instant,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: CalibrateModelSubArgs = parse_arguments(&arguments)?;
+        let items = parse_collab_input(args.message, args.items)?;
+        let task_bucket = normalize_task_bucket(args.task_bucket)?;
+        let wait_timeout_ms = args
+            .wait_timeout_ms
+            .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+            .clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS);
+        let candidates = normalized_candidates(args.candidates, turn.config.model_sub.as_deref());
+        let mut filtered = Vec::new();
+        for candidate in candidates {
+            if utility_model::provider_for_model_slug(&turn.config, &candidate).is_some() {
+                filtered.push(candidate);
+            }
+        }
+        if filtered.len() < 2 {
+            return Err(FunctionCallError::RespondToModel(
+                "Need at least two available candidate models for calibration.".to_string(),
+            ));
+        }
+        session
+            .set_last_model_sub_calibration_models(filtered.clone())
+            .await;
+
+        let mut runs = Vec::new();
+        let mut active_runs = Vec::new();
+        for (index, candidate) in filtered.into_iter().enumerate() {
+            let spawn_call_id = format!("{call_id}-spawn-{index}");
+            let spawn_args = build_spawn_arguments(&items, &candidate);
+            match super::spawn::handle(
+                session.clone(),
+                turn.clone(),
+                spawn_call_id,
+                spawn_args.to_string(),
+            )
+            .await
+            {
+                Ok(ToolOutput::Function {
+                    body: FunctionCallOutputBody::Text(content),
+                    ..
+                }) => match serde_json::from_str::<SpawnAgentResult>(&content) {
+                    Ok(parsed) => match ThreadId::from_string(&parsed.agent_id) {
+                        Ok(agent_id) => {
+                            active_runs.push(ActiveRun {
+                                model: candidate,
+                                agent_id,
+                                agent_id_string: parsed.agent_id,
+                                started_at: Instant::now(),
+                            });
+                        }
+                        Err(err) => {
+                            runs.push(CalibrationRun {
+                                model: candidate,
+                                agent_id: None,
+                                status: AgentStatus::Errored(format!(
+                                    "invalid spawned agent id: {err:?}"
+                                )),
+                                elapsed_ms: 0,
+                                error: Some("spawn returned invalid agent id".to_string()),
+                            });
+                        }
+                    },
+                    Err(err) => {
+                        runs.push(CalibrationRun {
+                            model: candidate,
+                            agent_id: None,
+                            status: AgentStatus::Errored(format!(
+                                "failed to parse spawn output: {err}"
+                            )),
+                            elapsed_ms: 0,
+                            error: Some("spawn output parsing failed".to_string()),
+                        });
+                    }
+                },
+                Ok(_) => {
+                    runs.push(CalibrationRun {
+                        model: candidate,
+                        agent_id: None,
+                        status: AgentStatus::Errored(
+                            "spawn returned non-text tool output".to_string(),
+                        ),
+                        elapsed_ms: 0,
+                        error: Some("spawn returned non-text tool output".to_string()),
+                    });
+                }
+                Err(err) => {
+                    runs.push(CalibrationRun {
+                        model: candidate,
+                        agent_id: None,
+                        status: AgentStatus::Errored(err.to_string()),
+                        elapsed_ms: 0,
+                        error: Some(err.to_string()),
+                    });
+                }
+            }
+        }
+
+        let waited = future::join_all(active_runs.into_iter().map(|run| {
+            let session = session.clone();
+            async move {
+                let mut status =
+                    wait_for_final_status(session.clone(), run.agent_id, wait_timeout_ms).await;
+                if !is_final(&status) {
+                    let _ = session
+                        .services
+                        .agent_control
+                        .shutdown_agent(run.agent_id)
+                        .await;
+                    status = session
+                        .services
+                        .agent_control
+                        .get_status(run.agent_id)
+                        .await;
+                }
+                let elapsed_ms = run.started_at.elapsed().as_millis();
+                let elapsed_ms = elapsed_ms.min(u128::from(u64::MAX)) as u64;
+                CalibrationRun {
+                    model: run.model,
+                    agent_id: Some(run.agent_id_string),
+                    status,
+                    elapsed_ms,
+                    error: None,
+                }
+            }
+        }))
+        .await;
+        runs.extend(waited);
+
+        let available_models = runs
+            .iter()
+            .filter(|run| run.agent_id.is_some())
+            .map(|run| run.model.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let recommended_for_vouch =
+            crate::model_sub_vouch::ranked_model_sub_candidates(&turn.config.codex_home)
+                .into_iter()
+                .find(|candidate| available_models.contains(&candidate.to_ascii_lowercase()));
+        let recommended_for_latency = runs
+            .iter()
+            .filter(|run| matches!(run.status, AgentStatus::Completed(_)))
+            .min_by_key(|run| run.elapsed_ms)
+            .map(|run| run.model.clone());
+        let recommended_for_session = recommended_for_vouch
+            .clone()
+            .or_else(|| recommended_for_latency.clone());
+        let next_step =
+            "Compare completed outputs, then call `record_model_sub_winner` (or `record_model_sub_duel`) to persist the winner."
+                .to_string();
+
+        let content = serde_json::to_string(&CalibrateModelSubResult {
+            task_bucket,
+            runs,
+            recommended_for_vouch,
+            recommended_for_latency,
+            recommended_for_session,
+            next_step,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize calibrate_model_sub result: {err}"
+            ))
+        })?;
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+
+    fn normalize_task_bucket(
+        task_bucket: Option<String>,
+    ) -> Result<Option<String>, FunctionCallError> {
+        let Some(task_bucket) = task_bucket else {
+            return Ok(None);
+        };
+        let normalized = task_bucket.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+        if normalized == "general" || normalized == "debug" || normalized == "review" {
+            Ok(Some(normalized))
+        } else {
+            Err(FunctionCallError::RespondToModel(
+                "task_bucket must be one of: general, debug, review".to_string(),
+            ))
+        }
+    }
+
+    fn normalized_candidates(
+        candidates: Option<Vec<String>>,
+        model_sub: Option<&str>,
+    ) -> Vec<String> {
+        let mut ordered = Vec::new();
+        if let Some(model_sub) = model_sub {
+            ordered.push(model_sub.to_string());
+        }
+        if let Some(candidates) = candidates {
+            ordered.extend(candidates);
+        } else {
+            ordered.extend(
+                DEFAULT_CALIBRATION_CANDIDATES
+                    .into_iter()
+                    .map(ToOwned::to_owned),
+            );
+        }
+        let mut seen = BTreeSet::new();
+        let mut normalized = Vec::new();
+        for candidate in ordered {
+            let value = candidate.trim();
+            if value.is_empty() {
+                continue;
+            }
+            let key = value.to_ascii_lowercase();
+            if seen.insert(key) {
+                normalized.push(value.to_string());
+            }
+        }
+        normalized
+    }
+
+    fn build_spawn_arguments(items: &[UserInput], model: &str) -> Value {
+        serde_json::json!({
+            "items": items,
+            "model": model,
+        })
+    }
+
+    async fn wait_for_final_status(
+        session: Arc<Session>,
+        agent_id: ThreadId,
+        timeout_ms: i64,
+    ) -> AgentStatus {
+        let mut status_rx = match session
+            .services
+            .agent_control
+            .subscribe_status(agent_id)
+            .await
+        {
+            Ok(status_rx) => status_rx,
+            Err(_) => return AgentStatus::NotFound,
+        };
+        let current = status_rx.borrow().clone();
+        if is_final(&current) {
+            return current;
+        }
+        let wait_future = async {
+            loop {
+                if status_rx.changed().await.is_err() {
+                    return session.services.agent_control.get_status(agent_id).await;
+                }
+                let status = status_rx.borrow().clone();
+                if is_final(&status) {
+                    return status;
+                }
+            }
+        };
+        match tokio::time::timeout(Duration::from_millis(timeout_ms as u64), wait_future).await {
+            Ok(status) => status,
+            Err(_) => session.services.agent_control.get_status(agent_id).await,
+        }
+    }
+}
+
+mod record_model_sub_duel {
+    use super::*;
+    use crate::model_sub_vouch::ModelSubVouchVerdict;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize)]
+    struct RecordModelSubDuelArgs {
+        winner_model: String,
+        loser_model: String,
+        task_bucket: Option<String>,
+        note: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RecordModelSubDuelResult {
+        winner_model: String,
+        loser_model: String,
+        task_bucket: Option<String>,
+        winner_wins: u32,
+        winner_losses: u32,
+        loser_wins: u32,
+        loser_losses: u32,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        _call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: RecordModelSubDuelArgs = parse_arguments(&arguments)?;
+        let winner_model = args.winner_model.trim();
+        let loser_model = args.loser_model.trim();
+        if winner_model.is_empty() || loser_model.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "winner_model and loser_model must be non-empty".to_string(),
+            ));
+        }
+        if winner_model.eq_ignore_ascii_case(loser_model) {
+            return Err(FunctionCallError::RespondToModel(
+                "winner_model and loser_model must be different".to_string(),
+            ));
+        }
+
+        let task_bucket = normalize_task_bucket(args.task_bucket)?;
+        let winner_stats = crate::model_sub_vouch::record_model_sub_vouch(
+            &turn.config.codex_home,
+            winner_model,
+            ModelSubVouchVerdict::Win,
+            task_bucket.as_deref(),
+            args.note.as_deref(),
+        )
+        .map_err(FunctionCallError::RespondToModel)?;
+        let loser_stats = crate::model_sub_vouch::record_model_sub_vouch(
+            &turn.config.codex_home,
+            loser_model,
+            ModelSubVouchVerdict::Loss,
+            task_bucket.as_deref(),
+            args.note.as_deref(),
+        )
+        .map_err(FunctionCallError::RespondToModel)?;
+        session
+            .set_auto_model_sub_selection(Some(winner_model.to_string()))
+            .await;
+
+        let content = serde_json::to_string(&RecordModelSubDuelResult {
+            winner_model: winner_model.to_string(),
+            loser_model: loser_model.to_string(),
+            task_bucket,
+            winner_wins: winner_stats.wins,
+            winner_losses: winner_stats.losses,
+            loser_wins: loser_stats.wins,
+            loser_losses: loser_stats.losses,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize record_model_sub_duel result: {err}"
+            ))
+        })?;
+
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+
+    fn normalize_task_bucket(
+        task_bucket: Option<String>,
+    ) -> Result<Option<String>, FunctionCallError> {
+        let Some(task_bucket) = task_bucket else {
+            return Ok(None);
+        };
+        let normalized = task_bucket.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+        if normalized == "general" || normalized == "debug" || normalized == "review" {
+            Ok(Some(normalized))
+        } else {
+            Err(FunctionCallError::RespondToModel(
+                "task_bucket must be one of: general, debug, review".to_string(),
+            ))
+        }
+    }
+}
+
+mod record_model_sub_winner {
+    use super::*;
+    use crate::model_sub_vouch::ModelSubVouchVerdict;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize)]
+    struct RecordModelSubWinnerArgs {
+        winner_model: String,
+        compared_models: Option<Vec<String>>,
+        task_bucket: Option<String>,
+        note: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RecordModelSubWinnerResult {
+        winner_model: String,
+        compared_models_source: String,
+        losers_recorded: Vec<String>,
+        task_bucket: Option<String>,
+        winner_wins: u32,
+        winner_losses: u32,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        _call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: RecordModelSubWinnerArgs = parse_arguments(&arguments)?;
+        let winner_model = args.winner_model.trim();
+        if winner_model.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "winner_model must be non-empty".to_string(),
+            ));
+        }
+
+        let task_bucket = normalize_task_bucket(args.task_bucket)?;
+        let (compared_models, compared_models_source) =
+            if let Some(compared_models) = args.compared_models {
+                (compared_models, "provided".to_string())
+            } else {
+                (
+                    session.get_last_model_sub_calibration_models().await,
+                    "session_last_calibration".to_string(),
+                )
+            };
+        let losers = normalize_losers(winner_model, compared_models);
+        if losers.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "compared_models must include at least one model different from winner_model; if omitted, run calibrate_model_sub first in this session."
+                    .to_string(),
+            ));
+        }
+
+        let mut winner_stats = crate::model_sub_vouch::ModelSubVouchStats { wins: 0, losses: 0 };
+        for loser in &losers {
+            winner_stats = crate::model_sub_vouch::record_model_sub_vouch(
+                &turn.config.codex_home,
+                winner_model,
+                ModelSubVouchVerdict::Win,
+                task_bucket.as_deref(),
+                args.note.as_deref(),
+            )
+            .map_err(FunctionCallError::RespondToModel)?;
+            crate::model_sub_vouch::record_model_sub_vouch(
+                &turn.config.codex_home,
+                loser,
+                ModelSubVouchVerdict::Loss,
+                task_bucket.as_deref(),
+                args.note.as_deref(),
+            )
+            .map_err(FunctionCallError::RespondToModel)?;
+        }
+        session
+            .set_auto_model_sub_selection(Some(winner_model.to_string()))
+            .await;
+
+        let content = serde_json::to_string(&RecordModelSubWinnerResult {
+            winner_model: winner_model.to_string(),
+            compared_models_source,
+            losers_recorded: losers,
+            task_bucket,
+            winner_wins: winner_stats.wins,
+            winner_losses: winner_stats.losses,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize record_model_sub_winner result: {err}"
+            ))
+        })?;
+
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+
+    fn normalize_task_bucket(
+        task_bucket: Option<String>,
+    ) -> Result<Option<String>, FunctionCallError> {
+        let Some(task_bucket) = task_bucket else {
+            return Ok(None);
+        };
+        let normalized = task_bucket.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+        if normalized == "general" || normalized == "debug" || normalized == "review" {
+            Ok(Some(normalized))
+        } else {
+            Err(FunctionCallError::RespondToModel(
+                "task_bucket must be one of: general, debug, review".to_string(),
+            ))
+        }
+    }
+
+    fn normalize_losers(winner_model: &str, compared_models: Vec<String>) -> Vec<String> {
+        let winner_key = winner_model.to_ascii_lowercase();
+        let mut seen = BTreeSet::new();
+        let mut losers = Vec::new();
+        for compared_model in compared_models {
+            let model = compared_model.trim();
+            if model.is_empty() {
+                continue;
+            }
+            let key = model.to_ascii_lowercase();
+            if key == winner_key || !seen.insert(key) {
+                continue;
+            }
+            losers.push(model.to_string());
+        }
+        losers
+    }
+}
+
 fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
     ThreadId::from_string(id)
         .map_err(|e| FunctionCallError::RespondToModel(format!("invalid agent id {id}: {e:?}")))
@@ -1396,6 +2450,7 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1429,6 +2484,12 @@ mod tests {
             CodexAuth::from_api_key("dummy"),
             built_in_model_providers()["openai"].clone(),
         )
+    }
+
+    fn write_model_sub_vouch(codex_home: &std::path::Path, content: &str) {
+        let memories_dir = codex_home.join("memories");
+        fs::create_dir_all(&memories_dir).expect("create memories dir");
+        fs::write(memories_dir.join("model_sub_vouch.json"), content).expect("write vouch file");
     }
 
     #[tokio::test]
@@ -1468,6 +2529,438 @@ mod tests {
         assert_eq!(
             err,
             FunctionCallError::RespondToModel("unsupported collab tool unknown_tool".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_duel_rejects_identical_models() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "record_model_sub_duel",
+            function_payload(json!({
+                "winner_model": "claude-sonnet-4-6",
+                "loser_model": "CLAUDE-SONNET-4-6"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("duel should fail for identical models");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "winner_model and loser_model must be different".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_duel_writes_vouch_ledger() {
+        #[derive(Debug, Deserialize)]
+        struct DuelResult {
+            winner_model: String,
+            loser_model: String,
+            task_bucket: Option<String>,
+            winner_wins: u32,
+            winner_losses: u32,
+            loser_wins: u32,
+            loser_losses: u32,
+        }
+
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let codex_home = turn.config.codex_home.clone();
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "record_model_sub_duel",
+            function_payload(json!({
+                "winner_model": "claude-sonnet-4-6",
+                "loser_model": "gpt-5.2-codex",
+                "task_bucket": "debug",
+                "note": "better root cause"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("duel should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: DuelResult = serde_json::from_str(&content).expect("duel result should parse");
+        assert_eq!(result.winner_model, "claude-sonnet-4-6");
+        assert_eq!(result.loser_model, "gpt-5.2-codex");
+        assert_eq!(result.task_bucket, Some("debug".to_string()));
+        assert_eq!(result.winner_wins, 1);
+        assert_eq!(result.winner_losses, 0);
+        assert_eq!(result.loser_wins, 0);
+        assert_eq!(result.loser_losses, 1);
+
+        let ledger_raw = fs::read_to_string(codex_home.join("memories/model_sub_vouch.json"))
+            .expect("model-sub vouch file should exist");
+        let ledger: serde_json::Value =
+            serde_json::from_str(&ledger_raw).expect("ledger should parse");
+        assert_eq!(
+            ledger["models"]["claude-sonnet-4-6"]["wins"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            ledger["models"]["gpt-5.2-codex"]["losses"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            session.get_auto_model_sub_selection().await,
+            Some("claude-sonnet-4-6".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_records_all_losers_and_updates_cache() {
+        #[derive(Debug, Deserialize)]
+        struct WinnerResult {
+            winner_model: String,
+            compared_models_source: String,
+            losers_recorded: Vec<String>,
+            winner_wins: u32,
+            winner_losses: u32,
+        }
+
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let codex_home = turn.config.codex_home.clone();
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "record_model_sub_winner",
+            function_payload(json!({
+                "winner_model": "claude-sonnet-4-6",
+                "compared_models": ["gpt-5.2-codex", "gpt-5.1-codex-mini", "claude-sonnet-4-6"],
+                "task_bucket": "review",
+                "note": "best review quality"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("winner record should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: WinnerResult =
+            serde_json::from_str(&content).expect("winner result should parse");
+        assert_eq!(result.winner_model, "claude-sonnet-4-6");
+        assert_eq!(result.compared_models_source, "provided");
+        assert_eq!(result.losers_recorded.len(), 2);
+        assert_eq!(result.winner_wins, 2);
+        assert_eq!(result.winner_losses, 0);
+
+        let ledger_raw = fs::read_to_string(codex_home.join("memories/model_sub_vouch.json"))
+            .expect("model-sub vouch file should exist");
+        let ledger: serde_json::Value =
+            serde_json::from_str(&ledger_raw).expect("ledger should parse");
+        assert_eq!(
+            ledger["models"]["claude-sonnet-4-6"]["wins"],
+            serde_json::Value::from(2)
+        );
+        assert_eq!(
+            ledger["models"]["gpt-5.2-codex"]["losses"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            ledger["models"]["gpt-5.1-codex-mini"]["losses"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            session.get_auto_model_sub_selection().await,
+            Some("claude-sonnet-4-6".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_uses_session_calibration_models_when_compared_omitted() {
+        #[derive(Debug, Deserialize)]
+        struct WinnerResult {
+            compared_models_source: String,
+            losers_recorded: Vec<String>,
+        }
+
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let codex_home = turn.config.codex_home.clone();
+        session
+            .set_last_model_sub_calibration_models(vec![
+                "claude-sonnet-4-6".to_string(),
+                "gpt-5.2-codex".to_string(),
+                "gpt-5.1-codex-mini".to_string(),
+            ])
+            .await;
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "record_model_sub_winner",
+            function_payload(json!({
+                "winner_model": "claude-sonnet-4-6",
+                "task_bucket": "general",
+                "note": "best overall output"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("winner record should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: WinnerResult =
+            serde_json::from_str(&content).expect("winner result should parse");
+        assert_eq!(result.compared_models_source, "session_last_calibration");
+        assert_eq!(result.losers_recorded.len(), 2);
+
+        let ledger_raw = fs::read_to_string(codex_home.join("memories/model_sub_vouch.json"))
+            .expect("model-sub vouch file should exist");
+        let ledger: serde_json::Value =
+            serde_json::from_str(&ledger_raw).expect("ledger should parse");
+        assert_eq!(
+            ledger["models"]["claude-sonnet-4-6"]["wins"],
+            serde_json::Value::from(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_rejects_without_distinct_losers() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "record_model_sub_winner",
+            function_payload(json!({
+                "winner_model": "claude-sonnet-4-6",
+                "compared_models": ["claude-sonnet-4-6"]
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("winner record should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "compared_models must include at least one model different from winner_model; if omitted, run calibrate_model_sub first in this session."
+                    .to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_rejects_when_omitted_and_no_cached_calibration() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "record_model_sub_winner",
+            function_payload(json!({
+                "winner_model": "claude-sonnet-4-6"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("winner record should fail without compared models");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "compared_models must include at least one model different from winner_model; if omitted, run calibrate_model_sub first in this session."
+                    .to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_rejects_when_less_than_two_candidates() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "check",
+                "candidates": ["gpt-5.2-codex"]
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("calibration should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Need at least two available candidate models for calibration.".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_returns_runs_for_candidates() {
+        #[derive(Debug, Deserialize)]
+        struct CalibrateResult {
+            runs: Vec<CalibrateRun>,
+            recommended_for_vouch: Option<String>,
+            recommended_for_latency: Option<String>,
+            recommended_for_session: Option<String>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct CalibrateRun {
+            model: String,
+            agent_id: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "candidates": ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+                "wait_timeout_ms": 100
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("calibration should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: CalibrateResult =
+            serde_json::from_str(&content).expect("calibration result should parse");
+        assert_eq!(result.runs.len(), 2);
+        let mut models = result
+            .runs
+            .iter()
+            .map(|run| run.model.clone())
+            .collect::<Vec<_>>();
+        models.sort();
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5.1-codex-mini".to_string(),
+                "gpt-5.2-codex".to_string()
+            ]
+        );
+        assert!(result.runs.iter().all(|run| run.agent_id.is_some()));
+        assert_eq!(result.recommended_for_vouch, None);
+        assert_eq!(
+            result.recommended_for_session,
+            result.recommended_for_latency
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_uses_vouch_hint_for_session_recommendation() {
+        #[derive(Debug, Deserialize)]
+        struct CalibrateResult {
+            recommended_for_vouch: Option<String>,
+            recommended_for_session: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2-codex": {
+      "wins": 4,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }, { "verdict": "Win" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    }
+  }
+}"#,
+        );
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "candidates": ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+                "wait_timeout_ms": 100
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("calibration should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: CalibrateResult =
+            serde_json::from_str(&content).expect("calibration result should parse");
+        assert_eq!(
+            result.recommended_for_vouch.as_deref(),
+            Some("gpt-5.2-codex")
+        );
+        assert_eq!(
+            result.recommended_for_session.as_deref(),
+            Some("gpt-5.2-codex")
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_caches_candidate_models_for_follow_up_recording() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let session = Arc::new(session);
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "candidates": ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+                "wait_timeout_ms": 100
+            })),
+        );
+        let _ = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("calibration should succeed");
+        assert_eq!(
+            session.get_last_model_sub_calibration_models().await,
+            vec![
+                "gpt-5.2-codex".to_string(),
+                "gpt-5.1-codex-mini".to_string(),
+            ]
         );
     }
 
@@ -1561,8 +3054,594 @@ mod tests {
             .expect("spawned agent thread should exist")
             .config_snapshot()
             .await;
-        assert_eq!(snapshot.model, "gpt-5.1-codex-mini");
+        assert_eq!(snapshot.model, "gpt-5.2");
         assert_eq!(snapshot.approval_policy, AskForApproval::Never);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_default_role_uses_model_sub_override_for_child_model() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            agent_type: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let mut config = (*turn.config).clone();
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+        turn.config = Arc::new(config);
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.agent_type, "default");
+        assert_eq!(result.model, "claude-sonnet-4-6");
+        assert_eq!(result.model_provider_id, "anthropic");
+        assert_eq!(result.model_source, "model_sub");
+
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "claude-sonnet-4-6");
+        assert_eq!(snapshot.model_provider_id, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_explorer_role_uses_model_sub_override_for_child_model() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            agent_type: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let mut config = (*turn.config).clone();
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+        turn.config = Arc::new(config);
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "explorer"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.agent_type, "explorer");
+        assert_eq!(result.model, "claude-sonnet-4-6");
+        assert_eq!(result.model_provider_id, "anthropic");
+        assert_eq!(result.model_source, "model_sub");
+
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "claude-sonnet-4-6");
+        assert_eq!(snapshot.model_provider_id, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_explicit_default_role_uses_model_sub_override_for_child_model() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            agent_type: String,
+            model: String,
+            model_provider_id: String,
+        }
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let mut config = (*turn.config).clone();
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+        turn.config = Arc::new(config);
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "default"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.agent_type, "default");
+        assert_eq!(result.model, "claude-sonnet-4-6");
+        assert_eq!(result.model_provider_id, "anthropic");
+
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "claude-sonnet-4-6");
+        assert_eq!(snapshot.model_provider_id, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_model_override_takes_precedence_over_model_sub() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let mut config = (*turn.config).clone();
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+        turn.config = Arc::new(config);
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "model": "gpt-5.1-codex-mini"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.model, "gpt-5.1-codex-mini");
+        assert_eq!(result.model_provider_id, "openai");
+        assert_eq!(result.model_source, "explicit");
+
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "gpt-5.1-codex-mini");
+        assert_eq!(snapshot.model_provider_id, "openai");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_explorer_model_override_takes_precedence_over_model_sub() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let mut config = (*turn.config).clone();
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+        turn.config = Arc::new(config);
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "explorer",
+                "model": "gpt-5.1-codex-mini"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.model, "gpt-5.1-codex-mini");
+        assert_eq!(result.model_provider_id, "openai");
+        assert_eq!(result.model_source, "explicit");
+
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "gpt-5.1-codex-mini");
+        assert_eq!(snapshot.model_provider_id, "openai");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_default_role_without_model_sub_reports_parent_model_source() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        session.set_auto_model_sub_calibration_attempted(true).await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let expected_model = turn.model_info.slug.clone();
+        let expected_provider_id = turn.config.model_provider_id.clone();
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.model, expected_model);
+        assert_eq!(result.model_provider_id, expected_provider_id);
+        assert_eq!(result.model_source, "parent");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_marks_auto_calibration_attempted_when_no_signal() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model_source: String,
+            auto_calibration: Option<AutoCalibrationResult>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct AutoCalibrationResult {
+            runs: Vec<AutoCalibrationRunSummary>,
+            recommended_for_latency: Option<String>,
+            recommended_for_session: Option<String>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct AutoCalibrationRunSummary {
+            model: String,
+            status: String,
+            output_preview: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let output = MultiAgentHandler
+            .handle(invocation(
+                session.clone(),
+                turn,
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo"
+                })),
+            ))
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert!(!result.model_source.is_empty());
+        let auto_calibration = result
+            .auto_calibration
+            .expect("auto_calibration should be present");
+        assert!(!auto_calibration.runs.is_empty());
+        assert!(
+            auto_calibration
+                .runs
+                .iter()
+                .all(|run| !run.model.is_empty())
+        );
+        assert!(
+            auto_calibration
+                .runs
+                .iter()
+                .all(|run| !run.status.is_empty())
+        );
+        assert!(
+            auto_calibration
+                .runs
+                .iter()
+                .filter_map(|run| run.output_preview.as_ref())
+                .all(|preview| !preview.trim().is_empty())
+        );
+        let _ = (
+            auto_calibration.recommended_for_session,
+            auto_calibration.recommended_for_latency,
+        );
+        assert_eq!(
+            session.get_auto_model_sub_calibration_attempted().await,
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_default_role_uses_auto_model_sub_from_vouch_when_unset() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }, { "verdict": "Win" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    }
+  }
+}"#,
+        );
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.model, "gpt-5.2");
+        assert_eq!(result.model_provider_id, "openai");
+        assert_eq!(result.model_source, "model_sub_auto");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_auto_model_sub_uses_session_cache_after_first_selection() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model: String,
+            model_source: String,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    }
+  }
+}"#,
+        );
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let first = MultiAgentHandler
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo"
+                })),
+            ))
+            .await
+            .expect("first spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = first
+        else {
+            panic!("expected function output");
+        };
+        let first_result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(first_result.model, "gpt-5.2");
+        assert_eq!(first_result.model_source, "model_sub_auto");
+        assert_eq!(
+            session.get_auto_model_sub_selection().await,
+            Some("gpt-5.2".to_string())
+        );
+
+        // Flip the ledger recommendation; cached session selection should still win.
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }]
+    }
+  }
+}"#,
+        );
+
+        let second = MultiAgentHandler
+            .handle(invocation(
+                session,
+                turn,
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo again"
+                })),
+            ))
+            .await
+            .expect("second spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = second
+        else {
+            panic!("expected function output");
+        };
+        let second_result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(second_result.model, "gpt-5.2");
+        assert_eq!(second_result.model_source, "model_sub_auto");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unavailable_model_override() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "model": "unknown-model"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Model override `unknown-model` is unavailable for spawn_agent.".to_string()
+            )
+        );
     }
 
     #[tokio::test]
