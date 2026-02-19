@@ -30,8 +30,10 @@ use crate::features::FEATURES;
 use crate::features::Feature;
 use crate::features::Features;
 use crate::features::maybe_push_unstable_features_warning;
+use crate::model_compat::is_anthropic_model_slug;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
+use crate::model_compat::is_openai_model_slug;
 use crate::models_manager::manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
@@ -613,6 +615,12 @@ impl TurnContext {
     pub(crate) async fn with_model(&self, model: String, models_manager: &ModelsManager) -> Self {
         let mut config = (*self.config).clone();
         config.model = Some(model.clone());
+        let (provider_id, provider) =
+            crate::utility_model::provider_for_model_slug(&config, &model)
+                .unwrap_or_else(|| (config.model_provider_id.clone(), self.provider.clone()));
+        config.model_provider_id = provider_id;
+        config.model_provider = provider.clone();
+        config.user_configured_provider = provider.clone();
         let model_info = models_manager.get_model_info(model.as_str(), &config).await;
         let truncation_policy = model_info.truncation_policy.into();
         let supported_reasoning_levels = model_info
@@ -645,8 +653,7 @@ impl TurnContext {
             model_info: &model_info,
             features: &features,
             web_search_mode: self.tools_config.web_search_mode,
-            is_gemini_wire_api: self.provider.wire_api
-                == crate::model_provider_info::WireApi::Gemini,
+            is_gemini_wire_api: provider.wire_api == crate::model_provider_info::WireApi::Gemini,
         })
         .with_agent_roles(config.agent_roles.clone());
 
@@ -659,7 +666,7 @@ impl TurnContext {
                 .otel_manager
                 .clone()
                 .with_model(model.as_str(), model_info.slug.as_str()),
-            provider: self.provider.clone(),
+            provider,
             reasoning_effort,
             reasoning_summary: self.reasoning_summary,
             session_source: self.session_source.clone(),
@@ -900,9 +907,9 @@ impl SessionConfiguration {
         // to the correct API endpoint.
         let new_model = next_configuration.collaboration_mode.model();
         let target_provider_id = provider_id_for_model_family(new_model);
-        let current_provider_is_family_auto_switched = next_configuration.provider.wire_api
-            == crate::model_provider_info::WireApi::Gemini
-            || next_configuration.provider.is_grok();
+        let original_config = &next_configuration.original_config_do_not_use;
+        let provider_is_auto_switched =
+            next_configuration.provider != original_config.user_configured_provider;
 
         tracing::info!(
             new_model = %new_model,
@@ -912,7 +919,7 @@ impl SessionConfiguration {
             current_provider_base_url = ?next_configuration.provider.base_url,
             current_wire_api = ?next_configuration.provider.wire_api,
             current_is_grok = next_configuration.provider.is_grok(),
-            current_is_family_auto_switched = current_provider_is_family_auto_switched,
+            provider_is_auto_switched,
             "apply() auto-switch check"
         );
 
@@ -956,12 +963,48 @@ impl SessionConfiguration {
                     );
                 }
             }
-        } else if current_provider_is_family_auto_switched {
+        } else if is_openai_model_slug(new_model)
+            && next_configuration.provider.wire_api
+                != crate::model_provider_info::WireApi::Responses
+        {
+            let providers = &next_configuration
+                .original_config_do_not_use
+                .model_providers;
+            let old_provider_id = next_configuration.provider_id.clone();
+
+            let mut restored_provider = if original_config.user_configured_provider.wire_api
+                == crate::model_provider_info::WireApi::Responses
+            {
+                original_config.user_configured_provider.clone()
+            } else if let Some(openai) = providers.get("openai") {
+                openai.clone()
+            } else {
+                original_config.user_configured_provider.clone()
+            };
+            crate::config::apply_primary_account_pool_selection(&mut restored_provider);
+
+            next_configuration.provider_id = resolve_provider_id_for_provider(
+                providers,
+                &restored_provider,
+                &original_config.model_provider_id,
+            );
+            next_configuration.provider = restored_provider;
+
+            let account_label = account_index_label(&next_configuration.provider);
+            let base_url = next_configuration
+                .provider
+                .base_url
+                .as_deref()
+                .unwrap_or("(default)");
+            provider_switch_label = Some(format!(
+                "{} -> {} [{}] @ {} (model: {})",
+                old_provider_id, next_configuration.provider_id, account_label, base_url, new_model
+            ));
+        } else if provider_is_auto_switched {
             // Switching FROM a family-specific provider back to a default
             // model family: restore the user's explicitly configured provider
             // (before auto-switching).
             let old_provider_id = next_configuration.provider_id.clone();
-            let original_config = &next_configuration.original_config_do_not_use;
             let restored_provider = original_config.user_configured_provider.clone();
             next_configuration.provider_id = resolve_provider_id_for_provider(
                 &original_config.model_providers,
@@ -990,6 +1033,8 @@ fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
         Some(crate::model_provider_info::GEMMA_PROVIDER_ID)
     } else if model_slug.starts_with("gemini-") {
         Some(crate::model_provider_info::GEMINI_PROVIDER_ID)
+    } else if is_anthropic_model_slug(model_slug) {
+        Some(crate::model_provider_info::ANTHROPIC_PROVIDER_ID)
     } else if is_grok_model_slug(model_slug) {
         Some(crate::model_provider_info::GROK_PROVIDER_ID)
     } else {
@@ -1006,6 +1051,9 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
             provider.is_gemma()
                 || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
                     && !provider.is_gemini())
+        }
+        crate::model_provider_info::ANTHROPIC_PROVIDER_ID => {
+            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
         }
         crate::model_provider_info::GROK_PROVIDER_ID => provider.is_grok(),
         _ => false,
@@ -1803,6 +1851,36 @@ impl Session {
     pub(crate) async fn clear_mcp_tool_selection(&self) {
         let mut state = self.state.lock().await;
         state.clear_mcp_tool_selection();
+    }
+
+    pub(crate) async fn set_auto_model_sub_selection(&self, model_sub: Option<String>) {
+        let mut state = self.state.lock().await;
+        state.set_auto_model_sub_selection(model_sub);
+    }
+
+    pub(crate) async fn get_auto_model_sub_selection(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.get_auto_model_sub_selection()
+    }
+
+    pub(crate) async fn set_auto_model_sub_calibration_attempted(&self, attempted: bool) {
+        let mut state = self.state.lock().await;
+        state.set_auto_model_sub_calibration_attempted(attempted);
+    }
+
+    pub(crate) async fn get_auto_model_sub_calibration_attempted(&self) -> bool {
+        let state = self.state.lock().await;
+        state.get_auto_model_sub_calibration_attempted()
+    }
+
+    pub(crate) async fn set_last_model_sub_calibration_models(&self, models: Vec<String>) {
+        let mut state = self.state.lock().await;
+        state.set_last_model_sub_calibration_models(models);
+    }
+
+    pub(crate) async fn get_last_model_sub_calibration_models(&self) -> Vec<String> {
+        let state = self.state.lock().await;
+        state.get_last_model_sub_calibration_models()
     }
 
     // Merges connector IDs into the session-level explicit connector selection.
@@ -6871,6 +6949,7 @@ mod tests {
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         }
     }
 
@@ -7115,6 +7194,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_switches_to_anthropic_provider_for_claude_model() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        assert!(session_configuration.provider.is_openai());
+
+        let (next, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("claude-opus-4-6")),
+                ..Default::default()
+            })
+            .expect("model switch to claude should be valid");
+
+        assert!(next.provider.is_anthropic());
+        assert_eq!(next.provider.env_key.as_deref(), Some("ANTHROPIC_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn apply_switches_to_anthropic_provider_for_namespaced_claude_model() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        assert!(session_configuration.provider.is_openai());
+
+        let (next, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model(
+                    "anthropic/claude-sonnet-4-6",
+                )),
+                ..Default::default()
+            })
+            .expect("model switch to namespaced claude should be valid");
+
+        assert!(next.provider.is_anthropic());
+        assert_eq!(next.provider.env_key.as_deref(), Some("ANTHROPIC_API_KEY"));
+    }
+
+    #[tokio::test]
     async fn apply_switches_from_gemini_provider_to_grok_provider() {
         let (session, _) = make_session_and_context().await;
         let session_configuration = {
@@ -7249,6 +7372,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_keeps_custom_anthropic_provider_for_claude_models() {
+        let (session, _) = make_session_and_context().await;
+        let mut session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let mut custom_anthropic_provider = session_configuration.provider.clone();
+        custom_anthropic_provider.name = "Anthropic Proxy".to_string();
+        custom_anthropic_provider.base_url = Some("https://example.com/anthropic".to_string());
+        custom_anthropic_provider.env_key = Some("ANTHROPIC_API_KEY".to_string());
+        custom_anthropic_provider.wire_api = crate::model_provider_info::WireApi::Anthropic;
+        custom_anthropic_provider.requires_openai_auth = false;
+        custom_anthropic_provider.supports_websockets = false;
+        session_configuration.provider = custom_anthropic_provider.clone();
+
+        let (next, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("claude-opus-4-6")),
+                ..Default::default()
+            })
+            .expect("model switch to claude should be valid");
+
+        assert_eq!(next.provider, custom_anthropic_provider);
+    }
+
+    #[tokio::test]
     async fn apply_restores_user_provider_when_switching_away_from_grok() {
         let (session, _) = make_session_and_context().await;
         let session_configuration = {
@@ -7308,6 +7458,101 @@ mod tests {
             .expect("model switch back to default family should be valid");
 
         assert_eq!(restored.provider, expected_user_provider);
+    }
+
+    #[tokio::test]
+    async fn apply_restores_user_provider_when_switching_away_from_claude() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let expected_user_provider = session_configuration
+            .original_config_do_not_use
+            .user_configured_provider
+            .clone();
+
+        let (claude, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("claude-opus-4-6")),
+                ..Default::default()
+            })
+            .expect("model switch to claude should be valid");
+        assert!(claude.provider.is_anthropic());
+
+        let (restored, _) = claude
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gpt-5-codex")),
+                ..Default::default()
+            })
+            .expect("model switch back to default family should be valid");
+
+        assert_eq!(restored.provider, expected_user_provider);
+    }
+
+    #[tokio::test]
+    async fn apply_switches_to_openai_provider_for_gpt_model_when_started_on_claude() {
+        let mut config = crate::config::test_config();
+        config.model = Some("claude-opus-4-6".to_string());
+        config.model_provider_id = "anthropic".to_string();
+        config.model_provider = config
+            .model_providers
+            .get("anthropic")
+            .expect("anthropic provider should exist")
+            .clone();
+        config.user_configured_provider = config.model_provider.clone();
+        let config = std::sync::Arc::new(config);
+
+        let model = ModelsManager::get_model_offline_for_tests(config.model.as_deref());
+        let reasoning_effort = config.model_reasoning_effort;
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests(model.as_str(), &config);
+        let collaboration_mode = CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model,
+                reasoning_effort,
+                developer_instructions: None,
+            },
+        };
+
+        let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
+            provider: config.model_provider.clone(),
+            collaboration_mode,
+            model_reasoning_summary: config.model_reasoning_summary,
+            developer_instructions: config.developer_instructions.clone(),
+            user_instructions: config.user_instructions.clone(),
+            personality: config.personality,
+            base_instructions: config
+                .base_instructions
+                .clone()
+                .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+            compact_prompt: config.compact_prompt.clone(),
+            approval_policy: config.permissions.approval_policy.clone(),
+            sandbox_policy: config.permissions.sandbox_policy.clone(),
+            windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
+            cwd: config.cwd.clone(),
+            codex_home: config.codex_home.clone(),
+            thread_name: None,
+            original_config_do_not_use: std::sync::Arc::clone(&config),
+            session_source: SessionSource::Exec,
+            dynamic_tools: Vec::new(),
+            persist_extended_history: false,
+        };
+
+        assert!(session_configuration.provider.is_anthropic());
+
+        let (next, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gpt-5.3-codex")),
+                ..Default::default()
+            })
+            .expect("model switch to gpt should be valid");
+
+        assert!(next.provider.is_openai());
+        assert_eq!(next.provider_id, "openai");
     }
 
     #[tokio::test]
@@ -7385,6 +7630,7 @@ mod tests {
             name: name.to_string(),
             arguments: "{}".to_string(),
             call_id: call_id.to_string(),
+            thought_signature: None,
         })
     }
 

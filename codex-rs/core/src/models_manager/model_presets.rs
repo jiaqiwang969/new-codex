@@ -341,6 +341,62 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_in_api: true,
             input_modalities: default_input_modalities(),
         },
+        ModelPreset {
+            id: "claude-opus-4-6".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            display_name: "Claude Opus 4.6".to_string(),
+            description: "Anthropic Claude Opus 4.6 — deep reasoning with 1M context."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning for general tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Deep reasoning for complex problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Maximum reasoning depth with extended thinking".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+        },
+        ModelPreset {
+            id: "claude-sonnet-4-6".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            display_name: "Claude Sonnet 4.6".to_string(),
+            description: "Anthropic Claude Sonnet 4.6 — fast execution with 1M context."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+        },
         // Deprecated models.
         ModelPreset {
             id: "gpt-5-codex".to_string(),
@@ -561,5 +617,22 @@ mod tests {
         assert_eq!(grok.default_reasoning_effort, ReasoningEffort::None);
         assert!(spark.show_in_picker);
         assert_eq!(spark.default_reasoning_effort, ReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn claude_models_are_visible_in_picker() {
+        let opus = PRESETS
+            .iter()
+            .find(|preset| preset.model == "claude-opus-4-6")
+            .expect("claude opus preset should exist");
+        let sonnet = PRESETS
+            .iter()
+            .find(|preset| preset.model == "claude-sonnet-4-6")
+            .expect("claude sonnet preset should exist");
+
+        assert!(opus.show_in_picker);
+        assert_eq!(opus.default_reasoning_effort, ReasoningEffort::High);
+        assert!(sonnet.show_in_picker);
+        assert_eq!(sonnet.default_reasoning_effort, ReasoningEffort::Medium);
     }
 }

@@ -22,7 +22,10 @@ pub(crate) struct Guards {
 }
 
 /// Initial agent is depth 0.
-pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 1;
+///
+/// With max depth 2, the root agent can spawn workers, and those workers can
+/// delegate one additional level before collab tools are disabled.
+pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 2;
 
 fn session_depth(session_source: &SessionSource) -> i32 {
     match session_source {
@@ -136,7 +139,15 @@ mod tests {
         });
         let child_depth = next_thread_spawn_depth(&session_source);
         assert_eq!(child_depth, 2);
-        assert!(exceeds_thread_spawn_depth_limit(child_depth));
+        assert!(!exceeds_thread_spawn_depth_limit(child_depth));
+
+        let grandchild_depth =
+            next_thread_spawn_depth(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 2,
+            }));
+        assert_eq!(grandchild_depth, 3);
+        assert!(exceeds_thread_spawn_depth_limit(grandchild_depth));
     }
 
     #[test]

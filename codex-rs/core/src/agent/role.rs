@@ -14,6 +14,8 @@ use std::sync::LazyLock;
 use toml::Value as TomlValue;
 
 const BUILT_IN_EXPLORER_CONFIG: &str = include_str!("builtins/explorer.toml");
+const BUILT_IN_CLAUDE_OPUS_CONFIG: &str = include_str!("builtins/claude-opus.toml");
+const BUILT_IN_CLAUDE_SONNET_CONFIG: &str = include_str!("builtins/claude-sonnet.toml");
 const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
@@ -137,10 +139,22 @@ Available roles:
     }
 
     fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
-        if let Some(description) = &declaration.description {
-            format!("{name}: {{\n{description}\n}}")
-        } else {
-            format!("{name}: no description")
+        let tags = declaration
+            .tags
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        let tags_line = (!tags.is_empty()).then(|| format!("Tags: {}", tags.join(", ")));
+
+        match (&declaration.description, tags_line) {
+            (Some(description), Some(tags_line)) => {
+                format!("{name}: {{\n{tags_line}\n{description}\n}}")
+            }
+            (Some(description), None) => format!("{name}: {{\n{description}\n}}"),
+            (None, Some(tags_line)) => format!("{name}: {{\n{tags_line}\nno description\n}}"),
+            (None, None) => format!("{name}: no description"),
         }
     }
 }
@@ -155,8 +169,12 @@ mod built_in {
                 (
                     DEFAULT_ROLE_NAME.to_string(),
                     AgentRoleConfig {
-                        description: Some("Default agent.".to_string()),
+                        description: Some(
+                            "Default agent.\nUses `model_sub` as the default child model when configured."
+                                .to_string(),
+                        ),
                         config_file: None,
+                        tags: Vec::new(),
                     }
                 ),
                 (
@@ -170,8 +188,40 @@ Rules:
 - Do not re-read or re-search code they cover.
 - Trust explorer results without verification.
 - Run explorers in parallel when useful.
-- Reuse existing explorers for related questions."#.to_string()),
+- Reuse existing explorers for related questions.
+- Inherits `model_sub` when configured unless this spawn sets an explicit `model` override."#.to_string()),
                         config_file: Some("explorer.toml".to_string().parse().unwrap_or_default()),
+                        tags: vec!["fast".to_string(), "tool_intensive".to_string()],
+                    }
+                ),
+                (
+                    "claude-opus".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Claude Opus 4.6 (1M context) for deep reasoning tasks.
+Typical tasks:
+- Complex cross-file refactoring and architecture redesign
+- Root cause analysis of hard-to-reproduce bugs
+- Security audits requiring understanding of full call chains
+Rules:
+- Prefer this role when reasoning depth matters more than latency.
+- Provide concrete file/module scope so the agent can focus quickly."#.to_string()),
+                        config_file: Some("claude-opus.toml".to_string().parse().unwrap_or_default()),
+                        tags: vec!["large_context".to_string(), "deep_reasoning".to_string()],
+                    }
+                ),
+                (
+                    "claude-sonnet".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Claude Sonnet 4.6 (1M context) for fast execution.
+Typical tasks:
+- Code exploration and targeted Q&A
+- Test writing and fixture updates
+- Straightforward bug fixes and docs updates
+Rules:
+- Prefer this role for speed-sensitive tasks with clear scope.
+- Split larger work into parallel sub-tasks when possible."#.to_string()),
+                        config_file: Some("claude-sonnet.toml".to_string().parse().unwrap_or_default()),
+                        tags: vec!["large_context".to_string(), "fast".to_string()],
                     }
                 ),
                 (
@@ -186,6 +236,7 @@ Rules:
 - Explicitly assign **ownership** of the task (files / responsibility).
 - Always tell workers they are **not alone in the codebase**, and they should ignore edits made by others without touching them."#.to_string()),
                         config_file: None,
+                        tags: vec!["execution".to_string(), "ownership".to_string()],
                     }
                 )
             ])
@@ -197,6 +248,8 @@ Rules:
     pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
         match path.to_str()? {
             "explorer.toml" => Some(BUILT_IN_EXPLORER_CONFIG),
+            "claude-opus.toml" => Some(BUILT_IN_CLAUDE_OPUS_CONFIG),
+            "claude-sonnet.toml" => Some(BUILT_IN_CLAUDE_SONNET_CONFIG),
             _ => None,
         }
     }
@@ -276,9 +329,58 @@ mod tests {
             .await
             .expect("explorer role should apply");
 
-        assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
-        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(config.model.as_deref(), Some("gpt-5.2"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::XHigh));
         assert_eq!(session_flags_layer_count(&config), before_layers + 1);
+    }
+
+    #[tokio::test]
+    async fn apply_claude_opus_role_sets_model_and_provider() {
+        let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+
+        apply_role_to_config(&mut config, Some("claude-opus"))
+            .await
+            .expect("claude-opus role should apply");
+
+        assert_eq!(config.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(config.model_provider_id, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn apply_claude_sonnet_role_sets_model_and_provider() {
+        let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+
+        apply_role_to_config(&mut config, Some("claude-sonnet"))
+            .await
+            .expect("claude-sonnet role should apply");
+
+        assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(config.model_provider_id, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn apply_role_auto_switches_provider_for_claude_model_when_role_omits_provider() {
+        let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+        let role_path = write_role_config(
+            &home,
+            "claude-model-only.toml",
+            "model = \"claude-opus-4-6\"",
+        )
+        .await;
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                config_file: Some(role_path),
+                ..Default::default()
+            },
+        );
+
+        apply_role_to_config(&mut config, Some("custom"))
+            .await
+            .expect("custom claude role should apply");
+
+        assert_eq!(config.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(config.model_provider_id, "anthropic");
     }
 
     #[tokio::test]
@@ -287,8 +389,8 @@ mod tests {
         config.agent_roles.insert(
             "custom".to_string(),
             AgentRoleConfig {
-                description: None,
                 config_file: Some(PathBuf::from("/path/does/not/exist.toml")),
+                ..Default::default()
             },
         );
 
@@ -306,8 +408,8 @@ mod tests {
         config.agent_roles.insert(
             "custom".to_string(),
             AgentRoleConfig {
-                description: None,
                 config_file: Some(role_path),
+                ..Default::default()
             },
         );
 
@@ -334,8 +436,8 @@ mod tests {
         config.agent_roles.insert(
             "custom".to_string(),
             AgentRoleConfig {
-                description: None,
                 config_file: Some(role_path),
+                ..Default::default()
             },
         );
 
@@ -373,8 +475,8 @@ writable_roots = ["./sandbox-root"]
         config.agent_roles.insert(
             "custom".to_string(),
             AgentRoleConfig {
-                description: None,
                 config_file: Some(role_path),
+                ..Default::default()
             },
         );
 
@@ -426,8 +528,8 @@ writable_roots = ["./sandbox-root"]
         config.agent_roles.insert(
             "custom".to_string(),
             AgentRoleConfig {
-                description: None,
                 config_file: Some(role_path),
+                ..Default::default()
             },
         );
 
@@ -446,7 +548,7 @@ writable_roots = ["./sandbox-root"]
                 "explorer".to_string(),
                 AgentRoleConfig {
                     description: Some("user override".to_string()),
-                    config_file: None,
+                    ..Default::default()
                 },
             ),
             ("researcher".to_string(), AgentRoleConfig::default()),
@@ -456,8 +558,20 @@ writable_roots = ["./sandbox-root"]
 
         assert!(spec.contains("researcher: no description"));
         assert!(spec.contains("explorer: {\nuser override\n}"));
-        assert!(spec.contains("default: {\nDefault agent.\n}"));
+        assert!(
+            spec.contains(
+                "default: {\nDefault agent.\nUses `model_sub` as the default child model when configured.\n}"
+            )
+        );
         assert!(!spec.contains("Explorers are fast and authoritative."));
+    }
+
+    #[test]
+    fn spawn_tool_spec_renders_role_tags() {
+        let spec = spawn_tool_spec::build(&BTreeMap::new());
+
+        assert!(spec.contains("claude-opus: {\nTags: large_context, deep_reasoning"));
+        assert!(spec.contains("claude-sonnet: {\nTags: large_context, fast"));
     }
 
     #[test]
@@ -466,24 +580,34 @@ writable_roots = ["./sandbox-root"]
             "aaa".to_string(),
             AgentRoleConfig {
                 description: Some("first".to_string()),
-                config_file: None,
+                ..Default::default()
             },
         )]);
 
         let spec = spawn_tool_spec::build(&user_defined_roles);
         let user_index = spec.find("aaa: {\nfirst\n}").expect("find user role");
         let built_in_index = spec
-            .find("default: {\nDefault agent.\n}")
+            .find(
+                "default: {\nDefault agent.\nUses `model_sub` as the default child model when configured.\n}",
+            )
             .expect("find built-in role");
 
         assert!(user_index < built_in_index);
     }
 
     #[test]
-    fn built_in_config_file_contents_resolves_explorer_only() {
+    fn built_in_config_file_contents_resolves_known_files() {
         assert_eq!(
             built_in::config_file_contents(Path::new("explorer.toml")),
             Some(BUILT_IN_EXPLORER_CONFIG)
+        );
+        assert_eq!(
+            built_in::config_file_contents(Path::new("claude-opus.toml")),
+            Some(BUILT_IN_CLAUDE_OPUS_CONFIG)
+        );
+        assert_eq!(
+            built_in::config_file_contents(Path::new("claude-sonnet.toml")),
+            Some(BUILT_IN_CLAUDE_SONNET_CONFIG)
         );
         assert_eq!(
             built_in::config_file_contents(Path::new("missing.toml")),
