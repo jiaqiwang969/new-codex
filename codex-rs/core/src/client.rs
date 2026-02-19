@@ -444,6 +444,14 @@ impl ModelClient {
         }
     }
 
+    pub(crate) fn clone_with_provider(&self, provider: ModelProviderInfo) -> Self {
+        let mut state_copy = (*self.state).clone();
+        state_copy.provider = provider;
+        Self {
+            state: Arc::new(state_copy),
+        }
+    }
+
     /// Compacts the current conversation history using the Compact endpoint.
     ///
     /// This is a unary call (no streaming) that returns a new list of
@@ -500,7 +508,7 @@ impl ModelClient {
         }
         if !supports_memory_trace_summarize(&self.state.provider, &model_info.slug) {
             return Err(CodexErr::UnsupportedOperation(
-                "Memory trace summarization is not supported by the Grok provider.".to_string(),
+                "Memory trace summarization is not supported by this provider/model.".to_string(),
             ));
         }
 
@@ -1139,6 +1147,7 @@ impl ModelClientSession {
                 .await
             }
             WireApi::Gemini => self.stream_gemini(prompt, model_info, effort).await,
+            WireApi::Anthropic => self.stream_anthropic(prompt, model_info, effort).await,
         }
     }
 
@@ -1410,6 +1419,186 @@ impl ModelClientSession {
         let byte_stream = response.bytes_stream();
         Ok(spawn_gemini_sse_stream(byte_stream, idle_timeout))
     }
+
+    /// Streams a turn via the Anthropic Messages API (`/v1/messages`).
+    async fn stream_anthropic(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+    ) -> Result<ResponseStream> {
+        use crate::anthropic_content::build_anthropic_messages;
+        use crate::anthropic_content::build_anthropic_tools;
+        use crate::anthropic_content::normalize_anthropic_base_url;
+        use crate::anthropic_streaming::spawn_anthropic_sse_stream;
+        use crate::anthropic_types::AnthropicRequest;
+        use crate::anthropic_types::AnthropicThinking;
+
+        let provider = &self.client.state.provider;
+        let base_url = provider.base_url.as_ref().ok_or_else(|| {
+            CodexErr::UnsupportedOperation("Anthropic providers must define a base_url".to_string())
+        })?;
+        let base_url = normalize_anthropic_base_url(base_url);
+        let url = format!("{}/messages", base_url.as_ref().trim_end_matches('/'));
+
+        let auth = match self.client.state.auth_manager.as_ref() {
+            Some(manager) => manager.auth().await,
+            None => None,
+        };
+
+        let anthropic_api_key = if let Some(env_key) = provider.env_key.as_deref() {
+            std::env::var(env_key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    auth.as_ref()
+                        .and_then(|auth| auth.api_key_for_env_key(env_key))
+                        .map(str::to_string)
+                })
+                .ok_or_else(|| {
+                    CodexErr::EnvVar(crate::error::EnvVarError {
+                        var: env_key.to_string(),
+                        instructions: provider.env_key_instructions.clone(),
+                    })
+                })?
+        } else {
+            return Err(CodexErr::UnsupportedOperation(
+                "Anthropic providers must define env_key".to_string(),
+            ));
+        };
+
+        let formatted_input = prompt.get_formatted_input();
+        let messages = build_anthropic_messages(&formatted_input);
+        if messages.is_empty() {
+            return Err(CodexErr::UnsupportedOperation(
+                "Anthropic requests require at least one message".to_string(),
+            ));
+        }
+
+        let instructions = prompt.base_instructions.text.trim().to_string();
+        let tools = build_anthropic_tools(&prompt.tools);
+        let reasoning_effort = effort.or(model_info.default_reasoning_level);
+        let enable_thinking = anthropic_thinking_enabled(reasoning_effort);
+        let thinking = if enable_thinking {
+            Some(AnthropicThinking {
+                thinking_type: "enabled".to_string(),
+                budget_tokens: match reasoning_effort {
+                    Some(ReasoningEffortConfig::XHigh) => 8_192,
+                    Some(ReasoningEffortConfig::High) => 4_096,
+                    Some(ReasoningEffortConfig::Medium) => 2_048,
+                    _ => 1_024,
+                },
+            })
+        } else {
+            None
+        };
+
+        let request = AnthropicRequest {
+            model: crate::model_compat::normalized_anthropic_model_slug(&model_info.slug)
+                .unwrap_or(model_info.slug.as_str())
+                .to_string(),
+            max_tokens: resolve_anthropic_max_output_tokens(&model_info.slug),
+            system: (!instructions.is_empty()).then_some(instructions),
+            messages,
+            tools,
+            thinking,
+            stream: true,
+        };
+
+        if std::env::var("CODEX_DEBUG_ANTHROPIC_REQUEST").is_ok()
+            && let Ok(json) = serde_json::to_string_pretty(&request)
+        {
+            tracing::debug!("DEBUG ANTHROPIC REQUEST:\n{json}");
+        }
+
+        let client = crate::default_client::build_reqwest_client();
+        let provider_sets_anthropic_version =
+            provider.http_headers.as_ref().is_some_and(|headers| {
+                headers
+                    .keys()
+                    .any(|header| header.eq_ignore_ascii_case("anthropic-version"))
+            }) || provider.env_http_headers.as_ref().is_some_and(|headers| {
+                headers
+                    .keys()
+                    .any(|header| header.eq_ignore_ascii_case("anthropic-version"))
+            });
+        let make_request_builder = || {
+            let mut req_builder = client.post(&url);
+            req_builder = provider.apply_http_headers(req_builder);
+            req_builder = req_builder.header("x-api-key", anthropic_api_key.as_str());
+            if provider_sets_anthropic_version {
+                req_builder
+            } else {
+                req_builder.header("anthropic-version", "2023-06-01")
+            }
+        };
+
+        const MAX_ATTEMPTS: u64 = 3;
+        const INITIAL_DELAY_MS: u64 = 5000;
+        const MAX_DELAY_MS: u64 = 30000;
+
+        let mut attempt: u64 = 0;
+        let mut current_delay = INITIAL_DELAY_MS;
+
+        let response = loop {
+            attempt += 1;
+            let result = make_request_builder().json(&request).send().await;
+
+            match result {
+                Ok(resp) => break resp,
+                Err(err) => {
+                    let should_retry = if let Some(status) = err.status() {
+                        status == StatusCode::TOO_MANY_REQUESTS
+                            || (status.as_u16() >= 500 && status.as_u16() < 600)
+                    } else {
+                        err.is_connect() || err.is_timeout()
+                    };
+
+                    if should_retry && attempt < MAX_ATTEMPTS {
+                        let jitter =
+                            (current_delay as f64 * 0.3 * (rand::random::<f64>() * 2.0 - 1.0))
+                                as u64;
+                        let delay_with_jitter = current_delay.saturating_add(jitter);
+                        tracing::debug!(
+                            "Anthropic request attempt {} failed, retrying after {}ms: {}",
+                            attempt,
+                            delay_with_jitter,
+                            err
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_with_jitter)).await;
+                        current_delay = std::cmp::min(MAX_DELAY_MS, current_delay * 2);
+                        continue;
+                    }
+
+                    return Err(CodexErr::ResponseStreamFailed(
+                        crate::error::ResponseStreamFailed {
+                            source: err,
+                            request_id: None,
+                        },
+                    ));
+                }
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(CodexErr::UnexpectedStatus(
+                crate::error::UnexpectedResponseError {
+                    status,
+                    body,
+                    url: Some(url.clone()),
+                    cf_ray: None,
+                    request_id: None,
+                },
+            ));
+        }
+
+        let idle_timeout = provider.stream_idle_timeout();
+        let byte_stream = response.bytes_stream();
+        Ok(spawn_anthropic_sse_stream(byte_stream, idle_timeout))
+    }
 }
 
 fn validate_image_input_compat(prompt: &Prompt, model_slug: &str) -> Result<()> {
@@ -1511,7 +1700,7 @@ fn sanitize_reasoning_effort_for_model(
 }
 
 fn supports_memory_trace_summarize(provider: &ModelProviderInfo, model_slug: &str) -> bool {
-    !provider.is_grok() && model_supports_memory_trace_summarize(model_slug)
+    provider.wire_api == WireApi::Responses && model_supports_memory_trace_summarize(model_slug)
 }
 
 fn canonical_model_slug_for_provider<'a>(
@@ -1548,6 +1737,44 @@ fn resolve_gemini_max_output_tokens(model_slug: &str) -> Option<i32> {
     } else {
         None
     }
+}
+
+fn resolve_anthropic_max_output_tokens(_model_slug: &str) -> i64 {
+    if let Ok(raw) = std::env::var("CODEX_ANTHROPIC_MAX_OUTPUT_TOKENS") {
+        let trimmed = raw.trim();
+        if let Ok(parsed) = trimmed.parse::<i64>()
+            && parsed > 0
+        {
+            return parsed;
+        }
+    }
+
+    8192
+}
+
+fn anthropic_thinking_enabled(reasoning_effort: Option<ReasoningEffortConfig>) -> bool {
+    anthropic_thinking_enabled_with_env(reasoning_effort, anthropic_env_thinking_enabled())
+}
+
+fn anthropic_thinking_enabled_with_env(
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    env_override: bool,
+) -> bool {
+    reasoning_effort.is_some_and(anthropic_reasoning_enables_thinking) || env_override
+}
+
+fn anthropic_reasoning_enables_thinking(effort: ReasoningEffortConfig) -> bool {
+    matches!(
+        effort,
+        ReasoningEffortConfig::Medium | ReasoningEffortConfig::High | ReasoningEffortConfig::XHigh
+    )
+}
+
+fn anthropic_env_thinking_enabled() -> bool {
+    std::env::var("CODEX_ANTHROPIC_ENABLE_THINKING")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
 }
 
 fn prompt_contains_input_images(prompt: &Prompt) -> bool {
@@ -1814,6 +2041,7 @@ impl WebsocketTelemetry for ApiTelemetry {
 #[cfg(test)]
 mod tests {
     use super::ModelClient;
+    use super::anthropic_thinking_enabled_with_env;
     use super::sanitize_reasoning_effort_for_model;
     use codex_api::common::Reasoning;
     use codex_otel::OtelManager;
@@ -1971,5 +2199,69 @@ mod tests {
             sanitize_reasoning_effort_for_model(Some(ReasoningEffortConfig::High), &model_info);
 
         assert_eq!(sanitized, None);
+    }
+
+    #[test]
+    fn supports_memory_trace_summarize_requires_responses_wire_api() {
+        let responses_provider = crate::model_provider_info::create_oss_provider_with_base_url(
+            "https://example.com/v1",
+            crate::model_provider_info::WireApi::Responses,
+        );
+        let gemini_provider = crate::model_provider_info::create_oss_provider_with_base_url(
+            "https://example.com/v1",
+            crate::model_provider_info::WireApi::Gemini,
+        );
+        let anthropic_provider =
+            crate::model_provider_info::ModelProviderInfo::create_anthropic_provider();
+
+        assert!(super::supports_memory_trace_summarize(
+            &responses_provider,
+            "gpt-5-codex"
+        ));
+        assert!(!super::supports_memory_trace_summarize(
+            &gemini_provider,
+            "gpt-5-codex"
+        ));
+        assert!(!super::supports_memory_trace_summarize(
+            &anthropic_provider,
+            "claude-opus-4-6"
+        ));
+    }
+
+    #[test]
+    fn anthropic_thinking_follows_reasoning_effort_when_env_is_unset() {
+        assert!(!anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::None),
+            false
+        ));
+        assert!(!anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::Minimal),
+            false
+        ));
+        assert!(!anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::Low),
+            false
+        ));
+        assert!(anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::Medium),
+            false
+        ));
+        assert!(anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::High),
+            false
+        ));
+        assert!(anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::XHigh),
+            false
+        ));
+    }
+
+    #[test]
+    fn anthropic_thinking_env_override_enables_thinking_without_effort() {
+        assert!(anthropic_thinking_enabled_with_env(None, true));
+        assert!(anthropic_thinking_enabled_with_env(
+            Some(ReasoningEffortConfig::Low),
+            true
+        ));
     }
 }

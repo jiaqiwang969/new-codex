@@ -30,12 +30,14 @@ const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const GEMINI_PROVIDER_NAME: &str = "Gemini";
 const GEMMA_PROVIDER_NAME: &str = "Gemma";
 const GROK_PROVIDER_NAME: &str = "Grok";
+const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const GEMINI_PROVIDER_ID: &str = "gemini";
 pub const GEMMA_PROVIDER_ID: &str = "gemma";
 pub const GROK_PROVIDER_ID: &str = "grok";
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 
 /// Wire protocol that the provider speaks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
@@ -46,6 +48,8 @@ pub enum WireApi {
     Responses,
     /// Google Gemini JSON API via `:generateContent` endpoints.
     Gemini,
+    /// Anthropic Messages API via `/v1/messages`.
+    Anthropic,
 }
 
 impl<'de> Deserialize<'de> for WireApi {
@@ -57,10 +61,11 @@ impl<'de> Deserialize<'de> for WireApi {
         match value.as_str() {
             "responses" => Ok(Self::Responses),
             "gemini" => Ok(Self::Gemini),
+            "anthropic" => Ok(Self::Anthropic),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "gemini"],
+                &["responses", "gemini", "anthropic"],
             )),
         }
     }
@@ -327,6 +332,10 @@ impl ModelProviderInfo {
         self.name == GROK_PROVIDER_NAME
     }
 
+    pub fn is_anthropic(&self) -> bool {
+        self.name == ANTHROPIC_PROVIDER_NAME
+    }
+
     /// Apply this provider's HTTP headers (both static and env-based) to a
     /// `reqwest::RequestBuilder`. This is used by the Gemini streaming path
     /// which builds its own requests outside of the `codex-api` layer.
@@ -416,6 +425,38 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_anthropic_provider() -> ModelProviderInfo {
+        let base_url = std::env::var("ANTHROPIC_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+
+        ModelProviderInfo {
+            name: ANTHROPIC_PROVIDER_NAME.into(),
+            base_url: Some(base_url),
+            env_key: Some("ANTHROPIC_API_KEY".into()),
+            env_key_instructions: Some(
+                "Get an Anthropic API key at https://console.anthropic.com and set ANTHROPIC_API_KEY."
+                    .into(),
+            ),
+            experimental_bearer_token: None,
+            wire_api: WireApi::Anthropic,
+            query_params: None,
+            http_headers: Some(
+                [("anthropic-version".to_string(), "2023-06-01".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            env_http_headers: None,
+            request_max_retries: Some(3),
+            stream_max_retries: Some(3),
+            stream_idle_timeout_ms: Some(300_000),
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        }
+    }
+
     pub fn create_gemma_provider() -> ModelProviderInfo {
         let base_url = std::env::var("GEMMA_BASE_URL")
             .ok()
@@ -460,6 +501,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
         (GEMINI_PROVIDER_ID, P::create_gemini_provider()),
         (GEMMA_PROVIDER_ID, P::create_gemma_provider()),
         (GROK_PROVIDER_ID, P::create_grok_provider()),
+        (ANTHROPIC_PROVIDER_ID, P::create_anthropic_provider()),
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
@@ -662,5 +704,27 @@ wire_api = "chat"
         assert_eq!(gemma.env_key, None);
         assert!(!gemma.requires_openai_auth);
         assert!(!gemma.supports_websockets);
+    }
+
+    #[test]
+    fn built_in_model_providers_include_anthropic() {
+        let providers = built_in_model_providers();
+        let anthropic = providers
+            .get(ANTHROPIC_PROVIDER_ID)
+            .expect("built-in providers should include anthropic");
+        let expected_base_url = std::env::var("ANTHROPIC_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+
+        assert_eq!(anthropic.name, ANTHROPIC_PROVIDER_NAME);
+        assert_eq!(anthropic.env_key.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            anthropic.base_url.as_deref(),
+            Some(expected_base_url.as_str())
+        );
+        assert_eq!(anthropic.wire_api, WireApi::Anthropic);
+        assert!(!anthropic.requires_openai_auth);
+        assert!(!anthropic.supports_websockets);
     }
 }

@@ -14,6 +14,7 @@ use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
 use crate::features::Feature;
+use crate::model_compat::is_anthropic_model_slug;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::normalized_grok_model_slug;
@@ -32,6 +33,7 @@ const GPT_5_3_CODEX_SPARK_INSTRUCTIONS: &str = include_str!("../../gpt-5.3-codex
 
 const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
 const GROK_INSTRUCTIONS: &str = include_str!("../../grok_prompt.md");
+const CLAUDE_INSTRUCTIONS: &str = include_str!("../../claude_prompt.md");
 
 pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_048_576;
 pub(crate) const CONTEXT_WINDOW_8K: i64 = 8_192;
@@ -479,6 +481,25 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 "read_file".to_string(),
             ],
         )
+    } else if is_anthropic_model_slug(slug) {
+        model_info!(
+            slug,
+            base_instructions: format!("{BASE_INSTRUCTIONS_WITH_APPLY_PATCH}\n\n{CLAUDE_INSTRUCTIONS}"),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Function),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: false,
+            support_verbosity: false,
+            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            context_window: Some(CONTEXT_WINDOW_1M),
+            default_reasoning_level: Some(ReasoningEffort::High),
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            experimental_supported_tools: vec![
+                "grep_files".to_string(),
+                "list_dir".to_string(),
+                "read_file".to_string(),
+            ],
+        )
     } else if is_grok_model_slug(slug) {
         // Grok speaks an OpenAI-compatible Responses API, but tool support differs from OpenAI:
         // - `custom` (freeform) tools are rejected by xAI (so use JSON apply_patch if enabled)
@@ -508,7 +529,8 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             slug,
             context_window: None,
             supported_reasoning_levels: Vec::new(),
-            default_reasoning_level: None
+            default_reasoning_level: None,
+            used_fallback_model_metadata: true,
         )
     }
 }
@@ -586,6 +608,30 @@ mod tests {
     }
 
     #[test]
+    fn claude_models_use_1m_context_with_function_apply_patch() {
+        let model = find_model_info_for_slug("claude-opus-4-6");
+
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
+        assert!(model.supports_parallel_tool_calls);
+        assert!(
+            model
+                .base_instructions
+                .contains("Claude provider addendum for Codex CLI."),
+            "claude model should include Claude-specific prompt addendum"
+        );
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+        assert_eq!(
+            model.input_modalities,
+            vec![InputModality::Text, InputModality::Image]
+        );
+    }
+
+    #[test]
     fn spark_model_uses_low_latency_text_only_defaults() {
         let model = find_model_info_for_slug("gpt-5.3-codex-spark|[pro]");
 
@@ -629,13 +675,9 @@ mod tests {
         assert_eq!(gpt_51.context_window, Some(super::CONTEXT_WINDOW_272K));
         assert_eq!(gpt_5.context_window, Some(super::CONTEXT_WINDOW_272K));
     }
-}
 
-#[cfg(test)]
-mod tests {
     use super::*;
     use crate::config::test_config;
-    use pretty_assertions::assert_eq;
 
     #[test]
     fn reasoning_summaries_override_true_enables_support() {

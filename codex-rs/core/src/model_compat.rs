@@ -36,6 +36,33 @@ pub(crate) fn is_gemma_model_slug(slug: &str) -> bool {
     normalized_gemma_model_slug(slug).is_some()
 }
 
+/// Returns the canonical Claude model slug when the input refers to a Claude model.
+///
+/// Accepts both `claude-*` and namespaced `anthropic/claude-*` forms.
+pub(crate) fn normalized_anthropic_model_slug(slug: &str) -> Option<&str> {
+    if slug.starts_with("claude-") {
+        Some(slug)
+    } else if let Some(stripped) = slug.strip_prefix("anthropic/")
+        && stripped.starts_with("claude-")
+    {
+        Some(stripped)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn is_anthropic_model_slug(slug: &str) -> bool {
+    normalized_anthropic_model_slug(slug).is_some()
+}
+
+pub(crate) fn is_openai_model_slug(slug: &str) -> bool {
+    let normalized = slug.strip_prefix("openai/").unwrap_or(slug);
+    normalized.starts_with("gpt-")
+        || normalized.starts_with("o1-")
+        || normalized.starts_with("o3-")
+        || normalized.starts_with("o4-")
+}
+
 pub(crate) fn model_supports_web_search_tool(slug: &str) -> bool {
     match normalized_grok_model_slug(slug) {
         Some(grok_slug) => grok_slug.starts_with("grok-4"),
@@ -171,5 +198,32 @@ mod tests {
         assert!(!model_supports_data_url_input_images(
             "gpt-5.3-codex-spark|[pro]"
         ));
+    }
+
+    #[test]
+    fn anthropic_slug_normalization_handles_namespaced_and_bare_slugs() {
+        assert_eq!(
+            normalized_anthropic_model_slug("claude-opus-4-6"),
+            Some("claude-opus-4-6")
+        );
+        assert_eq!(
+            normalized_anthropic_model_slug("anthropic/claude-sonnet-4-6"),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(normalized_anthropic_model_slug("anthropic/gpt-5"), None);
+        assert_eq!(normalized_anthropic_model_slug("gpt-5"), None);
+    }
+
+    #[test]
+    fn is_openai_model_slug_detects_namespaced_and_bare_slugs() {
+        assert!(is_openai_model_slug("gpt-5.3-codex"));
+        assert!(is_openai_model_slug("openai/gpt-5.3-codex"));
+        assert!(is_openai_model_slug("o1-mini"));
+        assert!(is_openai_model_slug("o3-mini"));
+        assert!(is_openai_model_slug("o4-mini"));
+        assert!(!is_openai_model_slug("claude-opus-4-6"));
+        assert!(!is_openai_model_slug("gemini-3-pro-preview"));
+        assert!(!is_openai_model_slug("grok-4-latest"));
+        assert!(!is_openai_model_slug("llama3"));
     }
 }
