@@ -29,6 +29,7 @@ pub mod connectors;
 mod context_manager;
 mod context_packet;
 pub mod custom_prompts;
+mod entire_integration;
 pub mod env;
 mod environment_context;
 pub mod error;
@@ -49,6 +50,9 @@ pub mod network_proxy_loader;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_CAPABILITY;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_METHOD;
 pub use mcp_connection_manager::SandboxState;
+mod anthropic_content;
+mod anthropic_streaming;
+mod anthropic_types;
 mod gemini_content;
 mod gemini_streaming;
 mod gemini_types;
@@ -58,6 +62,7 @@ mod mentions;
 mod message_history;
 mod model_compat;
 mod model_provider_info;
+mod model_sub_vouch;
 pub mod path_utils;
 pub mod personality_migration;
 mod proposed_plan_parser;
@@ -73,8 +78,10 @@ mod thread_memory;
 pub mod token_data;
 mod truncate;
 mod unified_exec;
+mod utility_model;
 pub mod windows_sandbox;
 pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
+pub use model_provider_info::ANTHROPIC_PROVIDER_ID;
 pub use model_provider_info::DEFAULT_LMSTUDIO_PORT;
 pub use model_provider_info::DEFAULT_OLLAMA_PORT;
 pub use model_provider_info::GEMMA_PROVIDER_ID;
@@ -86,6 +93,22 @@ pub use model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 pub use model_provider_info::WireApi;
 pub use model_provider_info::built_in_model_providers;
 pub use model_provider_info::create_oss_provider_with_base_url;
+pub use utility_model::DEFAULT_UTILITY_MODEL;
+
+pub fn is_openai_model_slug(slug: &str) -> bool {
+    model_compat::is_openai_model_slug(slug)
+}
+
+pub fn effective_responses_utility_model_slug(config: &config::Config) -> &str {
+    utility_model::responses_utility_model_slug(config)
+}
+
+pub fn utility_provider_for_model_slug(
+    config: &config::Config,
+    model_slug: &str,
+) -> Option<(String, ModelProviderInfo)> {
+    utility_model::provider_for_model_slug(config, model_slug)
+}
 mod event_mapping;
 pub mod review_format;
 pub mod review_prompts;
