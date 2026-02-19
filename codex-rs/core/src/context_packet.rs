@@ -1,6 +1,7 @@
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::compact;
+use crate::entire_integration;
 use crate::features::Feature;
 use crate::state_db;
 use codex_protocol::models::ResponseItem;
@@ -20,6 +21,9 @@ pub(crate) struct ContextPacketConfig {
     pub(crate) max_session_summary_bytes: usize,
     pub(crate) max_project_memories: usize,
     pub(crate) max_project_memory_summary_bytes: usize,
+    pub(crate) include_entire_summary: bool,
+    pub(crate) max_entire_checkpoints: usize,
+    pub(crate) max_entire_summary_bytes: usize,
 }
 
 pub(crate) const CONTEXT_PACKET_TRUNCATION_NOTICE: &str =
@@ -37,7 +41,30 @@ pub(crate) const CLAUDE_CODE_CONTEXT_PACKET_CONFIG: ContextPacketConfig = Contex
     max_session_summary_bytes: 3_200,
     max_project_memories: 3,
     max_project_memory_summary_bytes: 800,
+    include_entire_summary: false,
+    max_entire_checkpoints: 0,
+    max_entire_summary_bytes: 0,
 };
+
+/// Larger packet size intended for MCP "agent" tools where the callee model has a very large
+/// context window (e.g. Claude 1M) and does not have access to the parent session history.
+pub(crate) const CLAUDE_CODE_LARGE_CONTEXT_PACKET_CONFIG: ContextPacketConfig =
+    ContextPacketConfig {
+        max_context_bytes: 200_000,
+        truncation_notice: CONTEXT_PACKET_TRUNCATION_NOTICE,
+        max_recent_messages: 64,
+        max_recent_bytes: 120_000,
+        max_message_bytes: 8_000,
+        max_trace_summary_bytes: 16_000,
+        max_memory_summary_bytes: 16_000,
+        max_user_instructions_bytes: 16_000,
+        max_session_summary_bytes: 32_000,
+        max_project_memories: 10,
+        max_project_memory_summary_bytes: 4_000,
+        include_entire_summary: false,
+        max_entire_checkpoints: 0,
+        max_entire_summary_bytes: 0,
+    };
 
 fn render_active_memory_scope_section(
     scope_kind: &str,
@@ -149,6 +176,25 @@ pub(crate) async fn build_context_packet(
                     out.push_str(&format!("- Thread {thread_id}:\n{summary}"));
                 }
                 sections.push(format!("Recent project memories (same cwd):\n{out}"));
+            }
+        }
+    }
+
+    // Add Entire summary section
+    if config.include_entire_summary && config.max_entire_checkpoints > 0 {
+        if let Ok(checkpoints) = entire_integration::get_recent_entire_checkpoints(
+            turn_context.cwd.as_path(),
+            config.max_entire_checkpoints,
+        )
+        .await
+        {
+            if !checkpoints.is_empty() {
+                let summary = entire_integration::format_checkpoints_summary(&checkpoints);
+                let summary = truncate_text_bytes(&summary, config.max_entire_summary_bytes);
+                let summary = summary.trim();
+                if !summary.is_empty() {
+                    sections.push(format!("Recent AI Sessions (via Entire):\n{summary}"));
+                }
             }
         }
     }
