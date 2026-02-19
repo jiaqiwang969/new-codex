@@ -9,6 +9,8 @@ use codex_core::protocol::CollabAgentSpawnBeginEvent;
 use codex_core::protocol::CollabAgentSpawnEndEvent;
 use codex_core::protocol::CollabCloseBeginEvent;
 use codex_core::protocol::CollabCloseEndEvent;
+use codex_core::protocol::CollabResumeBeginEvent;
+use codex_core::protocol::CollabResumeEndEvent;
 use codex_core::protocol::CollabWaitingBeginEvent;
 use codex_core::protocol::CollabWaitingEndEvent;
 use codex_core::protocol::DeprecationNoticeEvent;
@@ -40,6 +42,7 @@ use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -55,6 +58,10 @@ use codex_utils_sandbox_summary::create_config_summary_entries;
 const MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL: usize = 20;
 pub(crate) struct EventProcessorWithHumanOutput {
     call_id_to_patch: HashMap<String, PatchApplyBegin>,
+    known_agents: HashMap<String, KnownAgentMetadata>,
+    known_agent_changes_by_turn: Vec<Vec<KnownAgentChange>>,
+    current_turn_known_agent_changes: Vec<KnownAgentChange>,
+    current_turn_known_agent_seen: HashSet<String>,
 
     // To ensure that --color=never is respected, ANSI escapes _must_ be added
     // using .style() with one of these fields. If you need a new style, add a
@@ -78,6 +85,19 @@ pub(crate) struct EventProcessorWithHumanOutput {
     last_proposed_plan: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct KnownAgentMetadata {
+    agent_type: Option<String>,
+    model: Option<String>,
+    model_provider_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct KnownAgentChange {
+    thread_id: String,
+    previous: Option<KnownAgentMetadata>,
+}
+
 impl EventProcessorWithHumanOutput {
     pub(crate) fn create_with_ansi(
         with_ansi: bool,
@@ -85,10 +105,18 @@ impl EventProcessorWithHumanOutput {
         last_message_path: Option<PathBuf>,
     ) -> Self {
         let call_id_to_patch = HashMap::new();
+        let known_agents = HashMap::new();
+        let known_agent_changes_by_turn = Vec::new();
+        let current_turn_known_agent_changes = Vec::new();
+        let current_turn_known_agent_seen = HashSet::new();
 
         if with_ansi {
             Self {
                 call_id_to_patch,
+                known_agents,
+                known_agent_changes_by_turn,
+                current_turn_known_agent_changes,
+                current_turn_known_agent_seen,
                 bold: Style::new().bold(),
                 italic: Style::new().italic(),
                 dimmed: Style::new().dimmed(),
@@ -107,6 +135,10 @@ impl EventProcessorWithHumanOutput {
         } else {
             Self {
                 call_id_to_patch,
+                known_agents,
+                known_agent_changes_by_turn,
+                current_turn_known_agent_changes,
+                current_turn_known_agent_seen,
                 bold: Style::new(),
                 italic: Style::new(),
                 dimmed: Style::new(),
@@ -129,6 +161,87 @@ impl EventProcessorWithHumanOutput {
 struct PatchApplyBegin {
     start_time: Instant,
     auto_approved: bool,
+}
+
+impl EventProcessorWithHumanOutput {
+    fn remember_agent_metadata(
+        &mut self,
+        thread_id: &str,
+        agent_type: Option<&str>,
+        model: Option<&str>,
+        model_provider_id: Option<&str>,
+    ) {
+        if agent_type.is_none() && model.is_none() && model_provider_id.is_none() {
+            return;
+        }
+        let thread_id = thread_id.to_string();
+        if self.current_turn_known_agent_seen.insert(thread_id.clone()) {
+            self.current_turn_known_agent_changes
+                .push(KnownAgentChange {
+                    thread_id: thread_id.clone(),
+                    previous: self.known_agents.get(&thread_id).cloned(),
+                });
+        }
+        self.known_agents.insert(
+            thread_id,
+            KnownAgentMetadata {
+                agent_type: agent_type.map(ToString::to_string),
+                model: model.map(ToString::to_string),
+                model_provider_id: model_provider_id.map(ToString::to_string),
+            },
+        );
+    }
+
+    fn print_known_agent_metadata(&self, thread_id: &str) {
+        if let Some(metadata) = self.known_agents.get(thread_id) {
+            if let Some(agent_type) = metadata.agent_type.as_ref() {
+                eprintln!("  role: {}", agent_type.style(self.dimmed));
+            }
+            if let Some(model) = metadata.model.as_ref() {
+                eprintln!("  model: {}", model.style(self.dimmed));
+            }
+            if let Some(model_provider_id) = metadata.model_provider_id.as_ref() {
+                eprintln!("  provider: {}", model_provider_id.style(self.dimmed));
+            }
+        }
+    }
+
+    fn seal_known_agents_turn(&mut self) {
+        if self.current_turn_known_agent_changes.is_empty() {
+            return;
+        }
+        self.known_agent_changes_by_turn
+            .push(std::mem::take(&mut self.current_turn_known_agent_changes));
+        self.current_turn_known_agent_seen.clear();
+    }
+
+    fn rollback_known_agents(&mut self, num_turns: u32) {
+        self.seal_known_agents_turn();
+        let rollback_turns = usize::try_from(num_turns).unwrap_or(usize::MAX);
+        if rollback_turns >= self.known_agent_changes_by_turn.len() {
+            self.known_agent_changes_by_turn.clear();
+            self.known_agents.clear();
+            return;
+        }
+
+        let drain_start = self
+            .known_agent_changes_by_turn
+            .len()
+            .saturating_sub(rollback_turns);
+        let drained = self
+            .known_agent_changes_by_turn
+            .drain(drain_start..)
+            .collect::<Vec<_>>();
+        for turn_changes in drained.into_iter().rev() {
+            for change in turn_changes.into_iter().rev() {
+                if let Some(previous) = change.previous {
+                    self.known_agents.insert(change.thread_id, previous);
+                } else {
+                    self.known_agents.remove(&change.thread_id);
+                }
+            }
+        }
+    }
 }
 
 /// Timestamped helper. The timestamp is styled with self.dimmed.
@@ -249,9 +362,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 };
                 ts_msg!(self, "{}", message.style(self.dimmed));
             }
-            EventMsg::TurnStarted(_) => {
-                // Ignore.
-            }
+            EventMsg::TurnStarted(_) => self.seal_known_agents_turn(),
             EventMsg::ElicitationRequest(ev) => {
                 ts_msg!(
                     self,
@@ -268,6 +379,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message, ..
             }) => {
+                self.seal_known_agents_turn();
                 let last_message = last_agent_message
                     .as_deref()
                     .or(self.last_proposed_plan.as_deref());
@@ -617,6 +729,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 call_id,
                 sender_thread_id: _,
                 memory: _,
+                agent_type,
                 prompt,
             }) => {
                 ts_msg!(
@@ -626,11 +739,17 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     format_collab_invocation("spawn_agent", &call_id, Some(&prompt))
                         .style(self.bold)
                 );
+                if let Some(agent_type) = agent_type {
+                    eprintln!("  role: {}", agent_type.style(self.dimmed));
+                }
             }
             EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
                 call_id,
                 sender_thread_id: _,
                 memory: _,
+                agent_type,
+                model,
+                model_provider_id,
                 new_thread_id,
                 prompt,
                 status,
@@ -644,7 +763,25 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 );
                 ts_msg!(self, "{}", title.style(title_style));
                 if let Some(new_thread_id) = new_thread_id {
-                    eprintln!("  agent: {}", new_thread_id.to_string().style(self.dimmed));
+                    let thread_id = new_thread_id.to_string();
+                    self.remember_agent_metadata(
+                        &thread_id,
+                        agent_type.as_deref(),
+                        model.as_deref(),
+                        model_provider_id.as_deref(),
+                    );
+                    eprintln!("  agent: {}", thread_id.style(self.dimmed));
+                    self.print_known_agent_metadata(&thread_id);
+                } else {
+                    if let Some(agent_type) = agent_type {
+                        eprintln!("  role: {}", agent_type.style(self.dimmed));
+                    }
+                    if let Some(model) = model {
+                        eprintln!("  model: {}", model.style(self.dimmed));
+                    }
+                    if let Some(model_provider_id) = model_provider_id {
+                        eprintln!("  provider: {}", model_provider_id.style(self.dimmed));
+                    }
                 }
             }
             EventMsg::CollabAgentInteractionBegin(CollabAgentInteractionBeginEvent {
@@ -686,6 +823,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "  receiver: {}",
                     receiver_thread_id.to_string().style(self.dimmed)
                 );
+                self.print_known_agent_metadata(&receiver_thread_id.to_string());
             }
             EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
                 sender_thread_id: _,
@@ -734,9 +872,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 sorted.sort_by(|(left, _), (right, _)| left.cmp(right));
                 for (thread_id, status) in sorted {
                     eprintln!(
-                        "  {} {}",
+                        "  {} {}{}",
                         thread_id.style(self.dimmed),
-                        format_collab_status(&status).style(style_for_agent_status(&status, self))
+                        format_collab_status(&status).style(style_for_agent_status(&status, self)),
+                        format_known_agent_metadata_inline(self.known_agents.get(&thread_id))
+                            .style(self.dimmed)
                     );
                 }
             }
@@ -776,6 +916,49 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     "  receiver: {}",
                     receiver_thread_id.to_string().style(self.dimmed)
                 );
+                self.print_known_agent_metadata(&receiver_thread_id.to_string());
+            }
+            EventMsg::CollabResumeBegin(CollabResumeBeginEvent {
+                call_id,
+                sender_thread_id: _,
+                memory: _,
+                receiver_thread_id,
+            }) => {
+                ts_msg!(
+                    self,
+                    "{} {}",
+                    "collab".style(self.magenta),
+                    format_collab_invocation("resume_agent", &call_id, None).style(self.bold)
+                );
+                eprintln!(
+                    "  receiver: {}",
+                    receiver_thread_id.to_string().style(self.dimmed)
+                );
+                self.print_known_agent_metadata(&receiver_thread_id.to_string());
+            }
+            EventMsg::CollabResumeEnd(CollabResumeEndEvent {
+                call_id,
+                sender_thread_id: _,
+                memory: _,
+                receiver_thread_id,
+                status,
+            }) => {
+                let success = !is_collab_status_failure(&status);
+                let title_style = if success { self.green } else { self.red };
+                let title = format!(
+                    "{} {}:",
+                    format_collab_invocation("resume_agent", &call_id, None),
+                    format_collab_status(&status)
+                );
+                ts_msg!(self, "{}", title.style(title_style));
+                eprintln!(
+                    "  receiver: {}",
+                    receiver_thread_id.to_string().style(self.dimmed)
+                );
+                self.print_known_agent_metadata(&receiver_thread_id.to_string());
+            }
+            EventMsg::ThreadRolledBack(rollback) => {
+                self.rollback_known_agents(rollback.num_turns);
             }
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ThreadNameUpdated(_)
@@ -805,10 +988,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::SkillsUpdateAvailable
             | EventMsg::UndoCompleted(_)
             | EventMsg::UndoStarted(_)
-            | EventMsg::ThreadRolledBack(_)
             | EventMsg::RequestUserInput(_)
-            | EventMsg::CollabResumeBegin(_)
-            | EventMsg::CollabResumeEnd(_)
             | EventMsg::DynamicToolCallRequest(_) => {}
         }
         CodexStatus::Running
@@ -863,6 +1043,27 @@ fn format_collab_invocation(tool: &str, call_id: &str, prompt: Option<&str>) -> 
     match prompt {
         Some(prompt) => format!("{tool}({call_id}, prompt=\"{prompt}\")"),
         None => format!("{tool}({call_id})"),
+    }
+}
+
+fn format_known_agent_metadata_inline(metadata: Option<&KnownAgentMetadata>) -> String {
+    let Some(metadata) = metadata else {
+        return String::new();
+    };
+    let mut fields = Vec::new();
+    if let Some(agent_type) = metadata.agent_type.as_deref() {
+        fields.push(format!("role={agent_type}"));
+    }
+    if let Some(model) = metadata.model.as_deref() {
+        fields.push(format!("model={model}"));
+    }
+    if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
+        fields.push(format!("provider={model_provider_id}"));
+    }
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", fields.join(", "))
     }
 }
 
@@ -942,5 +1143,83 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}()")
     } else {
         format!("{fq_tool_name}({args_str})")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    fn make_processor() -> EventProcessorWithHumanOutput {
+        EventProcessorWithHumanOutput {
+            call_id_to_patch: HashMap::new(),
+            known_agents: HashMap::new(),
+            known_agent_changes_by_turn: Vec::new(),
+            current_turn_known_agent_changes: Vec::new(),
+            current_turn_known_agent_seen: HashSet::new(),
+            bold: Style::new(),
+            italic: Style::new(),
+            dimmed: Style::new(),
+            magenta: Style::new(),
+            red: Style::new(),
+            green: Style::new(),
+            cyan: Style::new(),
+            yellow: Style::new(),
+            show_agent_reasoning: false,
+            show_raw_agent_reasoning: false,
+            last_message_path: None,
+            last_total_token_usage: None,
+            final_message: None,
+            last_proposed_plan: None,
+        }
+    }
+
+    #[test]
+    fn rollback_restores_previous_metadata_for_same_thread_id() {
+        let mut processor = make_processor();
+        let thread_id = "thread-a";
+
+        processor.remember_agent_metadata(
+            thread_id,
+            Some("explorer"),
+            Some("claude-sonnet-4-6"),
+            Some("anthropic"),
+        );
+        processor.seal_known_agents_turn();
+
+        processor.remember_agent_metadata(
+            thread_id,
+            Some("worker"),
+            Some("claude-opus-4-6"),
+            Some("anthropic"),
+        );
+        processor.rollback_known_agents(1);
+
+        let metadata = processor
+            .known_agents
+            .get(thread_id)
+            .expect("expected metadata for rolled-back thread");
+        assert_eq!(metadata.agent_type.as_deref(), Some("explorer"));
+        assert_eq!(metadata.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(metadata.model_provider_id.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn rollback_all_turns_clears_known_agent_metadata() {
+        let mut processor = make_processor();
+
+        processor.remember_agent_metadata(
+            "thread-a",
+            Some("explorer"),
+            Some("claude-sonnet-4-6"),
+            Some("anthropic"),
+        );
+        processor.seal_known_agents_turn();
+
+        processor.rollback_known_agents(1);
+
+        assert_eq!(processor.known_agents.is_empty(), true);
+        assert_eq!(processor.known_agent_changes_by_turn.is_empty(), true);
     }
 }

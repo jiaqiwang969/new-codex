@@ -21,6 +21,7 @@ use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_core::protocol::ThreadRolledBackEvent;
 use codex_core::protocol::WarningEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
@@ -548,6 +549,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             call_id: "call-10".to_string(),
             sender_thread_id,
             memory: None,
+            agent_type: Some("explorer".to_string()),
             prompt: prompt.clone(),
         }),
     );
@@ -575,6 +577,9 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             call_id: "call-10".to_string(),
             sender_thread_id,
             memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider_id: Some("openai".to_string()),
             new_thread_id: Some(new_thread_id),
             prompt: prompt.clone(),
             status: AgentStatus::Running,
@@ -596,6 +601,425 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                         CollabAgentState {
                             status: CollabAgentStatus::Running,
                             message: None,
+                            agent_type: Some("explorer".to_string()),
+                            model: Some("gpt-5.3-codex".to_string()),
+                            model_provider_id: Some("openai".to_string()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    status: CollabToolCallStatus::Completed,
+                }),
+            },
+        })]
+    );
+}
+
+#[test]
+fn collab_wait_end_reuses_spawned_agent_metadata() {
+    let mut ep = EventProcessorWithJsonOutput::new(None);
+    let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
+    let new_thread_id = ThreadId::from_string("9e107d9d-372b-4b8c-a2a4-1d9bb3fce0c1").unwrap();
+    let prompt = "draft a plan".to_string();
+
+    let begin = event(
+        "c1",
+        EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-10".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            prompt: prompt.clone(),
+        }),
+    );
+    let _ = ep.collect_thread_events(&begin);
+
+    let end = event(
+        "c2",
+        EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-10".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(new_thread_id),
+            prompt,
+            status: AgentStatus::Running,
+        }),
+    );
+    let _ = ep.collect_thread_events(&end);
+
+    let mut statuses = std::collections::HashMap::new();
+    statuses.insert(new_thread_id, AgentStatus::Completed(None));
+    let wait_end = event(
+        "c3",
+        EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            sender_thread_id,
+            memory: None,
+            call_id: "call-11".to_string(),
+            statuses,
+        }),
+    );
+
+    let wait_events = ep.collect_thread_events(&wait_end);
+    assert_eq!(
+        wait_events,
+        vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "item_1".to_string(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: CollabTool::Wait,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![new_thread_id.to_string()],
+                    prompt: None,
+                    agents_states: [(
+                        new_thread_id.to_string(),
+                        CollabAgentState {
+                            status: CollabAgentStatus::Completed,
+                            message: None,
+                            agent_type: Some("explorer".to_string()),
+                            model: Some("claude-opus-4-6".to_string()),
+                            model_provider_id: Some("anthropic".to_string()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    status: CollabToolCallStatus::Completed,
+                }),
+            },
+        })]
+    );
+}
+
+#[test]
+fn collab_wait_end_after_rollback_clears_agent_metadata_cache() {
+    let mut ep = EventProcessorWithJsonOutput::new(None);
+    let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
+    let new_thread_id = ThreadId::from_string("9e107d9d-372b-4b8c-a2a4-1d9bb3fce0c1").unwrap();
+    let prompt = "draft a plan".to_string();
+
+    let spawn_begin = event(
+        "c1",
+        EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-10".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            prompt: prompt.clone(),
+        }),
+    );
+    let _ = ep.collect_thread_events(&spawn_begin);
+
+    let spawn_end = event(
+        "c2",
+        EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-10".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(new_thread_id),
+            prompt,
+            status: AgentStatus::Running,
+        }),
+    );
+    let _ = ep.collect_thread_events(&spawn_end);
+
+    let _ = ep.collect_thread_events(&event(
+        "c3",
+        EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+    ));
+
+    let mut statuses = std::collections::HashMap::new();
+    statuses.insert(new_thread_id, AgentStatus::Completed(None));
+    let wait_end = event(
+        "c4",
+        EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            sender_thread_id,
+            memory: None,
+            call_id: "call-11".to_string(),
+            statuses,
+        }),
+    );
+
+    let wait_events = ep.collect_thread_events(&wait_end);
+    assert_eq!(
+        wait_events,
+        vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "item_1".to_string(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: CollabTool::Wait,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![new_thread_id.to_string()],
+                    prompt: None,
+                    agents_states: [(
+                        new_thread_id.to_string(),
+                        CollabAgentState {
+                            status: CollabAgentStatus::Completed,
+                            message: None,
+                            agent_type: None,
+                            model: None,
+                            model_provider_id: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    status: CollabToolCallStatus::Completed,
+                }),
+            },
+        })]
+    );
+}
+
+#[test]
+fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
+    let mut ep = EventProcessorWithJsonOutput::new(None);
+    let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
+    let first_thread_id = ThreadId::from_string("9e107d9d-372b-4b8c-a2a4-1d9bb3fce0c1").unwrap();
+    let second_thread_id = ThreadId::from_string("15f8384f-18f5-4381-8f6f-6db4704b2e31").unwrap();
+
+    let _ = ep.collect_thread_events(&event(
+        "t1",
+        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+            turn_id: "turn-a".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c1",
+        EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-a".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            prompt: "inspect crate a".to_string(),
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c2",
+        EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-a".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(first_thread_id),
+            prompt: "inspect crate a".to_string(),
+            status: AgentStatus::Running,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "t2",
+        EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
+            turn_id: "turn-a".to_string(),
+            last_agent_message: None,
+            memory: None,
+        }),
+    ));
+
+    let _ = ep.collect_thread_events(&event(
+        "t3",
+        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+            turn_id: "turn-b".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c3",
+        EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-b".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("worker".to_string()),
+            prompt: "inspect crate b".to_string(),
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c4",
+        EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-b".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("worker".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(second_thread_id),
+            prompt: "inspect crate b".to_string(),
+            status: AgentStatus::Running,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "rb",
+        EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+    ));
+
+    let mut statuses = std::collections::HashMap::new();
+    statuses.insert(first_thread_id, AgentStatus::Completed(None));
+    let wait_end = event(
+        "c5",
+        EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            sender_thread_id,
+            memory: None,
+            call_id: "call-wait".to_string(),
+            statuses,
+        }),
+    );
+
+    let wait_events = ep.collect_thread_events(&wait_end);
+    assert_eq!(
+        wait_events,
+        vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "item_2".to_string(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: CollabTool::Wait,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![first_thread_id.to_string()],
+                    prompt: None,
+                    agents_states: [(
+                        first_thread_id.to_string(),
+                        CollabAgentState {
+                            status: CollabAgentStatus::Completed,
+                            message: None,
+                            agent_type: Some("explorer".to_string()),
+                            model: Some("claude-sonnet-4-6".to_string()),
+                            model_provider_id: Some("anthropic".to_string()),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    status: CollabToolCallStatus::Completed,
+                }),
+            },
+        })]
+    );
+}
+
+#[test]
+fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id() {
+    let mut ep = EventProcessorWithJsonOutput::new(None);
+    let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
+    let thread_id = ThreadId::from_string("9e107d9d-372b-4b8c-a2a4-1d9bb3fce0c1").unwrap();
+
+    let _ = ep.collect_thread_events(&event(
+        "t1",
+        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+            turn_id: "turn-a".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c1",
+        EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-a".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            prompt: "inspect old".to_string(),
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c2",
+        EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-a".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(thread_id),
+            prompt: "inspect old".to_string(),
+            status: AgentStatus::Running,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "t2",
+        EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
+            turn_id: "turn-a".to_string(),
+            last_agent_message: None,
+            memory: None,
+        }),
+    ));
+
+    let _ = ep.collect_thread_events(&event(
+        "t3",
+        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+            turn_id: "turn-b".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c3",
+        EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-b".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("worker".to_string()),
+            prompt: "inspect new".to_string(),
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "c4",
+        EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-b".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("worker".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(thread_id),
+            prompt: "inspect new".to_string(),
+            status: AgentStatus::Running,
+        }),
+    ));
+    let _ = ep.collect_thread_events(&event(
+        "rb",
+        EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+    ));
+
+    let mut statuses = std::collections::HashMap::new();
+    statuses.insert(thread_id, AgentStatus::Completed(None));
+    let wait_end = event(
+        "c5",
+        EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            sender_thread_id,
+            memory: None,
+            call_id: "call-wait".to_string(),
+            statuses,
+        }),
+    );
+
+    let wait_events = ep.collect_thread_events(&wait_end);
+    assert_eq!(
+        wait_events,
+        vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+            item: ThreadItem {
+                id: "item_2".to_string(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: CollabTool::Wait,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![thread_id.to_string()],
+                    prompt: None,
+                    agents_states: [(
+                        thread_id.to_string(),
+                        CollabAgentState {
+                            status: CollabAgentStatus::Completed,
+                            message: None,
+                            agent_type: Some("explorer".to_string()),
+                            model: Some("claude-sonnet-4-6".to_string()),
+                            model_provider_id: Some("anthropic".to_string()),
                         },
                     )]
                     .into_iter()
@@ -648,6 +1072,9 @@ fn collab_wait_end_without_begin_synthesizes_failed_item() {
                             CollabAgentState {
                                 status: CollabAgentStatus::Completed,
                                 message: Some("done".to_string()),
+                                agent_type: None,
+                                model: None,
+                                model_provider_id: None,
                             },
                         ),
                         (
@@ -655,6 +1082,9 @@ fn collab_wait_end_without_begin_synthesizes_failed_item() {
                             CollabAgentState {
                                 status: CollabAgentStatus::Errored,
                                 message: Some("boom".to_string()),
+                                agent_type: None,
+                                model: None,
+                                model_provider_id: None,
                             },
                         ),
                     ]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 
@@ -68,6 +69,10 @@ pub struct EventProcessorWithJsonOutput {
     last_total_token_usage: Option<codex_core::protocol::TokenUsage>,
     running_mcp_tool_calls: HashMap<String, RunningMcpToolCall>,
     running_collab_tool_calls: HashMap<String, RunningCollabToolCall>,
+    known_agents: HashMap<String, KnownAgentMetadata>,
+    known_agent_changes_by_turn: Vec<Vec<KnownAgentChange>>,
+    current_turn_known_agent_changes: Vec<KnownAgentChange>,
+    current_turn_known_agent_seen: HashSet<String>,
     running_web_search_calls: HashMap<String, String>,
     last_critical_error: Option<ThreadErrorEvent>,
 }
@@ -99,6 +104,19 @@ struct RunningCollabToolCall {
     item_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct KnownAgentMetadata {
+    agent_type: Option<String>,
+    model: Option<String>,
+    model_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct KnownAgentChange {
+    thread_id: String,
+    previous: Option<KnownAgentMetadata>,
+}
+
 impl EventProcessorWithJsonOutput {
     pub fn new(last_message_path: Option<PathBuf>) -> Self {
         Self {
@@ -111,6 +129,10 @@ impl EventProcessorWithJsonOutput {
             last_total_token_usage: None,
             running_mcp_tool_calls: HashMap::new(),
             running_collab_tool_calls: HashMap::new(),
+            known_agents: HashMap::new(),
+            known_agent_changes_by_turn: Vec::new(),
+            current_turn_known_agent_changes: Vec::new(),
+            current_turn_known_agent_seen: HashSet::new(),
             running_web_search_calls: HashMap::new(),
             last_critical_error: None,
         }
@@ -149,6 +171,7 @@ impl EventProcessorWithJsonOutput {
             protocol::EventMsg::CollabWaitingEnd(ev) => self.handle_collab_wait_end(ev),
             protocol::EventMsg::CollabCloseBegin(ev) => self.handle_collab_close_begin(ev),
             protocol::EventMsg::CollabCloseEnd(ev) => self.handle_collab_close_end(ev),
+            protocol::EventMsg::ThreadRolledBack(ev) => self.handle_thread_rollback(ev),
             protocol::EventMsg::PatchApplyBegin(ev) => self.handle_patch_apply_begin(ev),
             protocol::EventMsg::PatchApplyEnd(ev) => self.handle_patch_apply_end(ev),
             protocol::EventMsg::WebSearchBegin(ev) => self.handle_web_search_begin(ev),
@@ -427,7 +450,11 @@ impl EventProcessorWithJsonOutput {
         let (receiver_thread_ids, agents_states) = match ev.new_thread_id {
             Some(id) => {
                 let receiver_id = id.to_string();
-                let agent_state = CollabAgentState::from(ev.status.clone());
+                let mut agent_state = CollabAgentState::from(ev.status.clone());
+                agent_state.agent_type = ev.agent_type.clone();
+                agent_state.model = ev.model.clone();
+                agent_state.model_provider_id = ev.model_provider_id.clone();
+                self.remember_agent_metadata(&receiver_id, &agent_state);
                 (
                     vec![receiver_id.clone()],
                     [(receiver_id, agent_state)].into_iter().collect(),
@@ -469,7 +496,8 @@ impl EventProcessorWithJsonOutput {
         ev: &CollabAgentInteractionEndEvent,
     ) -> Vec<ThreadEvent> {
         let receiver_id = ev.receiver_thread_id.to_string();
-        let agent_state = CollabAgentState::from(ev.status.clone());
+        let mut agent_state = CollabAgentState::from(ev.status.clone());
+        self.apply_known_agent_metadata(&receiver_id, &mut agent_state);
         let status = if is_collab_failure(&ev.status) {
             CollabToolCallStatus::Failed
         } else {
@@ -515,10 +543,10 @@ impl EventProcessorWithJsonOutput {
             .statuses
             .iter()
             .map(|(thread_id, status)| {
-                (
-                    thread_id.to_string(),
-                    CollabAgentState::from(status.clone()),
-                )
+                let receiver_id = thread_id.to_string();
+                let mut state = CollabAgentState::from(status.clone());
+                self.apply_known_agent_metadata(&receiver_id, &mut state);
+                (receiver_id, state)
             })
             .collect();
         self.finish_collab_tool_call(
@@ -544,7 +572,8 @@ impl EventProcessorWithJsonOutput {
 
     fn handle_collab_close_end(&mut self, ev: &CollabCloseEndEvent) -> Vec<ThreadEvent> {
         let receiver_id = ev.receiver_thread_id.to_string();
-        let agent_state = CollabAgentState::from(ev.status.clone());
+        let mut agent_state = CollabAgentState::from(ev.status.clone());
+        self.apply_known_agent_metadata(&receiver_id, &mut agent_state);
         let status = if is_collab_failure(&ev.status) {
             CollabToolCallStatus::Failed
         } else {
@@ -559,6 +588,38 @@ impl EventProcessorWithJsonOutput {
             [(receiver_id, agent_state)].into_iter().collect(),
             status,
         )
+    }
+
+    fn handle_thread_rollback(
+        &mut self,
+        ev: &codex_core::protocol::ThreadRolledBackEvent,
+    ) -> Vec<ThreadEvent> {
+        self.seal_known_agents_turn();
+        let rollback_turns = usize::try_from(ev.num_turns).unwrap_or(usize::MAX);
+        if rollback_turns >= self.known_agent_changes_by_turn.len() {
+            self.known_agent_changes_by_turn.clear();
+            self.known_agents.clear();
+            return Vec::new();
+        }
+
+        let drain_start = self
+            .known_agent_changes_by_turn
+            .len()
+            .saturating_sub(rollback_turns);
+        let drained = self
+            .known_agent_changes_by_turn
+            .drain(drain_start..)
+            .collect::<Vec<_>>();
+        for turn_changes in drained.into_iter().rev() {
+            for change in turn_changes.into_iter().rev() {
+                if let Some(previous) = change.previous {
+                    self.known_agents.insert(change.thread_id, previous);
+                } else {
+                    self.known_agents.remove(&change.thread_id);
+                }
+            }
+        }
+        Vec::new()
     }
 
     fn start_collab_tool_call(
@@ -624,6 +685,46 @@ impl EventProcessorWithJsonOutput {
             }),
         };
         vec![ThreadEvent::ItemCompleted(ItemCompletedEvent { item })]
+    }
+
+    fn remember_agent_metadata(&mut self, thread_id: &str, state: &CollabAgentState) {
+        if state.agent_type.is_none() && state.model.is_none() && state.model_provider_id.is_none()
+        {
+            return;
+        }
+        let thread_id = thread_id.to_string();
+        if self.current_turn_known_agent_seen.insert(thread_id.clone()) {
+            self.current_turn_known_agent_changes
+                .push(KnownAgentChange {
+                    thread_id: thread_id.clone(),
+                    previous: self.known_agents.get(&thread_id).cloned(),
+                });
+        }
+        self.known_agents.insert(
+            thread_id.clone(),
+            KnownAgentMetadata {
+                agent_type: state.agent_type.clone(),
+                model: state.model.clone(),
+                model_provider_id: state.model_provider_id.clone(),
+            },
+        );
+    }
+
+    fn apply_known_agent_metadata(&self, thread_id: &str, state: &mut CollabAgentState) {
+        if let Some(metadata) = self.known_agents.get(thread_id) {
+            state.agent_type = metadata.agent_type.clone();
+            state.model = metadata.model.clone();
+            state.model_provider_id = metadata.model_provider_id.clone();
+        }
+    }
+
+    fn seal_known_agents_turn(&mut self) {
+        if self.current_turn_known_agent_changes.is_empty() {
+            return;
+        }
+        self.known_agent_changes_by_turn
+            .push(std::mem::take(&mut self.current_turn_known_agent_changes));
+        self.current_turn_known_agent_seen.clear();
     }
 
     fn handle_patch_apply_begin(
@@ -745,11 +846,13 @@ impl EventProcessorWithJsonOutput {
     }
 
     fn handle_task_started(&mut self, _: &protocol::TurnStartedEvent) -> Vec<ThreadEvent> {
+        self.seal_known_agents_turn();
         self.last_critical_error = None;
         vec![ThreadEvent::TurnStarted(TurnStartedEvent {})]
     }
 
     fn handle_task_complete(&mut self) -> Vec<ThreadEvent> {
+        self.seal_known_agents_turn();
         let usage = if let Some(u) = &self.last_total_token_usage {
             Usage {
                 input_tokens: u.input_tokens,
@@ -806,31 +909,20 @@ fn is_collab_failure(status: &CoreAgentStatus) -> bool {
 
 impl From<CoreAgentStatus> for CollabAgentState {
     fn from(value: CoreAgentStatus) -> Self {
-        match value {
-            CoreAgentStatus::PendingInit => Self {
-                status: CollabAgentStatus::PendingInit,
-                message: None,
-            },
-            CoreAgentStatus::Running => Self {
-                status: CollabAgentStatus::Running,
-                message: None,
-            },
-            CoreAgentStatus::Completed(message) => Self {
-                status: CollabAgentStatus::Completed,
-                message,
-            },
-            CoreAgentStatus::Errored(message) => Self {
-                status: CollabAgentStatus::Errored,
-                message: Some(message),
-            },
-            CoreAgentStatus::Shutdown => Self {
-                status: CollabAgentStatus::Shutdown,
-                message: None,
-            },
-            CoreAgentStatus::NotFound => Self {
-                status: CollabAgentStatus::NotFound,
-                message: None,
-            },
+        let (status, message) = match value {
+            CoreAgentStatus::PendingInit => (CollabAgentStatus::PendingInit, None),
+            CoreAgentStatus::Running => (CollabAgentStatus::Running, None),
+            CoreAgentStatus::Completed(message) => (CollabAgentStatus::Completed, message),
+            CoreAgentStatus::Errored(message) => (CollabAgentStatus::Errored, Some(message)),
+            CoreAgentStatus::Shutdown => (CollabAgentStatus::Shutdown, None),
+            CoreAgentStatus::NotFound => (CollabAgentStatus::NotFound, None),
+        };
+        Self {
+            status,
+            message,
+            agent_type: None,
+            model: None,
+            model_provider_id: None,
         }
     }
 }
