@@ -23,12 +23,12 @@
 
 ### 1.1 现状（代码已落地）
 
-- 协作工具链已经完整接入：`spawn_agent` / `send_input` / `resume_agent` / `wait` / `close_agent`（`core/src/tools/spec.rs`、`core/src/tools/handlers/collab.rs`）。
+- 协作工具链已经完整接入：`spawn_agent` / `send_input` / `resume_agent` / `wait` / `close_agent`（`core/src/tools/spec.rs`、`core/src/tools/handlers/multi_agents.rs`）。
 - Agent 控制面支持 spawn/resume/send/interrupt/shutdown 与状态订阅（`core/src/agent/control.rs`）。
-- 已有并发与深度保护：线程数上限与深度限制（`core/src/agent/guards.rs`，`MAX_THREAD_SPAWN_DEPTH = 1`）。
+- 已有并发与深度保护：线程数上限与深度限制（`core/src/agent/guards.rs`，`MAX_THREAD_SPAWN_DEPTH = 2`）。
 - Context Packet 已抽象为通用构建器（`core/src/context_packet.rs`），并已复用于：
   - `claude_code` MCP 调用自动注入 `workFolder/context`（`core/src/mcp_tool_call.rs`）
-  - `spawn_agent` 初始 prompt 注入（`core/src/tools/handlers/collab.rs`）
+  - `spawn_agent` 初始 prompt 注入（`core/src/tools/handlers/multi_agents.rs`）
 - 线程记忆链路已落地：`thread_memory` SQLite + `get_memory` 工具 + turn/compaction 后异步更新（`state/migrations/0006_thread_memory.sql`、`core/src/thread_memory.rs`、`core/src/tools/handlers/get_memory.rs`）。
 - App-Server 和 Exec 已可结构化消费协作事件（`app-server/src/bespoke_event_handling.rs`、`exec/src/event_processor_with_jsonl_output.rs`）。
 

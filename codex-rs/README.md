@@ -4,6 +4,7 @@
   1. 多模型 Provider 支持
 
   - OpenAI (GPT-5.3-codex-spark|[pro], GPT-5.3-codex, GPT-5.2-codex)
+  - Anthropic Claude (Claude Opus 4.6, Claude Sonnet 4.6 — 原生 Messages API，1M context，支持 vision/图片输入、extended thinking)
   - Google Gemini (Gemini 3 Pro/Flash, Gemini 3 Pro Image, 1M context)
   - Grok (Grok 4, Grok 4.1 Fast Reasoning)
   - 本地模型 (Gemma-3n via Ollama/LM Studio)
@@ -160,6 +161,23 @@ env_key = "XAI_API_KEY_POOL_2"
 [[model_providers.grok.account_pool]]
 base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_3"
+
+# ── Anthropic provider pool ───────────────────────────────────────
+[model_providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY_POOL_1"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY_POOL_1"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY_POOL_3"
 ```
 
 `~/.codex/auth-pool.json` — Pool API 密钥（与主 `auth.json` 隔离）：
@@ -174,7 +192,10 @@ env_key = "XAI_API_KEY_POOL_3"
   "GEMINI_API_KEY_POOL_3": "AIza-your-third-gemini-key",
   "XAI_API_KEY_POOL_1": "xai-your-first-grok-key",
   "XAI_API_KEY_POOL_2": "xai-your-second-grok-key",
-  "XAI_API_KEY_POOL_3": "xai-your-third-grok-key"
+  "XAI_API_KEY_POOL_3": "xai-your-third-grok-key",
+  "ANTHROPIC_API_KEY_POOL_1": "sk-ant-your-first-anthropic-key",
+  "ANTHROPIC_API_KEY_POOL_2": "sk-ant-your-second-anthropic-key",
+  "ANTHROPIC_API_KEY_POOL_3": "sk-ant-your-third-anthropic-key"
 }
 ```
 
@@ -264,6 +285,134 @@ codex --sandbox danger-full-access
 ```
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
+
+### `~/.codex/config.toml` 的 `[features]` 配置说明
+
+> 如果你说的 `~/.config.toml` 指的是 Codex 用户配置，实际文件路径是 `~/.codex/config.toml`。
+
+你可以在 `config.toml` 里通过 `[features]` 开关覆盖默认行为；未配置的项会继续使用默认值。
+
+```toml
+[features]
+# Stable (off by default)
+undo = true                          # Ghost commit at each turn for undo
+
+# Experimental
+multi_agent = true
+agent_worktrees = true
+apps = true
+prevent_idle_sleep = true            # Keep macOS awake while running
+
+# Under Development
+sqlite = true
+memory_tool = true
+codex_git_commit = true
+js_repl = true
+child_agents_md = true
+skill_env_var_dependency_prompt = true
+responses_websockets = true
+responses_websockets_v2 = true
+```
+
+补充说明：
+- `js_repl_tools_only` 依赖 `js_repl = true`，否则会被自动关闭。
+- `web_search_request` / `web_search_cached` 已废弃，建议用顶层 `web_search = "live" | "cached" | "disabled"`。
+- 下面的 key 均为 canonical key（即推荐写法）。
+
+| feature key | 默认值 | 状态 | 作用 |
+| --- | --- | --- | --- |
+| `undo` | `true` ⚠️ | Stable | 每轮生成 ghost commit，支持撤销型工作流。 |
+| `shell_tool` | `true` | Stable | 启用默认 shell 工具。 |
+| `unified_exec` | 非 Windows `true`；Windows `false` | Stable | 使用统一的 PTY exec 工具路径。 |
+| `shell_snapshot` | `true` | Stable | 记录 shell 输出快照，供后续上下文使用。 |
+| `enable_request_compression` | `true` | Stable | 发送流式请求时启用 zstd 压缩。 |
+| `skill_mcp_dependency_install` | `true` | Stable | 允许提示并安装缺失的 skill MCP 依赖。 |
+| `steer` | `true` | Stable | 启用 steer 行为（Enter 立即提交而非排队）。 |
+| `collaboration_modes` | `true` | Stable | 启用协作模式（Default / Plan）。 |
+| `personality` | `true` | Stable | 启用 TUI personality 选择。 |
+| `powershell_utf8` | Windows `true`；非 Windows `false` | Windows: Stable；其他: UnderDevelopment | 强制 PowerShell 使用 UTF-8 输出。 |
+| `js_repl` | `true` ⚠️ | UnderDevelopment | 启用基于持久 Node 内核的 `js_repl` 工具。 |
+| `js_repl_tools_only` | `false` | UnderDevelopment | 仅暴露 `js_repl` 工具给模型。 |
+| `codex_git_commit` | `true` ⚠️ | UnderDevelopment | 在模型指令中启用 git commit 归因提示。 |
+| `runtime_metrics` | `false` | UnderDevelopment | 启用 runtime metrics 快照采集。 |
+| `sqlite` | `true` ⚠️ | UnderDevelopment | 将 rollout 元数据持久化到本地 SQLite。 |
+| `memory_tool` | `true` ⚠️ | UnderDevelopment | 启用记忆提取与跨会话记忆归并能力。 |
+| `child_agents_md` | `true` ⚠️ | UnderDevelopment | 将额外 AGENTS.md 指令附加到子 agent 指令中。 |
+| `apply_patch_freeform` | `false` | UnderDevelopment | 启用 freeform `apply_patch` 工具。 |
+| `apps_mcp_gateway` | `false` | UnderDevelopment | 让 Apps MCP 调用走 gateway。 |
+| `skill_env_var_dependency_prompt` | `true` ⚠️ | UnderDevelopment | 提示缺失的 skill 环境变量依赖。 |
+| `responses_websockets` | `true` ⚠️ | UnderDevelopment | 默认通过 Responses WebSocket 传输。 |
+| `responses_websockets_v2` | `true` ⚠️ | UnderDevelopment | 启用 Responses WebSocket v2 模式。 |
+| `multi_agent` | `true` ⚠️ | Experimental | 启用多 agent 协作工具（如 `spawn_agent`）。 |
+| `agent_worktrees` | `true` ⚠️ | Experimental | 为 fork/子 agent 使用隔离 git worktree。 |
+| `apps` | `true` ⚠️ | Experimental | 启用 Apps/Connectors（`$` 提及）。 |
+| `use_linux_sandbox_bwrap` | `false` | Linux: Experimental；其他: UnderDevelopment | Linux 下启用 bubblewrap 沙箱链路。 |
+| `prevent_idle_sleep` | `true` ⚠️ | macOS: Experimental；其他: UnderDevelopment | 任务运行期间阻止系统闲置睡眠。 |
+| `web_search_request` | `false` | Deprecated | 旧版在线搜索开关（已废弃）。 |
+| `web_search_cached` | `false` | Deprecated | 旧版缓存搜索开关（已废弃）。 |
+| `search_tool` | `false` | Removed | 旧版搜索工具标志（已移除）。 |
+| `request_rule` | `false` | Removed | 旧审批规则请求开关（已移除）。 |
+| `experimental_windows_sandbox` | `false` | Removed | 旧 Windows sandbox 开关（已移除）。 |
+| `elevated_windows_sandbox` | `false` | Removed | 旧 elevated Windows sandbox 开关（已移除）。 |
+| `remote_models` | `false` | Removed | 旧远程模型开关（已移除）。 |
+
+**注意**：标记 ⚠️ 的 feature 在你的配置中已启用（`true`），但上游默认值仍为 `false`。这是本 fork 的定制配置。
+
+兼容老配置时，以下 legacy key 仍可被识别，但建议迁移到上表 key：
+- `connectors` -> `apps`
+- `experimental_use_unified_exec_tool` -> `unified_exec`
+- `experimental_use_freeform_apply_patch` / `include_apply_patch_tool` -> `apply_patch_freeform`
+- `collab` -> `multi_agent`
+- `web_search` -> `web_search_request`（该路径本身也已废弃）
+- `enable_experimental_windows_sandbox` -> `experimental_windows_sandbox`（已移除）
+
+### `~/.codex/config.toml` 的 utility model 配置（`model_sub` / `model_sub_responses`）
+
+为了让 Claude / Gemini 等非-Responses provider 作为 leader 时，memory 等内部能力不会降级，Codex 提供了两条 “utility model” 配置：
+
+注意：如果不设置（unset），Codex 会对不同的内部任务使用各自的内置默认模型；设置这些字段仅表示“覆盖（override）”内部任务的默认选择。
+
+```toml
+# 通用内部任务使用的 utility model（memory phase-1/2 等）
+# 同时用于 spawn_agent 的默认角色与 explorer 角色（未显式传 model 覆盖时）
+model_sub = "claude-sonnet-4-6"
+
+# 仅用于 Responses-only 内部任务的 utility model（例如 memory trace summarize）
+# 注意：必须是 OpenAI slug（gpt-* / o1-* / o3-* / o4-*，或带 openai/ 前缀），否则会被忽略并给出启动 warning。
+model_sub_responses = "gpt-5.1-codex-mini"
+```
+
+在 TUI 中也可以通过 slash commands 交互设置：
+- `/team-profile`（同时设置 leader model + `model_sub` + `model_sub_responses` + memories phase models）
+- `/model-sub`
+- `/model-sub auto|recommended|auto:general|auto:debug|auto:review`（按 model vouch 自动选择 utility/sub-agent model）
+- `/model-sub-responses`
+- `/team-profile auto`（直接应用当前 vouch 评分最高的推荐 profile）
+- `/team-profile auto:general|auto:debug|auto:review`（按任务桶应用推荐 profile）
+- `/team-vouch <win|loss> [general|debug|review] [note]`（手动记录当前 team profile 的功/过）
+- `/team-vouch duel <winner> <loser> [general|debug|review] [note]`（记录同题对比的胜负）
+- `/team-vouch model <win|loss> <model> [general|debug|review] [note]`（记录某个 utility/sub-agent model 的功/过）
+- `/team-vouch model-duel <winner_model> <loser_model> [general|debug|review] [note]`（记录 utility/sub-agent model 的同题对比胜负）
+
+`/team-profile` 会尝试读取 `~/.codex/memories/team_profile_vouch.json`，在弹窗中显示每个 profile 的
+`vouch`（功/过统计）与备注，便于后续沉淀为自动路由依据。
+若已有功过数据，`/team-profile` 会优先按 recent-weighted signal（最近样本加权）动态标记 `Recommended`，并回退到累计净胜负（`net = wins - losses`）。
+当你提交 `/feedback` 时，Codex 会把 `Good result` 记为该 profile 的一次 `win`，把
+`Bad result / Bug / Safety check` 记为一次 `loss`（仅在当前路由命中某个 `/team-profile` preset 时生效）。
+其中 `Bug` 会记入 `debug` 桶，`Safety check` 会记入 `review` 桶，其它反馈进入 `general` 桶。
+也可以用 `/team-vouch` 直接记录 leader 评价（例如 `/team-vouch win debug fixed flaky parser`）。
+或用 `/team-vouch duel ...` 记录同一任务在不同 profile/agent 路由下的胜负结果。
+对于 utility/sub-agent 模型本身，可用 `/team-vouch model ...` 与 `/team-vouch model-duel ...`
+记录功过，再用 `/model-sub auto[:bucket]` 让系统按功过自动选择。
+当 `model_sub` 未显式配置时，`spawn_agent` 的 `default/explorer` 角色会尝试读取
+`~/.codex/memories/model_sub_vouch.json` 自动选择推荐模型，并在当前 session 内缓存该选择。
+若当前 session 既没有 `model_sub` 显式值、也没有缓存/功过推荐，`spawn_agent` 会触发一次同题校准（`calibrate_model_sub`）并在返回中附带 `auto_calibration` 信息（候选 run 摘要 + `recommended_for_session` / `recommended_for_latency`）。
+建议 leader 在查看候选输出后调用 `record_model_sub_winner`（或 `record_model_sub_duel`）落盘功过，这样同会话后续协作可直接复用最优小弟。
+可手工调用：
+- `calibrate_model_sub`（同题跑多模型）
+- `record_model_sub_winner`（一次记录 winner vs 所有候选；若省略 `compared_models`，会复用本 session 最近一次 `calibrate_model_sub` 的候选集）
+- `record_model_sub_duel`（单对单记分）
+`/status` 会在有功过数据时展示 `Team profile auto`，给出 `general/debug/review` 的推荐 profile。
 
 ## Code Organization
 

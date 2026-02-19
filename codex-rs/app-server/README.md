@@ -145,7 +145,7 @@ Example with notification opt-out:
 - `mcpServerStatus/list` — enumerate configured MCP servers with their tools, resources, resource templates, and auth status; supports cursor+limit pagination.
 - `feedback/upload` — submit a feedback report (classification + optional reason/logs and conversation_id); returns the tracking thread id.
 - `command/exec` — run a single command under the server sandbox without starting a thread/turn (handy for utilities and validation).
-- `config/read` — fetch the effective config on disk after resolving config layering.
+- `config/read` — fetch the effective config on disk after resolving config layering (including utility model overrides such as `model_sub` and `model_sub_responses`).
 - `config/value/write` — write a single config key/value to the user's config.toml on disk.
 - `config/batchWrite` — apply multiple config edits atomically to the user's config.toml on disk.
 - `configRequirements/read` — fetch loaded requirements constraints from `requirements.toml` and/or MDM (or `null` if none are configured), including allow-lists (`allowedApprovalPolicies`, `allowedSandboxModes`, `allowedWebSearchModes`), `enforceResidency`, and `network` constraints.
