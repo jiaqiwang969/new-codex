@@ -5,6 +5,8 @@ use chrono::Duration as ChronoDuration;
 use chrono::TimeZone;
 use chrono::Utc;
 use codex_core::AuthManager;
+use codex_core::ModelProviderInfo;
+use codex_core::WireApi;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::protocol::AskForApproval;
@@ -20,6 +22,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::prelude::*;
+use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -172,6 +175,304 @@ async fn status_snapshot_includes_reasoning_details() {
 }
 
 #[tokio::test]
+async fn status_shows_utility_provider_for_non_default_setup() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("claude-sonnet-4-6".to_string());
+    config.model_sub = Some("gpt-5.1-codex-mini".to_string());
+    config.model_provider_id = "anthropic".to_string();
+    config.model_provider = config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+    config.user_configured_provider = ModelProviderInfo {
+        name: "OpenAI custom".to_string(),
+        base_url: Some("https://proxy.example.com/v1/".to_string()),
+        env_key: Some("OPENAI_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        account_pool: Vec::new(),
+    };
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        "claude-sonnet-4-6",
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let utility_provider_line = rendered
+        .iter()
+        .find(|line| line.contains("Utility provider:"))
+        .expect("status card should include utility provider line");
+    assert_eq!(
+        utility_provider_line.contains("OpenAI custom - https://proxy.example.com/v1"),
+        true
+    );
+}
+
+#[tokio::test]
+async fn status_shows_responses_utility_model_when_general_utility_model_is_non_responses() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("claude-sonnet-4-6".to_string());
+    config.model_sub = Some("claude-sonnet-4-6".to_string());
+    config.model_provider_id = "anthropic".to_string();
+    config.model_provider = config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+    config.user_configured_provider = ModelProviderInfo {
+        name: "OpenAI custom".to_string(),
+        base_url: Some("https://proxy.example.com/v1/".to_string()),
+        env_key: Some("OPENAI_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        account_pool: Vec::new(),
+    };
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        "claude-sonnet-4-6",
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let responses_utility_line = rendered
+        .iter()
+        .find(|line| line.contains("Resp. util model:"))
+        .expect("status card should include Responses utility model line");
+    assert_eq!(responses_utility_line.contains("gpt-5.1-codex-mini"), true);
+    let responses_provider_line = rendered
+        .iter()
+        .find(|line| line.contains("Resp. util prov:"))
+        .expect("status card should include Responses utility provider line");
+    assert_eq!(
+        responses_provider_line.contains("OpenAI custom - https://proxy.example.com/v1"),
+        true
+    );
+}
+
+#[tokio::test]
+async fn status_shows_responses_utility_when_non_responses_provider_inherits_task_defaults() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("claude-sonnet-4-6".to_string());
+    config.model_provider_id = "anthropic".to_string();
+    config.model_provider = config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+    config.user_configured_provider = ModelProviderInfo {
+        name: "OpenAI custom".to_string(),
+        base_url: Some("https://proxy.example.com/v1/".to_string()),
+        env_key: Some("OPENAI_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        account_pool: Vec::new(),
+    };
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        "claude-sonnet-4-6",
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let utility_line = rendered
+        .iter()
+        .find(|line| line.contains("Utility/sub-agent:"))
+        .expect("status card should include utility/sub-agent line");
+    assert_eq!(utility_line.contains("task defaults (inherit)"), true);
+    let responses_utility_line = rendered
+        .iter()
+        .find(|line| line.contains("Resp. util model:"))
+        .expect("status card should include Responses utility model line");
+    assert_eq!(responses_utility_line.contains("gpt-5.1-codex-mini"), true);
+}
+
+#[tokio::test]
+async fn status_shows_team_profile_when_routing_matches_a_preset() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.3-codex".to_string());
+    config.model_sub = Some("claude-sonnet-4-6".to_string());
+    config.model_sub_responses = Some("gpt-5.2-codex".to_string());
+    config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
+    config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        &model_slug,
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let team_profile_line = rendered
+        .iter()
+        .find(|line| line.contains("Team profile:"))
+        .expect("status card should include team profile line");
+    assert_eq!(team_profile_line.contains("Leader-Quality"), true);
+}
+
+#[tokio::test]
+async fn status_shows_team_profile_vouch_when_available() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.3-codex".to_string());
+    config.model_sub = Some("claude-sonnet-4-6".to_string());
+    config.model_sub_responses = Some("gpt-5.2-codex".to_string());
+    config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
+    config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
+
+    let memories_dir = config.codex_home.join("memories");
+    fs::create_dir_all(&memories_dir).expect("create memories dir");
+    fs::write(
+        memories_dir.join("team_profile_vouch.json"),
+        r#"{
+  "profiles": {
+    "leader_quality": {
+      "wins": 3,
+      "losses": 1,
+      "note": "stable wins",
+      "by_task": {
+        "debug": { "wins": 2, "losses": 0 }
+      }
+    }
+  }
+}"#,
+    )
+    .expect("write team profile vouch");
+
+    let auth_manager = test_auth_manager(&config);
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let composite = new_status_output(
+        &config,
+        &auth_manager,
+        None,
+        &usage,
+        &None,
+        None,
+        None,
+        None,
+        None,
+        captured_at,
+        &model_slug,
+        None,
+        None,
+    );
+    let rendered = render_lines(&composite.display_lines(120));
+    let vouch_line = rendered
+        .iter()
+        .find(|line| line.contains("Team profile vouch:"))
+        .expect("status card should include team profile vouch line");
+    assert_eq!(vouch_line.contains("global +3 / -1 (net +2)"), true);
+    assert_eq!(vouch_line.contains("debug +2 / -0 (net +2)"), true);
+    assert_eq!(vouch_line.contains("stable wins"), true);
+    let auto_line = rendered
+        .iter()
+        .find(|line| line.contains("Team profile auto:"))
+        .expect("status card should include team profile auto line");
+    assert_eq!(auto_line.contains("Leader-Quality"), true);
+}
+
+#[tokio::test]
 async fn status_permissions_non_default_workspace_write_is_custom() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
@@ -218,7 +519,7 @@ async fn status_permissions_non_default_workspace_write_is_custom() {
         None,
         None,
     );
-    let rendered_lines = render_lines(&composite.display_lines(80));
+    let rendered_lines = render_lines(&composite.display_lines(120));
     let permissions_line = rendered_lines
         .iter()
         .find(|line| line.contains("Permissions:"))

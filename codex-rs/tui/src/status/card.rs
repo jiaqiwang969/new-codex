@@ -40,6 +40,8 @@ use super::rate_limits::compose_rate_limit_data;
 use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
+use crate::team_profile;
+use crate::team_profile_vouch;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 use codex_core::AuthManager;
@@ -63,6 +65,16 @@ pub(crate) struct StatusTokenUsageData {
 struct StatusHistoryCell {
     model_name: String,
     model_details: Vec<String>,
+    team_profile_label: Option<&'static str>,
+    team_profile_vouch: Option<String>,
+    team_profile_auto: Option<String>,
+    utility_model_name: String,
+    utility_model_configured: bool,
+    utility_model_provider: Option<String>,
+    show_utility_model_responses: bool,
+    utility_model_responses_name: String,
+    utility_model_responses_configured: bool,
+    utility_model_responses_provider: Option<String>,
     directory: PathBuf,
     permissions: String,
     agents_summary: String,
@@ -250,9 +262,118 @@ impl StatusHistoryCell {
             compose_rate_limit_data_many(rate_limits, now)
         };
 
+        let utility_model_name = config
+            .model_sub
+            .clone()
+            .unwrap_or_else(|| "task defaults".to_string());
+        let active_team_profile = team_profile::profile_for_config(config);
+        let team_profile_label = active_team_profile.map(|profile| profile.label);
+        let vouch_snapshot = team_profile_vouch::load_team_profile_vouch(&config.codex_home);
+        let team_profile_vouch = active_team_profile.and_then(|profile| {
+            let entry = vouch_snapshot.entry_for(profile.key)?;
+            let mut summary = format!(
+                "global +{} / -{} (net {:+})",
+                entry.wins,
+                entry.losses,
+                entry.net_score()
+            );
+            if let Some(recent) = entry.recent_signal(None)
+                && recent.sample_count() > 0
+            {
+                summary.push_str(" | recent +");
+                summary.push_str(&recent.wins.to_string());
+                summary.push_str(" / -");
+                summary.push_str(&recent.losses.to_string());
+                summary.push_str(" (weighted ");
+                summary.push_str(&format!("{:+}", recent.weighted_score));
+                summary.push(')');
+            }
+            for task_bucket in team_profile_vouch::TeamProfileTaskBucket::ALL {
+                if let Some(task_entry) = entry.task_entry(task_bucket)
+                    && task_entry.sample_count() > 0
+                {
+                    summary.push_str(" | ");
+                    summary.push_str(task_bucket.label());
+                    summary.push_str(" +");
+                    summary.push_str(&task_entry.wins.to_string());
+                    summary.push_str(" / -");
+                    summary.push_str(&task_entry.losses.to_string());
+                    summary.push_str(" (net ");
+                    summary.push_str(&format!("{:+}", task_entry.net_score()));
+                    summary.push(')');
+                    if let Some(recent) = entry.recent_signal(Some(task_bucket))
+                        && recent.sample_count() > 0
+                    {
+                        summary.push_str(" [recent +");
+                        summary.push_str(&recent.wins.to_string());
+                        summary.push_str(" / -");
+                        summary.push_str(&recent.losses.to_string());
+                        summary.push_str(", weighted ");
+                        summary.push_str(&format!("{:+}", recent.weighted_score));
+                        summary.push(']');
+                    }
+                }
+            }
+            if let Some(note) = entry.note.as_deref()
+                && !note.is_empty()
+            {
+                summary.push_str(" | note: ");
+                summary.push_str(note);
+            }
+            Some(summary)
+        });
+        let team_profile_auto = if active_team_profile.is_some() && vouch_snapshot.has_signal() {
+            let general = team_profile::recommended_profile(&vouch_snapshot, None).label;
+            let debug = team_profile::recommended_profile(
+                &vouch_snapshot,
+                Some(team_profile_vouch::TeamProfileTaskBucket::Debug),
+            )
+            .label;
+            let review = team_profile::recommended_profile(
+                &vouch_snapshot,
+                Some(team_profile_vouch::TeamProfileTaskBucket::Review),
+            )
+            .label;
+            Some(if general == debug && debug == review {
+                format!("all -> {general}")
+            } else {
+                format!("general -> {general}; debug -> {debug}; review -> {review}")
+            })
+        } else {
+            None
+        };
+        let utility_model_configured = config.model_sub.is_some();
+        let utility_model_provider = config
+            .model_sub
+            .as_deref()
+            .and_then(|model| format_utility_model_provider(config, model));
+        let utility_model_responses_name =
+            codex_core::effective_responses_utility_model_slug(config).to_string();
+        let utility_model_responses_configured = config
+            .model_sub_responses
+            .as_deref()
+            .is_some_and(|model| codex_core::is_openai_model_slug(model));
+        let utility_model_responses_provider =
+            format_utility_model_provider(config, &utility_model_responses_name);
+        let show_utility_model_responses = utility_model_responses_configured
+            || (!utility_model_configured && config.model_provider.wire_api != WireApi::Responses)
+            || (utility_model_configured
+                && (utility_model_responses_name != utility_model_name
+                    || utility_model_responses_provider != utility_model_provider));
+
         Self {
             model_name,
             model_details,
+            team_profile_label,
+            team_profile_vouch,
+            team_profile_auto,
+            utility_model_name,
+            utility_model_configured,
+            utility_model_provider,
+            show_utility_model_responses,
+            utility_model_responses_name,
+            utility_model_responses_configured,
+            utility_model_responses_provider,
             directory: config.cwd.clone(),
             permissions,
             agents_summary,
@@ -441,6 +562,26 @@ impl HistoryCell for StatusHistoryCell {
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
         let thread_name = self.thread_name.as_deref().filter(|name| !name.is_empty());
 
+        if self.team_profile_label.is_some() {
+            push_label(&mut labels, &mut seen, "Team profile");
+        }
+        if self.team_profile_vouch.is_some() {
+            push_label(&mut labels, &mut seen, "Team profile vouch");
+        }
+        if self.team_profile_auto.is_some() {
+            push_label(&mut labels, &mut seen, "Team profile auto");
+        }
+        push_label(&mut labels, &mut seen, "Utility/sub-agent");
+        if self.utility_model_provider.is_some() {
+            push_label(&mut labels, &mut seen, "Utility provider");
+        }
+        if self.show_utility_model_responses {
+            push_label(&mut labels, &mut seen, "Resp. util model");
+            if self.utility_model_responses_provider.is_some() {
+                push_label(&mut labels, &mut seen, "Resp. util prov");
+            }
+        }
+
         if self.model_provider.is_some() {
             push_label(&mut labels, &mut seen, "Model provider");
         }
@@ -496,6 +637,40 @@ impl HistoryCell for StatusHistoryCell {
         let directory_value = format_directory_display(&self.directory, Some(value_width));
 
         lines.push(formatter.line("Model", model_spans));
+        if let Some(team_profile_label) = self.team_profile_label {
+            lines.push(formatter.line("Team profile", vec![Span::from(team_profile_label)]));
+        }
+        if let Some(team_profile_vouch) = self.team_profile_vouch.as_ref() {
+            lines.push(formatter.line(
+                "Team profile vouch",
+                vec![Span::from(team_profile_vouch.clone())],
+            ));
+        }
+        if let Some(team_profile_auto) = self.team_profile_auto.as_ref() {
+            lines.push(formatter.line(
+                "Team profile auto",
+                vec![Span::from(team_profile_auto.clone())],
+            ));
+        }
+        let mut utility_model_spans = vec![Span::from(self.utility_model_name.clone())];
+        if !self.utility_model_configured {
+            utility_model_spans.push(Span::from(" (inherit)").dim());
+        }
+        lines.push(formatter.line("Utility/sub-agent", utility_model_spans));
+        if let Some(provider) = self.utility_model_provider.as_ref() {
+            lines.push(formatter.line("Utility provider", vec![Span::from(provider.clone())]));
+        }
+        if self.show_utility_model_responses {
+            let mut utility_model_responses_spans =
+                vec![Span::from(self.utility_model_responses_name.clone())];
+            if !self.utility_model_responses_configured {
+                utility_model_responses_spans.push(Span::from(" (inherit)").dim());
+            }
+            lines.push(formatter.line("Resp. util model", utility_model_responses_spans));
+            if let Some(provider) = self.utility_model_responses_provider.as_ref() {
+                lines.push(formatter.line("Resp. util prov", vec![Span::from(provider.clone())]));
+            }
+        }
         if let Some(model_provider) = self.model_provider.as_ref() {
             lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));
         }
@@ -550,6 +725,27 @@ fn format_model_provider(config: &Config) -> Option<String> {
     let name = provider.name.trim();
     let provider_name = if name.is_empty() {
         config.model_provider_id.as_str()
+    } else {
+        name
+    };
+    let base_url = provider.base_url.as_deref().and_then(sanitize_base_url);
+    let is_default_openai = provider.is_openai() && base_url.is_none();
+    if is_default_openai {
+        return None;
+    }
+
+    Some(match base_url {
+        Some(base_url) => format!("{provider_name} - {base_url}"),
+        None => provider_name.to_string(),
+    })
+}
+
+fn format_utility_model_provider(config: &Config, model_slug: &str) -> Option<String> {
+    let (provider_id, provider) = codex_core::utility_provider_for_model_slug(config, model_slug)?;
+
+    let name = provider.name.trim();
+    let provider_name = if name.is_empty() {
+        provider_id.as_str()
     } else {
         name
     };

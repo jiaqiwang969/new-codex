@@ -13,6 +13,10 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    TeamProfile,
+    TeamVouch,
+    ModelSub,
+    ModelSubResponses,
     Approvals,
     Permissions,
     #[strum(serialize = "setup-default-sandbox")]
@@ -89,6 +93,18 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::TeamProfile => {
+                "apply a one-click collaboration preset for leader + utility/memory routing"
+            }
+            SlashCommand::TeamVouch => {
+                "record win/loss verdicts (including duel comparisons) for team profile routing"
+            }
+            SlashCommand::ModelSub => {
+                "choose utility model for internal tasks plus default/explorer sub-agents"
+            }
+            SlashCommand::ModelSubResponses => {
+                "choose Responses fallback utility model when needed"
+            }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (experimental)",
@@ -129,6 +145,9 @@ impl SlashCommand {
             self,
             SlashCommand::Review
                 | SlashCommand::Rename
+                | SlashCommand::TeamProfile
+                | SlashCommand::TeamVouch
+                | SlashCommand::ModelSub
                 | SlashCommand::Plan
                 | SlashCommand::RalphLoop
                 | SlashCommand::RefImage
@@ -150,6 +169,10 @@ impl SlashCommand {
             | SlashCommand::Compact
             // | SlashCommand::Undo
             | SlashCommand::Model
+            | SlashCommand::TeamProfile
+            | SlashCommand::TeamVouch
+            | SlashCommand::ModelSub
+            | SlashCommand::ModelSubResponses
             | SlashCommand::Personality
             | SlashCommand::Approvals
             | SlashCommand::Permissions

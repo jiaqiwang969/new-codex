@@ -19,6 +19,8 @@ use crate::app_event::FeedbackCategory;
 use crate::app_event_sender::AppEventSender;
 use crate::history_cell;
 use crate::render::renderable::Renderable;
+use crate::team_profile_vouch::TeamProfileTaskBucket;
+use crate::team_profile_vouch::TeamProfileVouchVerdict;
 use codex_core::protocol::SessionSource;
 
 use super::CancellationEvent;
@@ -86,6 +88,11 @@ impl FeedbackNoteView {
             None
         } else {
             Some(note.as_str())
+        };
+        let vouch_note = if note.is_empty() {
+            None
+        } else {
+            Some(note.clone())
         };
         let rollout_path_ref = self.rollout_path.as_deref();
         let classification = feedback_classification(self.category);
@@ -158,6 +165,13 @@ impl FeedbackNoteView {
                 self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                     history_cell::PlainHistoryCell::new(lines),
                 )));
+                if let Some(verdict) = vouch_verdict_for_feedback(self.category) {
+                    self.app_event_tx.send(AppEvent::RecordTeamProfileVouch {
+                        verdict,
+                        task_bucket: vouch_task_bucket_for_feedback(self.category),
+                        note: vouch_note,
+                    });
+                }
             }
             Err(e) => {
                 self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
@@ -371,6 +385,27 @@ fn feedback_classification(category: FeedbackCategory) -> &'static str {
         FeedbackCategory::Bug => "bug",
         FeedbackCategory::SafetyCheck => "safety_check",
         FeedbackCategory::Other => "other",
+    }
+}
+
+fn vouch_verdict_for_feedback(category: FeedbackCategory) -> Option<TeamProfileVouchVerdict> {
+    match category {
+        FeedbackCategory::GoodResult => Some(TeamProfileVouchVerdict::Win),
+        FeedbackCategory::BadResult | FeedbackCategory::Bug | FeedbackCategory::SafetyCheck => {
+            Some(TeamProfileVouchVerdict::Loss)
+        }
+        FeedbackCategory::Other => None,
+    }
+}
+
+fn vouch_task_bucket_for_feedback(category: FeedbackCategory) -> Option<TeamProfileTaskBucket> {
+    match category {
+        FeedbackCategory::GoodResult | FeedbackCategory::BadResult => {
+            Some(TeamProfileTaskBucket::General)
+        }
+        FeedbackCategory::Bug => Some(TeamProfileTaskBucket::Debug),
+        FeedbackCategory::SafetyCheck => Some(TeamProfileTaskBucket::Review),
+        FeedbackCategory::Other => None,
     }
 }
 
@@ -679,6 +714,51 @@ mod tests {
         assert_eq!(
             bug_url_non_employee.as_deref(),
             Some(expected_external_url.as_str())
+        );
+    }
+
+    #[test]
+    fn feedback_categories_map_to_vouch_verdicts() {
+        assert_eq!(
+            vouch_verdict_for_feedback(FeedbackCategory::GoodResult),
+            Some(TeamProfileVouchVerdict::Win)
+        );
+        assert_eq!(
+            vouch_verdict_for_feedback(FeedbackCategory::BadResult),
+            Some(TeamProfileVouchVerdict::Loss)
+        );
+        assert_eq!(
+            vouch_verdict_for_feedback(FeedbackCategory::Bug),
+            Some(TeamProfileVouchVerdict::Loss)
+        );
+        assert_eq!(
+            vouch_verdict_for_feedback(FeedbackCategory::SafetyCheck),
+            Some(TeamProfileVouchVerdict::Loss)
+        );
+        assert_eq!(vouch_verdict_for_feedback(FeedbackCategory::Other), None);
+    }
+
+    #[test]
+    fn feedback_categories_map_to_vouch_task_buckets() {
+        assert_eq!(
+            vouch_task_bucket_for_feedback(FeedbackCategory::GoodResult),
+            Some(TeamProfileTaskBucket::General)
+        );
+        assert_eq!(
+            vouch_task_bucket_for_feedback(FeedbackCategory::BadResult),
+            Some(TeamProfileTaskBucket::General)
+        );
+        assert_eq!(
+            vouch_task_bucket_for_feedback(FeedbackCategory::Bug),
+            Some(TeamProfileTaskBucket::Debug)
+        );
+        assert_eq!(
+            vouch_task_bucket_for_feedback(FeedbackCategory::SafetyCheck),
+            Some(TeamProfileTaskBucket::Review)
+        );
+        assert_eq!(
+            vouch_task_bucket_for_feedback(FeedbackCategory::Other),
+            None
         );
     }
 }

@@ -1985,6 +1985,187 @@ impl App {
             AppEvent::OpenFeedbackConsent { category } => {
                 self.chat_widget.open_feedback_consent(category);
             }
+            AppEvent::RecordTeamProfileVouch {
+                verdict,
+                task_bucket,
+                note,
+            } => {
+                if let Some(profile) = crate::team_profile::profile_for_config(&self.config) {
+                    match crate::team_profile_vouch::record_team_profile_vouch(
+                        &self.config.codex_home,
+                        profile.key,
+                        verdict,
+                        task_bucket,
+                        note.as_deref(),
+                    ) {
+                        Ok(entry) => {
+                            tracing::info!(
+                                profile = profile.key,
+                                task_bucket = task_bucket.map(|bucket| bucket.key()),
+                                wins = entry.wins,
+                                losses = entry.losses,
+                                "updated team profile vouch ledger"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                profile = profile.key,
+                                error = %err,
+                                "failed to update team profile vouch ledger"
+                            );
+                        }
+                    }
+                }
+            }
+            AppEvent::RecordTeamProfileDuelVouch {
+                winner,
+                loser,
+                task_bucket,
+                note,
+            } => {
+                let winner_profile = crate::team_profile::profile_for_preset(winner);
+                let loser_profile = crate::team_profile::profile_for_preset(loser);
+                if winner_profile.key == loser_profile.key {
+                    tracing::warn!(
+                        profile = winner_profile.key,
+                        "ignoring duel vouch event where winner and loser are identical"
+                    );
+                } else {
+                    let winner_result = crate::team_profile_vouch::record_team_profile_vouch(
+                        &self.config.codex_home,
+                        winner_profile.key,
+                        crate::team_profile_vouch::TeamProfileVouchVerdict::Win,
+                        task_bucket,
+                        note.as_deref(),
+                    );
+                    let loser_result = crate::team_profile_vouch::record_team_profile_vouch(
+                        &self.config.codex_home,
+                        loser_profile.key,
+                        crate::team_profile_vouch::TeamProfileVouchVerdict::Loss,
+                        task_bucket,
+                        note.as_deref(),
+                    );
+                    match (winner_result, loser_result) {
+                        (Ok(winner_entry), Ok(loser_entry)) => {
+                            tracing::info!(
+                                winner = winner_profile.key,
+                                loser = loser_profile.key,
+                                task_bucket = task_bucket.map(|bucket| bucket.key()),
+                                winner_wins = winner_entry.wins,
+                                winner_losses = winner_entry.losses,
+                                loser_wins = loser_entry.wins,
+                                loser_losses = loser_entry.losses,
+                                "updated team profile duel vouch ledger"
+                            );
+                        }
+                        (winner_result, loser_result) => {
+                            if let Err(err) = winner_result {
+                                tracing::warn!(
+                                    profile = winner_profile.key,
+                                    error = %err,
+                                    "failed to update winner duel vouch"
+                                );
+                            }
+                            if let Err(err) = loser_result {
+                                tracing::warn!(
+                                    profile = loser_profile.key,
+                                    error = %err,
+                                    "failed to update loser duel vouch"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            AppEvent::RecordModelSubVouch {
+                model_sub,
+                verdict,
+                task_bucket,
+                note,
+            } => {
+                match crate::model_sub_vouch::record_model_sub_vouch(
+                    &self.config.codex_home,
+                    &model_sub,
+                    verdict,
+                    task_bucket,
+                    note.as_deref(),
+                ) {
+                    Ok(entry) => {
+                        tracing::info!(
+                            model_sub = model_sub.as_str(),
+                            task_bucket = task_bucket.map(|bucket| bucket.key()),
+                            wins = entry.wins,
+                            losses = entry.losses,
+                            "updated model-sub vouch ledger"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            model_sub = model_sub.as_str(),
+                            error = %err,
+                            "failed to update model-sub vouch ledger"
+                        );
+                    }
+                }
+            }
+            AppEvent::RecordModelSubDuelVouch {
+                winner_model_sub,
+                loser_model_sub,
+                task_bucket,
+                note,
+            } => {
+                if winner_model_sub == loser_model_sub {
+                    tracing::warn!(
+                        model_sub = winner_model_sub.as_str(),
+                        "ignoring model-sub duel event where winner and loser are identical"
+                    );
+                } else {
+                    let winner_result = crate::model_sub_vouch::record_model_sub_vouch(
+                        &self.config.codex_home,
+                        &winner_model_sub,
+                        crate::team_profile_vouch::TeamProfileVouchVerdict::Win,
+                        task_bucket,
+                        note.as_deref(),
+                    );
+                    let loser_result = crate::model_sub_vouch::record_model_sub_vouch(
+                        &self.config.codex_home,
+                        &loser_model_sub,
+                        crate::team_profile_vouch::TeamProfileVouchVerdict::Loss,
+                        task_bucket,
+                        note.as_deref(),
+                    );
+                    match (winner_result, loser_result) {
+                        (Ok(winner_entry), Ok(loser_entry)) => {
+                            tracing::info!(
+                                winner_model_sub = winner_model_sub.as_str(),
+                                loser_model_sub = loser_model_sub.as_str(),
+                                task_bucket = task_bucket.map(|bucket| bucket.key()),
+                                winner_wins = winner_entry.wins,
+                                winner_losses = winner_entry.losses,
+                                loser_wins = loser_entry.wins,
+                                loser_losses = loser_entry.losses,
+                                "updated model-sub duel vouch ledger"
+                            );
+                        }
+                        (winner_result, loser_result) => {
+                            if let Err(err) = winner_result {
+                                tracing::warn!(
+                                    model_sub = winner_model_sub.as_str(),
+                                    error = %err,
+                                    "failed to update winner model-sub duel vouch"
+                                );
+                            }
+                            if let Err(err) = loser_result {
+                                tracing::warn!(
+                                    model_sub = loser_model_sub.as_str(),
+                                    error = %err,
+                                    "failed to update loser model-sub duel vouch"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             AppEvent::LaunchExternalEditor => {
                 if self.chat_widget.external_editor_state() == ExternalEditorState::Active {
                     self.launch_external_editor(tui).await;
@@ -2328,6 +2509,160 @@ impl App {
                         } else {
                             self.chat_widget
                                 .add_error_message(format!("Failed to save default model: {err}"));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistModelSubSelection { model_sub } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_model_sub(model_sub.as_deref())
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.model_sub = model_sub.clone();
+                        self.chat_widget.set_model_sub(model_sub.clone());
+                        let mut message = if let Some(selected) = model_sub.as_deref() {
+                            format!("Utility/sub-agent model changed to {selected}")
+                        } else {
+                            "Utility/sub-agent model override cleared (using task defaults)"
+                                .to_string()
+                        };
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist utility model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save utility model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to update utility model override: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistTeamProfileSelection { preset } => {
+                let profile = self.active_profile.as_deref();
+                let team_profile = crate::team_profile::profile_for_preset(preset);
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_model(Some(team_profile.leader_model), None)
+                    .set_model_sub(Some(team_profile.model_sub))
+                    .set_model_sub_responses(Some(team_profile.model_sub_responses))
+                    .set_memories_phase_models(
+                        Some(team_profile.phase_1_model),
+                        Some(team_profile.phase_2_model),
+                    )
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.model = Some(team_profile.leader_model.to_string());
+                        self.config.model_sub = Some(team_profile.model_sub.to_string());
+                        self.config.model_sub_responses =
+                            Some(team_profile.model_sub_responses.to_string());
+                        self.config.memories.phase_1_model =
+                            Some(team_profile.phase_1_model.to_string());
+                        self.config.memories.phase_2_model =
+                            Some(team_profile.phase_2_model.to_string());
+                        self.chat_widget.set_model(team_profile.leader_model, None);
+                        self.chat_widget
+                            .set_model_sub(Some(team_profile.model_sub.to_string()));
+                        self.chat_widget.set_model_sub_responses(Some(
+                            team_profile.model_sub_responses.to_string(),
+                        ));
+                        let mut message = format!(
+                            "Team profile set to {} (leader_model={}, model_sub={}, responses_fallback={}, memories.phase_1_model={}, memories.phase_2_model={})",
+                            team_profile.label,
+                            team_profile.leader_model,
+                            team_profile.model_sub,
+                            team_profile.model_sub_responses,
+                            team_profile.phase_1_model,
+                            team_profile.phase_2_model
+                        );
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist team profile selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save team profile for `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget
+                                .add_error_message(format!("Failed to save team profile: {err}"));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistModelSubResponsesSelection {
+                model_sub_responses,
+            } => {
+                let profile = self.active_profile.as_deref();
+                match ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_model_sub_responses(model_sub_responses.as_deref())
+                    .apply()
+                    .await
+                {
+                    Ok(()) => {
+                        self.config.model_sub_responses = model_sub_responses.clone();
+                        self.chat_widget
+                            .set_model_sub_responses(model_sub_responses.clone());
+                        let effective =
+                            codex_core::effective_responses_utility_model_slug(&self.config);
+                        let mut message = if model_sub_responses.is_some() {
+                            format!("Responses fallback utility model changed to {effective}")
+                        } else {
+                            format!("Responses fallback utility model set to inherit ({effective})")
+                        };
+                        if let Some(profile) = profile {
+                            message.push_str(" for ");
+                            message.push_str(profile);
+                            message.push_str(" profile");
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                        self.app_event_tx
+                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist Responses utility model selection"
+                        );
+                        if let Some(profile) = profile {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save Responses utility model for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default Responses utility model: {err}"
+                            ));
                         }
                     }
                 }
