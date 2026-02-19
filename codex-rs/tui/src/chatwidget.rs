@@ -72,6 +72,7 @@ use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
 use codex_core::protocol::CodexErrorInfo;
+use codex_core::protocol::CollabAgentSpawnEndEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::DeprecationNoticeEvent;
 use codex_core::protocol::ErrorEvent;
@@ -202,6 +203,7 @@ use crate::history_cell::WebSearchCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::markdown::append_markdown;
+use crate::model_sub_vouch;
 use crate::multi_agents;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
@@ -211,6 +213,8 @@ use crate::render::renderable::RenderableExt;
 use crate::render::renderable::RenderableItem;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
+use crate::team_profile;
+use crate::team_profile_vouch;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
@@ -256,6 +260,12 @@ struct RunningCommand {
     command: Vec<String>,
     parsed_cmd: Vec<ParsedCommand>,
     source: ExecCommandSource,
+}
+
+#[derive(Clone, Debug)]
+struct KnownCollabAgentChange {
+    thread_id: String,
+    previous: Option<multi_agents::AgentMetadata>,
 }
 
 struct UnifiedExecProcessSummary {
@@ -518,6 +528,10 @@ pub(crate) struct ChatWidget {
     // Stream lifecycle controller for proposed plan output.
     plan_stream_controller: Option<PlanStreamController>,
     running_commands: HashMap<String, RunningCommand>,
+    known_collab_agents: HashMap<String, multi_agents::AgentMetadata>,
+    known_collab_agent_changes_by_turn: Vec<Vec<KnownCollabAgentChange>>,
+    current_turn_known_collab_agent_changes: Vec<KnownCollabAgentChange>,
+    current_turn_known_collab_agent_seen: HashSet<String>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
     skills_initial_state: Option<HashMap<PathBuf, bool>>,
@@ -977,6 +991,14 @@ impl ChatWidget {
         self.refresh_status_line();
     }
 
+    pub(crate) fn set_model_sub(&mut self, model_sub: Option<String>) {
+        self.config.model_sub = model_sub;
+    }
+
+    pub(crate) fn set_model_sub_responses(&mut self, model_sub_responses: Option<String>) {
+        self.config.model_sub_responses = model_sub_responses;
+    }
+
     /// Stores async git-branch lookup results for the current status-line cwd.
     ///
     /// Results are dropped when they target an out-of-date cwd to avoid rendering stale branch
@@ -1302,7 +1324,76 @@ impl ChatWidget {
 
     // Raw reasoning uses the same flow as summarized reasoning
 
+    fn remember_spawned_collab_agent(&mut self, ev: &CollabAgentSpawnEndEvent) {
+        let Some(thread_id) = ev.new_thread_id.as_ref() else {
+            return;
+        };
+        let metadata = multi_agents::AgentMetadata {
+            agent_type: ev.agent_type.clone(),
+            model: ev.model.clone(),
+            model_provider_id: ev.model_provider_id.clone(),
+        };
+        if metadata.agent_type.is_none()
+            && metadata.model.is_none()
+            && metadata.model_provider_id.is_none()
+        {
+            return;
+        }
+
+        let thread_id = thread_id.to_string();
+        if self
+            .current_turn_known_collab_agent_seen
+            .insert(thread_id.clone())
+        {
+            self.current_turn_known_collab_agent_changes
+                .push(KnownCollabAgentChange {
+                    thread_id: thread_id.clone(),
+                    previous: self.known_collab_agents.get(&thread_id).cloned(),
+                });
+        }
+        self.known_collab_agents.insert(thread_id.clone(), metadata);
+    }
+
+    fn seal_known_collab_agents_turn(&mut self) {
+        if self.current_turn_known_collab_agent_changes.is_empty() {
+            return;
+        }
+        self.known_collab_agent_changes_by_turn.push(std::mem::take(
+            &mut self.current_turn_known_collab_agent_changes,
+        ));
+        self.current_turn_known_collab_agent_seen.clear();
+    }
+
+    fn rollback_known_collab_agents(&mut self, num_turns: u32) {
+        self.seal_known_collab_agents_turn();
+        let rollback_turns = usize::try_from(num_turns).unwrap_or(usize::MAX);
+        if rollback_turns >= self.known_collab_agent_changes_by_turn.len() {
+            self.known_collab_agent_changes_by_turn.clear();
+            self.known_collab_agents.clear();
+            return;
+        }
+
+        let drain_start = self
+            .known_collab_agent_changes_by_turn
+            .len()
+            .saturating_sub(rollback_turns);
+        let drained = self
+            .known_collab_agent_changes_by_turn
+            .drain(drain_start..)
+            .collect::<Vec<_>>();
+        for turn_changes in drained.into_iter().rev() {
+            for change in turn_changes.into_iter().rev() {
+                if let Some(previous) = change.previous {
+                    self.known_collab_agents.insert(change.thread_id, previous);
+                } else {
+                    self.known_collab_agents.remove(&change.thread_id);
+                }
+            }
+        }
+    }
+
     fn on_task_started(&mut self) {
+        self.seal_known_collab_agents_turn();
         self.agent_turn_running = true;
         self.turn_sleep_inhibitor.set_turn_running(true);
         self.saw_plan_update_this_turn = false;
@@ -1328,6 +1419,7 @@ impl ChatWidget {
     }
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
+        self.seal_known_collab_agents_turn();
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
         if let Some(mut controller) = self.plan_stream_controller.take()
@@ -2670,6 +2762,10 @@ impl ChatWidget {
             stream_controller: None,
             plan_stream_controller: None,
             running_commands: HashMap::new(),
+            known_collab_agents: HashMap::new(),
+            known_collab_agent_changes_by_turn: Vec::new(),
+            current_turn_known_collab_agent_changes: Vec::new(),
+            current_turn_known_collab_agent_seen: HashSet::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
@@ -2844,6 +2940,10 @@ impl ChatWidget {
             stream_controller: None,
             plan_stream_controller: None,
             running_commands: HashMap::new(),
+            known_collab_agents: HashMap::new(),
+            known_collab_agent_changes_by_turn: Vec::new(),
+            current_turn_known_collab_agent_changes: Vec::new(),
+            current_turn_known_collab_agent_seen: HashSet::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
@@ -3007,6 +3107,10 @@ impl ChatWidget {
             stream_controller: None,
             plan_stream_controller: None,
             running_commands: HashMap::new(),
+            known_collab_agents: HashMap::new(),
+            known_collab_agent_changes_by_turn: Vec::new(),
+            current_turn_known_collab_agent_changes: Vec::new(),
+            current_turn_known_collab_agent_seen: HashSet::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,
@@ -3341,6 +3445,22 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
             }
+            SlashCommand::TeamProfile => {
+                self.open_team_profile_popup();
+            }
+            SlashCommand::TeamVouch => {
+                self.add_info_message(
+                    "Usage: /team-vouch <win|loss> [general|debug|review] [note]\n       /team-vouch duel <winner> <loser> [general|debug|review] [note]\n       /team-vouch model <win|loss> <model> [general|debug|review] [note]\n       /team-vouch model-duel <winner_model> <loser_model> [general|debug|review] [note]"
+                        .to_string(),
+                    Some("Example: /team-vouch model-duel claude-sonnet-4-6 gpt-5.2-codex debug better fix".to_string()),
+                );
+            }
+            SlashCommand::ModelSub => {
+                self.open_model_sub_popup();
+            }
+            SlashCommand::ModelSubResponses => {
+                self.open_model_sub_responses_popup();
+            }
             SlashCommand::Personality => {
                 self.open_personality_popup();
             }
@@ -3617,6 +3737,269 @@ impl ChatWidget {
                 self.request_redraw();
                 self.app_event_tx
                     .send(AppEvent::CodexOp(Op::SetThreadName { name }));
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::ModelSub if !trimmed.is_empty() => {
+                let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+                    Ok(models) => models,
+                    Err(_) => {
+                        self.add_error_message(
+                            "Models are being updated; please try /model-sub again in a moment."
+                                .to_string(),
+                        );
+                        self.bottom_pane.drain_pending_submission_state();
+                        return;
+                    }
+                };
+                let available_models = presets
+                    .into_iter()
+                    .filter(|preset| preset.show_in_picker)
+                    .map(|preset| preset.model)
+                    .collect::<Vec<_>>();
+                let normalized_selector = Self::normalize_team_profile_selector(trimmed);
+                if normalized_selector == "inherit"
+                    || normalized_selector == "clear"
+                    || normalized_selector == "none"
+                {
+                    self.app_event_tx
+                        .send(AppEvent::PersistModelSubSelection { model_sub: None });
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                }
+
+                let auto_selector = if normalized_selector == "auto"
+                    || normalized_selector == "recommended"
+                {
+                    Some(None)
+                } else if let Some((base, bucket_selector)) = normalized_selector.split_once(':') {
+                    if base == "auto" || base == "recommended" {
+                        team_profile_vouch::TeamProfileTaskBucket::from_selector(bucket_selector)
+                            .map(Some)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(task_bucket) = auto_selector {
+                    let vouch_snapshot =
+                        model_sub_vouch::load_model_sub_vouch(&self.config.codex_home);
+                    if let Some(model_sub) = model_sub_vouch::recommended_model_sub(
+                        &vouch_snapshot,
+                        task_bucket,
+                        available_models.iter().map(String::as_str),
+                    ) {
+                        self.app_event_tx.send(AppEvent::PersistModelSubSelection {
+                            model_sub: Some(model_sub.clone()),
+                        });
+                        let mut message =
+                            format!("Recommended utility/sub-agent model: {model_sub}");
+                        if let Some(task_bucket) = task_bucket {
+                            message.push_str(" [");
+                            message.push_str(task_bucket.label());
+                            message.push(']');
+                        }
+                        self.add_info_message(message, None);
+                    } else {
+                        let mut error = "No model-sub vouch signal yet; run `/team-vouch model ...` or `/team-vouch model-duel ...` first.".to_string();
+                        if let Some(load_error) = vouch_snapshot.load_error() {
+                            error.push_str(" (");
+                            error.push_str(load_error);
+                            error.push(')');
+                        }
+                        self.add_error_message(error);
+                    }
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                }
+
+                if available_models.iter().any(|model| model == trimmed) {
+                    self.app_event_tx.send(AppEvent::PersistModelSubSelection {
+                        model_sub: Some(trimmed.to_string()),
+                    });
+                } else {
+                    self.add_error_message(
+                        "Usage: /model-sub <auto|recommended|auto:general|auto:debug|auto:review|recommended:general|recommended:debug|recommended:review|inherit|clear|model-slug>"
+                            .to_string(),
+                    );
+                }
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::TeamProfile if !trimmed.is_empty() => {
+                let vouch_snapshot =
+                    team_profile_vouch::load_team_profile_vouch(&self.config.codex_home);
+                if let Some(profile) = Self::resolve_team_profile_selector(trimmed, &vouch_snapshot)
+                {
+                    self.app_event_tx
+                        .send(AppEvent::PersistTeamProfileSelection {
+                            preset: profile.preset,
+                        });
+                } else {
+                    self.add_error_message(
+                        "Usage: /team-profile <auto|recommended|auto:general|auto:debug|auto:review|recommended:general|recommended:debug|recommended:review|leader-quality|leader-fast|leader-cost-save|deep-reasoning>"
+                            .to_string(),
+                    );
+                }
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::TeamVouch if !trimmed.is_empty() => {
+                let first_word = trimmed.split_whitespace().next();
+                if first_word.is_some_and(|word| word.eq_ignore_ascii_case("model-duel")) {
+                    let Some((winner_model_sub, loser_model_sub, task_bucket, note)) =
+                        Self::parse_team_vouch_model_duel_args(trimmed)
+                    else {
+                        self.add_error_message(
+                            "Usage: /team-vouch model-duel <winner_model> <loser_model> [general|debug|review] [note]"
+                                .to_string(),
+                        );
+                        self.bottom_pane.drain_pending_submission_state();
+                        return;
+                    };
+                    if winner_model_sub == loser_model_sub {
+                        self.add_error_message(
+                            "Winner and loser utility/sub-agent models must be different."
+                                .to_string(),
+                        );
+                        self.bottom_pane.drain_pending_submission_state();
+                        return;
+                    }
+                    self.app_event_tx.send(AppEvent::RecordModelSubDuelVouch {
+                        winner_model_sub: winner_model_sub.clone(),
+                        loser_model_sub: loser_model_sub.clone(),
+                        task_bucket,
+                        note: note.clone(),
+                    });
+                    let mut message = format!(
+                        "Recorded utility model duel: {winner_model_sub} > {loser_model_sub}"
+                    );
+                    if let Some(task_bucket) = task_bucket {
+                        message.push_str(" [");
+                        message.push_str(task_bucket.label());
+                        message.push(']');
+                    }
+                    if let Some(note) = note.as_deref() {
+                        message.push_str(": ");
+                        message.push_str(note);
+                    }
+                    self.add_info_message(message, None);
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                }
+                if first_word.is_some_and(|word| word.eq_ignore_ascii_case("model")) {
+                    let Some((verdict, model_sub, task_bucket, note)) =
+                        Self::parse_team_vouch_model_args(trimmed)
+                    else {
+                        self.add_error_message(
+                            "Usage: /team-vouch model <win|loss> <model> [general|debug|review] [note]"
+                                .to_string(),
+                        );
+                        self.bottom_pane.drain_pending_submission_state();
+                        return;
+                    };
+                    self.app_event_tx.send(AppEvent::RecordModelSubVouch {
+                        model_sub: model_sub.clone(),
+                        verdict,
+                        task_bucket,
+                        note: note.clone(),
+                    });
+                    let verdict_label = match verdict {
+                        team_profile_vouch::TeamProfileVouchVerdict::Win => "win",
+                        team_profile_vouch::TeamProfileVouchVerdict::Loss => "loss",
+                    };
+                    let mut message =
+                        format!("Recorded {verdict_label} for utility model {model_sub}");
+                    if let Some(task_bucket) = task_bucket {
+                        message.push_str(" [");
+                        message.push_str(task_bucket.label());
+                        message.push(']');
+                    }
+                    if let Some(note) = note.as_deref() {
+                        message.push_str(": ");
+                        message.push_str(note);
+                    }
+                    self.add_info_message(message, None);
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                }
+                if first_word.is_some_and(|word| word.eq_ignore_ascii_case("duel")) {
+                    let Some((winner, loser, task_bucket, note)) =
+                        Self::parse_team_vouch_duel_args(trimmed)
+                    else {
+                        self.add_error_message(
+                            "Usage: /team-vouch duel <winner> <loser> [general|debug|review] [note]"
+                                .to_string(),
+                        );
+                        self.bottom_pane.drain_pending_submission_state();
+                        return;
+                    };
+                    if winner.key == loser.key {
+                        self.add_error_message(
+                            "Winner and loser must be different team profiles.".to_string(),
+                        );
+                        self.bottom_pane.drain_pending_submission_state();
+                        return;
+                    }
+                    self.app_event_tx
+                        .send(AppEvent::RecordTeamProfileDuelVouch {
+                            winner: winner.preset,
+                            loser: loser.preset,
+                            task_bucket,
+                            note: note.clone(),
+                        });
+                    let mut message = format!("Recorded duel: {} > {}", winner.label, loser.label);
+                    if let Some(task_bucket) = task_bucket {
+                        message.push_str(" [");
+                        message.push_str(task_bucket.label());
+                        message.push(']');
+                    }
+                    if let Some(note) = note.as_deref() {
+                        message.push_str(": ");
+                        message.push_str(note);
+                    }
+                    self.add_info_message(message, None);
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                }
+
+                let Some((verdict, task_bucket, note)) = Self::parse_team_vouch_args(trimmed)
+                else {
+                    self.add_error_message(
+                        "Usage: /team-vouch <win|loss> [general|debug|review] [note]".to_string(),
+                    );
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                };
+                let Some(profile) = team_profile::profile_for_config(&self.config) else {
+                    self.add_error_message(
+                        "Current routing does not match a /team-profile preset; run /team-profile first."
+                            .to_string(),
+                    );
+                    self.bottom_pane.drain_pending_submission_state();
+                    return;
+                };
+                self.app_event_tx.send(AppEvent::RecordTeamProfileVouch {
+                    verdict,
+                    task_bucket,
+                    note: note.clone(),
+                });
+                let verdict_label = match verdict {
+                    team_profile_vouch::TeamProfileVouchVerdict::Win => "win",
+                    team_profile_vouch::TeamProfileVouchVerdict::Loss => "loss",
+                };
+                let mut message = format!(
+                    "Recorded {} for team profile {}",
+                    verdict_label, profile.label
+                );
+                if let Some(task_bucket) = task_bucket {
+                    message.push_str(" [");
+                    message.push_str(task_bucket.label());
+                    message.push(']');
+                }
+                if let Some(note) = note.as_deref() {
+                    message.push_str(": ");
+                    message.push_str(note);
+                }
+                self.add_info_message(message, None);
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
@@ -5175,28 +5558,45 @@ impl ChatWidget {
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
             EventMsg::CollabAgentSpawnBegin(_) => {}
-            EventMsg::CollabAgentSpawnEnd(ev) => self.on_collab_event(multi_agents::spawn_end(ev)),
+            EventMsg::CollabAgentSpawnEnd(ev) => {
+                self.remember_spawned_collab_agent(&ev);
+                self.on_collab_event(multi_agents::spawn_end(ev))
+            }
             EventMsg::CollabAgentInteractionBegin(_) => {}
             EventMsg::CollabAgentInteractionEnd(ev) => {
-                self.on_collab_event(multi_agents::interaction_end(ev))
+                self.on_collab_event(multi_agents::interaction_end(ev, &self.known_collab_agents))
             }
             EventMsg::CollabWaitingBegin(ev) => {
                 self.on_collab_event(multi_agents::waiting_begin(ev))
             }
-            EventMsg::CollabWaitingEnd(ev) => self.on_collab_event(multi_agents::waiting_end(ev)),
+            EventMsg::CollabWaitingEnd(ev) => {
+                self.on_collab_event(multi_agents::waiting_end(ev, &self.known_collab_agents))
+            }
             EventMsg::CollabCloseBegin(_) => {}
-            EventMsg::CollabCloseEnd(ev) => self.on_collab_event(multi_agents::close_end(ev)),
-            EventMsg::CollabResumeBegin(ev) => self.on_collab_event(multi_agents::resume_begin(ev)),
-            EventMsg::CollabResumeEnd(ev) => self.on_collab_event(multi_agents::resume_end(ev)),
+            EventMsg::CollabCloseEnd(ev) => {
+                self.on_collab_event(multi_agents::close_end(ev, &self.known_collab_agents))
+            }
+            EventMsg::CollabResumeBegin(ev) => {
+                self.on_collab_event(multi_agents::resume_begin(ev, &self.known_collab_agents))
+            }
+            EventMsg::CollabResumeEnd(ev) => {
+                self.on_collab_event(multi_agents::resume_end(ev, &self.known_collab_agents))
+            }
             EventMsg::ThreadRolledBack(rollback) => {
+                self.rollback_known_collab_agents(rollback.num_turns);
                 if from_replay {
                     self.app_event_tx.send(AppEvent::ApplyThreadRollback {
                         num_turns: rollback.num_turns,
                     });
                 }
             }
-            EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
+            EventMsg::RawResponseItem(ev) => {
+                // Avoid side effects (like saving images) when replaying persisted history.
+                if !from_replay {
+                    self.on_raw_response_item(ev);
+                }
+            }
+            EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
@@ -5888,6 +6288,517 @@ impl ChatWidget {
             }
         };
         self.open_model_popup_with_presets(presets);
+    }
+
+    fn parse_team_vouch_verdict(
+        token: &str,
+    ) -> Option<team_profile_vouch::TeamProfileVouchVerdict> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "win" | "wins" | "good" | "success" | "+" => {
+                Some(team_profile_vouch::TeamProfileVouchVerdict::Win)
+            }
+            "loss" | "losses" | "bad" | "fail" | "failure" | "-" => {
+                Some(team_profile_vouch::TeamProfileVouchVerdict::Loss)
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_explicit_team_profile_selector(selector: &str) -> Option<team_profile::TeamProfile> {
+        let selector = Self::normalize_team_profile_selector(selector);
+        team_profile::TEAM_PROFILES.iter().copied().find(|profile| {
+            [profile.key, profile.label, profile.popup_name]
+                .iter()
+                .any(|alias| Self::normalize_team_profile_selector(alias) == selector)
+        })
+    }
+
+    fn parse_team_vouch_duel_args(
+        args: &str,
+    ) -> Option<(
+        team_profile::TeamProfile,
+        team_profile::TeamProfile,
+        Option<team_profile_vouch::TeamProfileTaskBucket>,
+        Option<String>,
+    )> {
+        let mut words = args.split_whitespace();
+        if words.next()?.trim().to_ascii_lowercase() != "duel" {
+            return None;
+        }
+        let winner = Self::resolve_explicit_team_profile_selector(words.next()?)?;
+        let loser = Self::resolve_explicit_team_profile_selector(words.next()?)?;
+        let Some(next_word) = words.next() else {
+            return Some((winner, loser, None, None));
+        };
+        let next_word_normalized = next_word.to_ascii_lowercase();
+        if let Some(task_bucket) =
+            team_profile_vouch::TeamProfileTaskBucket::from_selector(&next_word_normalized)
+        {
+            let note = words.collect::<Vec<_>>().join(" ");
+            let note = (!note.is_empty()).then_some(note);
+            Some((winner, loser, Some(task_bucket), note))
+        } else {
+            let mut note_words = vec![next_word];
+            note_words.extend(words);
+            let note = note_words.join(" ");
+            Some((winner, loser, None, Some(note)))
+        }
+    }
+
+    fn parse_team_vouch_model_duel_args(
+        args: &str,
+    ) -> Option<(
+        String,
+        String,
+        Option<team_profile_vouch::TeamProfileTaskBucket>,
+        Option<String>,
+    )> {
+        let mut words = args.split_whitespace();
+        if words.next()?.trim().to_ascii_lowercase() != "model-duel" {
+            return None;
+        }
+        let winner_model_sub = words.next()?.to_string();
+        let loser_model_sub = words.next()?.to_string();
+        let Some(next_word) = words.next() else {
+            return Some((winner_model_sub, loser_model_sub, None, None));
+        };
+
+        let next_word_normalized = next_word.to_ascii_lowercase();
+        if let Some(task_bucket) =
+            team_profile_vouch::TeamProfileTaskBucket::from_selector(&next_word_normalized)
+        {
+            let note = words.collect::<Vec<_>>().join(" ");
+            let note = (!note.is_empty()).then_some(note);
+            Some((winner_model_sub, loser_model_sub, Some(task_bucket), note))
+        } else {
+            let mut note_words = vec![next_word];
+            note_words.extend(words);
+            let note = note_words.join(" ");
+            Some((winner_model_sub, loser_model_sub, None, Some(note)))
+        }
+    }
+
+    fn parse_team_vouch_model_args(
+        args: &str,
+    ) -> Option<(
+        team_profile_vouch::TeamProfileVouchVerdict,
+        String,
+        Option<team_profile_vouch::TeamProfileTaskBucket>,
+        Option<String>,
+    )> {
+        let mut words = args.split_whitespace();
+        if words.next()?.trim().to_ascii_lowercase() != "model" {
+            return None;
+        }
+        let verdict_token = words.next()?;
+        let verdict = Self::parse_team_vouch_verdict(verdict_token)?;
+        let model_sub = words.next()?.to_string();
+        let Some(next_word) = words.next() else {
+            return Some((verdict, model_sub, None, None));
+        };
+
+        let next_word_normalized = next_word.to_ascii_lowercase();
+        if let Some(task_bucket) =
+            team_profile_vouch::TeamProfileTaskBucket::from_selector(&next_word_normalized)
+        {
+            let note = words.collect::<Vec<_>>().join(" ");
+            let note = (!note.is_empty()).then_some(note);
+            Some((verdict, model_sub, Some(task_bucket), note))
+        } else {
+            let mut note_words = vec![next_word];
+            note_words.extend(words);
+            let note = note_words.join(" ");
+            Some((verdict, model_sub, None, Some(note)))
+        }
+    }
+
+    fn parse_team_vouch_args(
+        args: &str,
+    ) -> Option<(
+        team_profile_vouch::TeamProfileVouchVerdict,
+        Option<team_profile_vouch::TeamProfileTaskBucket>,
+        Option<String>,
+    )> {
+        let mut words = args.split_whitespace();
+        let verdict_token = words.next()?;
+        let verdict = Self::parse_team_vouch_verdict(verdict_token)?;
+        let Some(second_token) = words.next() else {
+            return Some((verdict, None, None));
+        };
+
+        let second_lower = second_token.to_ascii_lowercase();
+        if let Some(task_bucket) =
+            team_profile_vouch::TeamProfileTaskBucket::from_selector(second_lower.as_str())
+        {
+            let note = words.collect::<Vec<_>>().join(" ");
+            let note = (!note.is_empty()).then_some(note);
+            Some((verdict, Some(task_bucket), note))
+        } else {
+            let mut note_words = vec![second_token];
+            note_words.extend(words);
+            let note = note_words.join(" ");
+            Some((verdict, None, Some(note)))
+        }
+    }
+
+    fn normalize_team_profile_selector(value: &str) -> String {
+        value.trim().to_ascii_lowercase().replace([' ', '_'], "-")
+    }
+
+    fn resolve_team_profile_selector(
+        selector: &str,
+        vouch_snapshot: &team_profile_vouch::TeamProfileVouchSnapshot,
+    ) -> Option<team_profile::TeamProfile> {
+        let selector = Self::normalize_team_profile_selector(selector);
+        if let Some((base, bucket_selector)) = selector.split_once(':') {
+            if base != "auto" && base != "recommended" {
+                return None;
+            }
+            let task_bucket =
+                team_profile_vouch::TeamProfileTaskBucket::from_selector(bucket_selector)?;
+            return Some(team_profile::recommended_profile(
+                vouch_snapshot,
+                Some(task_bucket),
+            ));
+        }
+
+        if selector == "auto" || selector == "recommended" {
+            return Some(team_profile::recommended_profile(vouch_snapshot, None));
+        }
+
+        team_profile::TEAM_PROFILES.iter().copied().find(|profile| {
+            [profile.key, profile.label, profile.popup_name]
+                .iter()
+                .any(|alias| Self::normalize_team_profile_selector(alias) == selector)
+        })
+    }
+
+    fn format_team_profile_vouch(
+        profile: team_profile::TeamProfile,
+        vouch_snapshot: &team_profile_vouch::TeamProfileVouchSnapshot,
+        vouch_load_error: Option<&str>,
+    ) -> String {
+        let Some(entry) = vouch_snapshot.entry_for(profile.key) else {
+            return if let Some(err) = vouch_load_error {
+                format!("unavailable ({err})")
+            } else {
+                "no leader verdicts recorded yet".to_string()
+            };
+        };
+
+        let mut summary = format!(
+            "global +{} / -{} (net {:+})",
+            entry.wins,
+            entry.losses,
+            entry.net_score()
+        );
+        if let Some(recent) = entry.recent_signal(None)
+            && recent.sample_count() > 0
+        {
+            summary.push_str(" | recent +");
+            summary.push_str(&recent.wins.to_string());
+            summary.push_str(" / -");
+            summary.push_str(&recent.losses.to_string());
+            summary.push_str(" (weighted ");
+            summary.push_str(&format!("{:+}", recent.weighted_score));
+            summary.push(')');
+        }
+        for task_bucket in team_profile_vouch::TeamProfileTaskBucket::ALL {
+            if let Some(task_entry) = entry.task_entry(task_bucket)
+                && task_entry.sample_count() > 0
+            {
+                summary.push_str(" | ");
+                summary.push_str(task_bucket.label());
+                summary.push_str(" +");
+                summary.push_str(&task_entry.wins.to_string());
+                summary.push_str(" / -");
+                summary.push_str(&task_entry.losses.to_string());
+                summary.push_str(" (net ");
+                summary.push_str(&format!("{:+}", task_entry.net_score()));
+                summary.push(')');
+                if let Some(recent) = entry.recent_signal(Some(task_bucket))
+                    && recent.sample_count() > 0
+                {
+                    summary.push_str(" [recent +");
+                    summary.push_str(&recent.wins.to_string());
+                    summary.push_str(" / -");
+                    summary.push_str(&recent.losses.to_string());
+                    summary.push_str(", weighted ");
+                    summary.push_str(&format!("{:+}", recent.weighted_score));
+                    summary.push(']');
+                }
+            }
+        }
+        if let Some(note) = entry.note.as_deref()
+            && !note.is_empty()
+        {
+            summary.push_str(" | note: ");
+            summary.push_str(note);
+        }
+        summary
+    }
+
+    pub(crate) fn open_team_profile_popup(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Team profile selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let vouch_snapshot = team_profile_vouch::load_team_profile_vouch(&self.config.codex_home);
+        let vouch_load_error = vouch_snapshot.load_error().map(ToOwned::to_owned);
+        let recommended = team_profile::recommended_profile(&vouch_snapshot, None);
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+        for profile in team_profile::TEAM_PROFILES {
+            let strengths = profile.strengths.join("; ");
+            let tradeoffs = profile.tradeoffs.join("; ");
+            let vouch = Self::format_team_profile_vouch(
+                profile,
+                &vouch_snapshot,
+                vouch_load_error.as_deref(),
+            );
+            let details = format!(
+                "{description}\nvouch: {vouch}\nstrengths: {strengths}\ntradeoffs: {tradeoffs}\nevidence: {evidence}\nleader_model={leader_model}, model_sub={model_sub}, model_sub_responses={model_sub_responses}, memories.phase_1_model={phase_1_model}, memories.phase_2_model={phase_2_model}",
+                description = profile.description,
+                vouch = vouch,
+                strengths = strengths,
+                tradeoffs = tradeoffs,
+                evidence = profile.evidence,
+                leader_model = profile.leader_model,
+                model_sub = profile.model_sub,
+                model_sub_responses = profile.model_sub_responses,
+                phase_1_model = profile.phase_1_model,
+                phase_2_model = profile.phase_2_model
+            );
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistTeamProfileSelection {
+                    preset: profile.preset,
+                });
+            })];
+            let is_current = profile.matches(
+                self.config.model.as_deref(),
+                self.config.model_sub.as_deref(),
+                self.config.model_sub_responses.as_deref(),
+                self.config.memories.phase_1_model.as_deref(),
+                self.config.memories.phase_2_model.as_deref(),
+            );
+            items.push(SelectionItem {
+                name: if profile.key == recommended.key {
+                    format!("{} (Recommended)", profile.popup_name)
+                } else {
+                    profile.popup_name.to_string()
+                },
+                description: Some(details),
+                is_current,
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        let header = self.model_menu_header(
+            "Select Team Profile",
+            "One-click presets for leader model plus utility/sub-agent and memories routing.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
+    }
+
+    /// Open a popup to choose the utility ("sub") model used for internal tasks.
+    pub(crate) fn open_model_sub_popup(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Model selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try /model-sub again in a moment."
+                        .to_string(),
+                    None,
+                );
+                return;
+            }
+        };
+        self.open_model_sub_popup_with_presets(presets);
+    }
+
+    pub(crate) fn open_model_sub_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
+        let configured = self.config.model_sub.as_deref();
+
+        let presets: Vec<ModelPreset> = presets
+            .into_iter()
+            .filter(|preset| preset.show_in_picker)
+            .collect();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        let inherit_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+            tx.send(AppEvent::PersistModelSubSelection { model_sub: None });
+        })];
+        items.push(SelectionItem {
+            name: "Inherit (task defaults)".to_string(),
+            description: Some(
+                "Use task defaults for internal jobs and for default spawned sub-agents."
+                    .to_string(),
+            ),
+            is_current: configured.is_none(),
+            actions: inherit_actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+
+        for preset in presets.into_iter() {
+            let description =
+                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let model = preset.model.clone();
+            let model_for_action = model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistModelSubSelection {
+                    model_sub: Some(model_for_action.clone()),
+                });
+            })];
+            items.push(SelectionItem {
+                name: preset.model,
+                description,
+                is_current: configured == Some(model.as_str()),
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        if let Some(configured) = configured
+            && !items.iter().any(|item| item.is_current)
+        {
+            self.add_info_message(
+                format!(
+                    "Current utility model ({configured}) is not listed in the picker. Edit config.toml to change it, or select a listed model."
+                ),
+                None,
+            );
+        }
+
+        let header = self.model_menu_header(
+            "Select Utility Model",
+            "Overrides internal-task model selection and default `spawn_agent` routing.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
+    }
+
+    /// Open a popup to choose the utility ("sub") model used for internal tasks that require the
+    /// Responses API (for example memory trace summarization).
+    pub(crate) fn open_model_sub_responses_popup(&mut self) {
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Model selection is disabled until startup completes.".to_string(),
+                None,
+            );
+            return;
+        }
+
+        let presets: Vec<ModelPreset> = match self.models_manager.try_list_models() {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try /model-sub-responses again in a moment."
+                        .to_string(),
+                    None,
+                );
+                return;
+            }
+        };
+        self.open_model_sub_responses_popup_with_presets(presets);
+    }
+
+    pub(crate) fn open_model_sub_responses_popup_with_presets(
+        &mut self,
+        presets: Vec<ModelPreset>,
+    ) {
+        let configured = self.config.model_sub_responses.as_deref();
+        let effective = codex_core::effective_responses_utility_model_slug(&self.config);
+
+        let presets: Vec<ModelPreset> = presets
+            .into_iter()
+            .filter(|preset| preset.show_in_picker)
+            .filter(|preset| codex_core::is_openai_model_slug(preset.model.as_str()))
+            .collect();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+
+        let inherit_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+            tx.send(AppEvent::PersistModelSubResponsesSelection {
+                model_sub_responses: None,
+            });
+        })];
+        items.push(SelectionItem {
+            name: format!("Inherit ({effective})"),
+            description: Some(
+                "Use the general utility/sub-agent model when it is Responses-compatible; otherwise fall back to the built-in default."
+                    .to_string(),
+            ),
+            is_current: configured.is_none(),
+            actions: inherit_actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+
+        for preset in presets.into_iter() {
+            let description =
+                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let model = preset.model.clone();
+            let model_for_action = model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistModelSubResponsesSelection {
+                    model_sub_responses: Some(model_for_action.clone()),
+                });
+            })];
+            items.push(SelectionItem {
+                name: preset.model,
+                description,
+                is_current: configured == Some(model.as_str()),
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        if configured.is_some() && !items.iter().any(|item| item.is_current) {
+            self.add_info_message(
+                format!(
+                    "Current Responses utility model ({effective}) is not listed in the picker. Edit config.toml to change it, or select a listed model."
+                ),
+                None,
+            );
+        }
+
+        let header = self.model_menu_header(
+            "Select Responses Utility Model",
+            "Fallback used by Responses-only internal tasks when the general utility/sub-agent model cannot be used.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
     }
 
     pub(crate) fn open_personality_popup(&mut self) {

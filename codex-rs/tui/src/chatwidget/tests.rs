@@ -29,8 +29,11 @@ use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
+use codex_core::protocol::AgentStatus;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::CollabAgentSpawnEndEvent;
+use codex_core::protocol::CollabWaitingEndEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
@@ -1614,6 +1617,10 @@ async fn make_chatwidget_manual(
         stream_controller: None,
         plan_stream_controller: None,
         running_commands: HashMap::new(),
+        known_collab_agents: HashMap::new(),
+        known_collab_agent_changes_by_turn: Vec::new(),
+        current_turn_known_collab_agent_changes: Vec::new(),
+        current_turn_known_collab_agent_seen: HashSet::new(),
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
@@ -2371,6 +2378,97 @@ async fn replayed_thread_rollback_emits_ordered_app_event() {
     }
 
     assert!(saw, "expected replay rollback app event");
+}
+
+#[tokio::test]
+async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_id() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+
+    chat.handle_codex_event(Event {
+        id: "turn-a-start".to_string(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-a".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "spawn-a".to_string(),
+        msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-a".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(receiver_thread_id),
+            prompt: "inspect old".to_string(),
+            status: AgentStatus::Running,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "turn-a-complete".to_string(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-a".to_string(),
+            last_agent_message: None,
+            memory: None,
+        }),
+    });
+
+    chat.handle_codex_event(Event {
+        id: "turn-b-start".to_string(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-b".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "spawn-b".to_string(),
+        msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-b".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("worker".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(receiver_thread_id),
+            prompt: "inspect new".to_string(),
+            status: AgentStatus::Running,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "rollback".to_string(),
+        msg: EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+    });
+
+    // Ignore prior spawn entries so we can assert only the final wait-complete row.
+    drain_insert_history(&mut rx);
+
+    let mut statuses = HashMap::new();
+    statuses.insert(receiver_thread_id, AgentStatus::Completed(None));
+    chat.handle_codex_event(Event {
+        id: "wait-end".to_string(),
+        msg: EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            call_id: "call-wait".to_string(),
+            sender_thread_id,
+            memory: None,
+            statuses,
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one wait-complete history cell");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("role=explorer"));
+    assert!(rendered.contains("model=claude-sonnet-4-6"));
+    assert!(rendered.contains("provider=anthropic"));
+    assert!(!rendered.contains("role=worker"));
+    assert!(!rendered.contains("model=claude-opus-4-6"));
 }
 
 #[tokio::test]
@@ -4956,6 +5054,595 @@ async fn model_selection_popup_snapshot() {
 
     let popup = render_bottom_popup(&chat, 80);
     assert_snapshot!("model_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn team_profile_selection_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model = Some("gpt-5.3-codex".to_string());
+    chat.config.model_sub = Some("claude-opus-4-6".to_string());
+    chat.config.model_sub_responses = Some("gpt-5.3-codex".to_string());
+    chat.config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
+    chat.config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
+
+    chat.open_team_profile_popup();
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert_snapshot!("team_profile_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn team_profile_selection_popup_prefers_vouched_profile_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let codex_home = tempdir().expect("tempdir");
+    let memories_dir = codex_home.path().join("memories");
+    std::fs::create_dir_all(&memories_dir).expect("create memories dir");
+    std::fs::write(
+        memories_dir.join("team_profile_vouch.json"),
+        r#"{
+  "profiles": {
+    "leader_fast": { "wins": 7, "losses": 2, "note": "fast and stable" }
+  }
+}"#,
+    )
+    .expect("write vouch file");
+    chat.config.codex_home = codex_home.path().to_path_buf();
+    chat.config.model = Some("gpt-5.3-codex".to_string());
+    chat.config.model_sub = Some("claude-opus-4-6".to_string());
+    chat.config.model_sub_responses = Some("gpt-5.3-codex".to_string());
+    chat.config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
+    chat.config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
+
+    chat.open_team_profile_popup();
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert_snapshot!(
+        "team_profile_selection_popup_prefers_vouched_profile",
+        popup
+    );
+}
+
+#[tokio::test]
+async fn team_profile_popup_enter_sends_persist_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.open_team_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistTeamProfileSelection { preset }) => {
+            assert_eq!(preset, crate::team_profile::TeamProfilePreset::ClaudeFirst);
+        }
+        other => panic!("expected PersistTeamProfileSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_profile_auto_arg_uses_vouch_recommendation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let codex_home = tempdir().expect("tempdir");
+    let memories_dir = codex_home.path().join("memories");
+    std::fs::create_dir_all(&memories_dir).expect("create memories dir");
+    std::fs::write(
+        memories_dir.join("team_profile_vouch.json"),
+        r#"{
+  "profiles": {
+    "leader_fast": { "wins": 5, "losses": 1 }
+  }
+}"#,
+    )
+    .expect("write vouch file");
+    chat.config.codex_home = codex_home.path().to_path_buf();
+
+    chat.dispatch_command_with_args(SlashCommand::TeamProfile, "auto".to_string(), Vec::new());
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistTeamProfileSelection { preset }) => {
+            assert_eq!(preset, crate::team_profile::TeamProfilePreset::Balanced);
+        }
+        other => panic!("expected PersistTeamProfileSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_profile_auto_prefers_recent_weighted_signal() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let codex_home = tempdir().expect("tempdir");
+    let memories_dir = codex_home.path().join("memories");
+    std::fs::create_dir_all(&memories_dir).expect("create memories dir");
+    std::fs::write(
+        memories_dir.join("team_profile_vouch.json"),
+        r#"{
+  "profiles": {
+    "leader_quality": {
+      "wins": 10,
+      "losses": 0,
+      "recent_events": [
+        { "verdict": "Win" },
+        { "verdict": "Loss" },
+        { "verdict": "Loss" }
+      ]
+    },
+    "leader_fast": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [
+        { "verdict": "Win" },
+        { "verdict": "Win" }
+      ]
+    }
+  }
+}"#,
+    )
+    .expect("write vouch file");
+    chat.config.codex_home = codex_home.path().to_path_buf();
+
+    chat.dispatch_command_with_args(SlashCommand::TeamProfile, "auto".to_string(), Vec::new());
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistTeamProfileSelection { preset }) => {
+            assert_eq!(preset, crate::team_profile::TeamProfilePreset::Balanced);
+        }
+        other => panic!("expected PersistTeamProfileSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_profile_auto_debug_arg_uses_debug_vouch_recommendation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let codex_home = tempdir().expect("tempdir");
+    let memories_dir = codex_home.path().join("memories");
+    std::fs::create_dir_all(&memories_dir).expect("create memories dir");
+    std::fs::write(
+        memories_dir.join("team_profile_vouch.json"),
+        r#"{
+  "profiles": {
+    "leader_quality": {
+      "wins": 3,
+      "losses": 0,
+      "by_task": { "debug": { "wins": 0, "losses": 2 } }
+    },
+    "leader_fast": {
+      "wins": 0,
+      "losses": 1,
+      "by_task": { "debug": { "wins": 4, "losses": 1 } }
+    }
+  }
+}"#,
+    )
+    .expect("write vouch file");
+    chat.config.codex_home = codex_home.path().to_path_buf();
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamProfile,
+        "auto:debug".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistTeamProfileSelection { preset }) => {
+            assert_eq!(preset, crate::team_profile::TeamProfilePreset::Balanced);
+        }
+        other => panic!("expected PersistTeamProfileSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_profile_named_arg_sends_matching_persist_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamProfile,
+        "leader-cost-save".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistTeamProfileSelection { preset }) => {
+            assert_eq!(preset, crate::team_profile::TeamProfilePreset::CostSave);
+        }
+        other => panic!("expected PersistTeamProfileSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_profile_invalid_arg_shows_usage_error() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamProfile,
+        "not-a-profile".to_string(),
+        Vec::new(),
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected usage error to be emitted for invalid /team-profile selector",
+    );
+    let blob = lines_to_single_string(cells.last().expect("usage error history cell"));
+    assert!(
+        blob.contains("Usage: /team-profile <auto|recommended|auto:general|auto:debug|auto:review|recommended:general|recommended:debug|recommended:review|leader-quality|leader-fast|leader-cost-save|deep-reasoning>"),
+        "expected usage guidance in error output, got: {blob}"
+    );
+}
+
+#[tokio::test]
+async fn team_vouch_with_bucket_sends_record_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model = Some("gpt-5.3-codex".to_string());
+    chat.config.model_sub = Some("claude-sonnet-4-6".to_string());
+    chat.config.model_sub_responses = Some("gpt-5.2-codex".to_string());
+    chat.config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
+    chat.config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "win debug fixed flaky parser".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::RecordTeamProfileVouch {
+            verdict,
+            task_bucket,
+            note,
+        }) => {
+            assert_eq!(
+                verdict,
+                crate::team_profile_vouch::TeamProfileVouchVerdict::Win
+            );
+            assert_eq!(
+                task_bucket,
+                Some(crate::team_profile_vouch::TeamProfileTaskBucket::Debug)
+            );
+            assert_eq!(note.as_deref(), Some("fixed flaky parser"));
+        }
+        other => panic!("expected RecordTeamProfileVouch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_vouch_without_profile_match_shows_error() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "loss debug timeout".to_string(),
+        Vec::new(),
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected /team-vouch to emit an error when no team profile is active",
+    );
+    let blob = lines_to_single_string(cells.last().expect("error history cell"));
+    assert!(
+        blob.contains("Current routing does not match a /team-profile preset"),
+        "expected missing profile error, got: {blob}"
+    );
+}
+
+#[tokio::test]
+async fn team_vouch_without_bucket_treats_remaining_text_as_note() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model = Some("gpt-5.2-codex".to_string());
+    chat.config.model_sub = Some("claude-sonnet-4-6".to_string());
+    chat.config.model_sub_responses = Some("gpt-5.2-codex".to_string());
+    chat.config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
+    chat.config.memories.phase_2_model = Some("claude-sonnet-4-6".to_string());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "loss got worse".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::RecordTeamProfileVouch {
+            verdict,
+            task_bucket,
+            note,
+        }) => {
+            assert_eq!(
+                verdict,
+                crate::team_profile_vouch::TeamProfileVouchVerdict::Loss
+            );
+            assert_eq!(task_bucket, None);
+            assert_eq!(note.as_deref(), Some("got worse"));
+        }
+        other => panic!("expected RecordTeamProfileVouch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_vouch_duel_sends_duel_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "duel leader-fast leader-quality debug faster and cleaner".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::RecordTeamProfileDuelVouch {
+            winner,
+            loser,
+            task_bucket,
+            note,
+        }) => {
+            assert_eq!(winner, crate::team_profile::TeamProfilePreset::Balanced);
+            assert_eq!(loser, crate::team_profile::TeamProfilePreset::ClaudeFirst);
+            assert_eq!(
+                task_bucket,
+                Some(crate::team_profile_vouch::TeamProfileTaskBucket::Debug)
+            );
+            assert_eq!(note.as_deref(), Some("faster and cleaner"));
+        }
+        other => panic!("expected RecordTeamProfileDuelVouch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_vouch_duel_rejects_identical_profiles() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "duel leader-fast leader-fast debug".to_string(),
+        Vec::new(),
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected /team-vouch duel identical profiles to emit an error",
+    );
+    let blob = lines_to_single_string(cells.last().expect("error history cell"));
+    assert!(
+        blob.contains("Winner and loser must be different team profiles"),
+        "expected duplicate-profile error, got: {blob}"
+    );
+}
+
+#[tokio::test]
+async fn team_vouch_model_with_bucket_sends_record_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "model win claude-sonnet-4-6 debug fixed parser".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::RecordModelSubVouch {
+            model_sub,
+            verdict,
+            task_bucket,
+            note,
+        }) => {
+            assert_eq!(model_sub, "claude-sonnet-4-6");
+            assert_eq!(
+                verdict,
+                crate::team_profile_vouch::TeamProfileVouchVerdict::Win
+            );
+            assert_eq!(
+                task_bucket,
+                Some(crate::team_profile_vouch::TeamProfileTaskBucket::Debug)
+            );
+            assert_eq!(note.as_deref(), Some("fixed parser"));
+        }
+        other => panic!("expected RecordModelSubVouch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_vouch_model_duel_sends_record_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamVouch,
+        "model-duel claude-sonnet-4-6 gpt-5.2-codex review safer output".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::RecordModelSubDuelVouch {
+            winner_model_sub,
+            loser_model_sub,
+            task_bucket,
+            note,
+        }) => {
+            assert_eq!(winner_model_sub, "claude-sonnet-4-6");
+            assert_eq!(loser_model_sub, "gpt-5.2-codex");
+            assert_eq!(
+                task_bucket,
+                Some(crate::team_profile_vouch::TeamProfileTaskBucket::Review)
+            );
+            assert_eq!(note.as_deref(), Some("safer output"));
+        }
+        other => panic!("expected RecordModelSubDuelVouch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn model_sub_auto_debug_uses_model_vouch_recommendation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let codex_home = tempdir().expect("tempdir");
+    let memories_dir = codex_home.path().join("memories");
+    std::fs::create_dir_all(&memories_dir).expect("create memories dir");
+    std::fs::write(
+        memories_dir.join("model_sub_vouch.json"),
+        r#"{
+  "models": {
+    "claude-sonnet-4-6": {
+      "wins": 8,
+      "losses": 0,
+      "by_task": { "debug": { "wins": 6, "losses": 0 } },
+      "recent_events": [
+        { "verdict": "Loss", "task_bucket": "debug" },
+        { "verdict": "Loss", "task_bucket": "debug" }
+      ]
+    },
+    "gpt-5.2-codex": {
+      "wins": 1,
+      "losses": 1,
+      "by_task": { "debug": { "wins": 1, "losses": 1 } },
+      "recent_events": [
+        { "verdict": "Win", "task_bucket": "debug" },
+        { "verdict": "Win", "task_bucket": "debug" }
+      ]
+    }
+  }
+}"#,
+    )
+    .expect("write model-sub vouch file");
+    chat.config.codex_home = codex_home.path().to_path_buf();
+
+    chat.dispatch_command_with_args(SlashCommand::ModelSub, "auto:debug".to_string(), Vec::new());
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistModelSubSelection { model_sub }) => {
+            assert_eq!(model_sub.as_deref(), Some("gpt-5.2-codex"));
+        }
+        other => panic!("expected PersistModelSubSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn team_profile_auto_debug_prefers_recent_weighted_signal() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let codex_home = tempdir().expect("tempdir");
+    let memories_dir = codex_home.path().join("memories");
+    std::fs::create_dir_all(&memories_dir).expect("create memories dir");
+    std::fs::write(
+        memories_dir.join("team_profile_vouch.json"),
+        r#"{
+  "profiles": {
+    "leader_quality": {
+      "wins": 8,
+      "losses": 0,
+      "by_task": { "debug": { "wins": 6, "losses": 0 } },
+      "recent_events": [
+        { "verdict": "Loss", "task_bucket": "debug" },
+        { "verdict": "Loss", "task_bucket": "debug" }
+      ]
+    },
+    "leader_fast": {
+      "wins": 1,
+      "losses": 1,
+      "by_task": { "debug": { "wins": 1, "losses": 1 } },
+      "recent_events": [
+        { "verdict": "Win", "task_bucket": "debug" },
+        { "verdict": "Win", "task_bucket": "debug" }
+      ]
+    }
+  }
+}"#,
+    )
+    .expect("write vouch file");
+    chat.config.codex_home = codex_home.path().to_path_buf();
+
+    chat.dispatch_command_with_args(
+        SlashCommand::TeamProfile,
+        "auto:debug".to_string(),
+        Vec::new(),
+    );
+
+    match rx.try_recv() {
+        Ok(AppEvent::PersistTeamProfileSelection { preset }) => {
+            assert_eq!(preset, crate::team_profile::TeamProfilePreset::Balanced);
+        }
+        other => panic!("expected PersistTeamProfileSelection event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn utility_model_selection_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_sub = Some("claude-sonnet-4-6".to_string());
+
+    let preset = |slug: &str| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_model_sub_popup_with_presets(vec![
+        preset("gpt-5.1-codex-mini"),
+        preset("claude-sonnet-4-6"),
+        preset("openai/o4-mini"),
+    ]);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert_snapshot!("utility_model_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn responses_utility_model_selection_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("claude-sonnet-4-6")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.model_sub = Some("claude-sonnet-4-6".to_string());
+
+    let preset = |slug: &str| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_model_sub_responses_popup_with_presets(vec![
+        preset("gpt-5.1-codex-mini"),
+        preset("openai/o4-mini"),
+        preset("claude-sonnet-4-6"),
+    ]);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert_snapshot!("responses_utility_model_selection_popup", popup);
 }
 
 #[tokio::test]
