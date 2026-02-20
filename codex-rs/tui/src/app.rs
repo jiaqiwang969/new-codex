@@ -62,6 +62,7 @@ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_otel::OtelManager;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -1944,7 +1945,9 @@ impl App {
                 self.refresh_status_line();
             }
             AppEvent::UpdateCollaborationMode(mask) => {
+                let mode_kind = mask.mode;
                 self.chat_widget.set_collaboration_mask(mask);
+                self.persist_collaboration_mode_selection(mode_kind).await;
                 self.refresh_status_line();
             }
             AppEvent::UpdatePersonality(personality) => {
@@ -3400,6 +3403,55 @@ impl App {
         self.chat_widget.set_personality(personality);
     }
 
+    async fn persist_collaboration_mode_selection(&mut self, mode_kind: Option<ModeKind>) {
+        let profile = self.active_profile.as_deref();
+        let mode_kind = mode_kind.filter(|mode| mode.is_tui_visible());
+        self.config.experimental_mode = mode_kind;
+
+        let mode_value = match mode_kind {
+            Some(ModeKind::Plan) => Some("plan"),
+            Some(ModeKind::Default) => Some("default"),
+            Some(ModeKind::Collaborative) => Some("collaborative"),
+            Some(ModeKind::PairProgramming) | Some(ModeKind::Execute) | None => None,
+        };
+
+        let segments = if let Some(profile) = profile {
+            vec![
+                "profiles".to_string(),
+                profile.to_string(),
+                "tui".to_string(),
+                "experimental_mode".to_string(),
+            ]
+        } else {
+            vec!["tui".to_string(), "experimental_mode".to_string()]
+        };
+
+        let edit = if let Some(mode) = mode_value {
+            ConfigEdit::SetPath {
+                segments,
+                value: mode.into(),
+            }
+        } else {
+            ConfigEdit::ClearPath { segments }
+        };
+
+        if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
+            .with_edits([edit])
+            .apply()
+            .await
+        {
+            tracing::error!(error = %err, "failed to persist collaboration mode selection");
+            if let Some(profile) = profile {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to save collaboration mode for profile `{profile}`: {err}"
+                ));
+            } else {
+                self.chat_widget
+                    .add_error_message(format!("Failed to save collaboration mode: {err}"));
+            }
+        }
+    }
+
     fn personality_label(personality: Personality) -> &'static str {
         match personality {
             Personality::None => "None",
@@ -4359,6 +4411,24 @@ mod tests {
             app.config.model_reasoning_effort,
             Some(ReasoningEffortConfig::High)
         );
+    }
+
+    #[tokio::test]
+    async fn persist_collaboration_mode_selection_writes_config_for_next_startup() -> Result<()> {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf();
+
+        app.persist_collaboration_mode_selection(Some(ModeKind::Collaborative))
+            .await;
+
+        let refreshed = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+
+        assert_eq!(refreshed.experimental_mode, Some(ModeKind::Collaborative));
+        Ok(())
     }
 
     #[tokio::test]

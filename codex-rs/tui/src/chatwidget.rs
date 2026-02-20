@@ -3499,7 +3499,7 @@ impl ChatWidget {
                     return;
                 }
                 if let Some(mask) = collaboration_modes::plan_mask(self.models_manager.as_ref()) {
-                    self.set_collaboration_mask(mask);
+                    self.set_collaboration_mask_and_notify_app(mask);
                 } else {
                     self.add_info_message("Plan mode unavailable right now.".to_string(), None);
                 }
@@ -8636,8 +8636,17 @@ impl ChatWidget {
             self.models_manager.as_ref(),
             self.active_collaboration_mask.as_ref(),
         ) {
-            self.set_collaboration_mask(next_mask);
+            self.set_collaboration_mask_and_notify_app(next_mask);
         }
+    }
+
+    fn set_collaboration_mask_and_notify_app(&mut self, mask: CollaborationModeMask) {
+        if !self.collaboration_modes_enabled() {
+            return;
+        }
+        self.set_collaboration_mask(mask.clone());
+        self.app_event_tx
+            .send(AppEvent::UpdateCollaborationMode(mask));
     }
 
     /// Update the active collaboration mask.
@@ -9050,7 +9059,7 @@ impl ChatWidget {
             );
             return;
         }
-        self.set_collaboration_mask(collaboration_mode);
+        self.set_collaboration_mask_and_notify_app(collaboration_mode);
         let should_queue = self.is_plan_streaming_in_tui();
         let user_message = UserMessage {
             text,
