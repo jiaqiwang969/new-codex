@@ -2420,6 +2420,8 @@ phase_2_model = "gpt-5"
                 min_rollout_idle_hours: Some(24),
                 phase_1_model: Some("gpt-5-mini".to_string()),
                 phase_2_model: Some("gpt-5".to_string()),
+                entire_summary_enabled: None,
+                entire_summary_model: None,
             }),
             memories_cfg.memories
         );
@@ -2439,6 +2441,8 @@ phase_2_model = "gpt-5"
                 min_rollout_idle_hours: 24,
                 phase_1_model: Some("gpt-5-mini".to_string()),
                 phase_2_model: Some("gpt-5".to_string()),
+                entire_summary_enabled: true,
+                entire_summary_model: None,
             }
         );
     }

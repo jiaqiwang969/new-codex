@@ -1492,6 +1492,33 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     );
 }
 
+#[tokio::test]
+async fn context_indicator_uses_last_usage_for_percent() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None).await;
+    let context_window = 13_000;
+    let token_info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 12_700,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 12_030,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(context_window),
+    };
+
+    chat.handle_codex_event(Event {
+        id: "token-usage".into(),
+        msg: EventMsg::TokenCount(TokenCountEvent {
+            info: Some(token_info),
+            rate_limits: None,
+        }),
+    });
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(97));
+}
+
 #[cfg_attr(
     target_os = "macos",
     ignore = "system configuration APIs are blocked under macOS seatbelt"

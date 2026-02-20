@@ -2404,6 +2404,42 @@ impl Session {
         config.config_layer_stack = config
             .config_layer_stack
             .with_user_config(&config_toml_path, user_config);
+
+        let merged_toml = config.config_layer_stack.effective_config();
+        if let Ok(config_toml) =
+            crate::config::deserialize_config_toml_with_base(merged_toml, &config.codex_home)
+        {
+            let active_profile = config
+                .active_profile
+                .clone()
+                .or_else(|| config_toml.profile.clone());
+            let profile = active_profile
+                .as_ref()
+                .and_then(|name| config_toml.profiles.get(name));
+
+            let normalized = |value: Option<String>| {
+                value.and_then(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+            };
+
+            config.model_sub = normalized(
+                profile
+                    .and_then(|entry| entry.model_sub.clone())
+                    .or(config_toml.model_sub),
+            );
+            config.model_sub_responses = normalized(
+                profile
+                    .and_then(|entry| entry.model_sub_responses.clone())
+                    .or(config_toml.model_sub_responses),
+            );
+        }
+
         state.session_configuration.original_config_do_not_use = Arc::new(config);
     }
 
@@ -7746,6 +7782,37 @@ mod tests {
         assert_eq!(
             app.disabled_reason,
             Some(crate::config::types::AppDisabledReason::User)
+        );
+    }
+
+    #[tokio::test]
+    async fn reload_user_config_layer_updates_model_sub_fields() {
+        let (session, _turn_context) = make_session_and_context().await;
+        let codex_home = session.codex_home().await;
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+        let config_toml_path = codex_home.join(CONFIG_TOML_FILE);
+        std::fs::write(
+            &config_toml_path,
+            r#"
+profile = "dev"
+
+[profiles.dev]
+model_sub = "claude-haiku-4-5-20251001"
+model_sub_responses = "gpt-5.3-codex-spark|[pro]"
+"#,
+        )
+        .expect("write user config");
+
+        session.reload_user_config_layer().await;
+
+        let config = session.get_config().await;
+        assert_eq!(
+            config.model_sub.as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
+        assert_eq!(
+            config.model_sub_responses.as_deref(),
+            Some("gpt-5.3-codex-spark|[pro]")
         );
     }
 

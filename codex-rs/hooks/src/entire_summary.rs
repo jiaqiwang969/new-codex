@@ -89,29 +89,6 @@ fn truncate_response(response: &str, max_chars: usize) -> String {
     }
 }
 
-/// Generates a WHY-focused summary using the configured model.
-///
-/// This function should be called asynchronously after the Entire checkpoint
-/// is created, so it doesn't block the main notify flow.
-pub async fn generate_summary(input: EntireSummaryInput, _model: &str) -> Result<EntireSummary> {
-    let _prompt = build_why_prompt(&input);
-
-    // TODO: Call the actual model via codex_core's utility_model system
-    // For now, this is a placeholder that will be implemented when we integrate
-    // with the model provider infrastructure
-
-    // Placeholder implementation
-    let summary = EntireSummary {
-        motivation: "Placeholder: User requested feature implementation".to_string(),
-        approach: "Placeholder: Implemented using standard patterns".to_string(),
-        challenges: None,
-        tradeoffs: None,
-        outcome: "Placeholder: Feature successfully implemented".to_string(),
-    };
-
-    Ok(summary)
-}
-
 /// Saves a summary to the .entire/summaries directory.
 pub async fn save_summary(
     repo_root: &Path,

@@ -35,13 +35,9 @@ pub enum ConfigEdit {
         entire_summary_model: Option<String>,
     },
     /// Update the model used for Memory phase-1 (fast code scanning).
-    SetMemoryPhase1Model {
-        phase_1_model: Option<String>,
-    },
+    SetMemoryPhase1Model { phase_1_model: Option<String> },
     /// Update the model used for Memory phase-2 (deep code analysis).
-    SetMemoryPhase2Model {
-        phase_2_model: Option<String>,
-    },
+    SetMemoryPhase2Model { phase_2_model: Option<String> },
     /// Update memories phase model overrides under `[memories]`.
     SetMemoriesPhaseModels {
         phase_1_model: Option<String>,
@@ -342,17 +338,13 @@ impl ConfigDocument {
                     .as_ref()
                     .map(|model_value| value(model_value.clone())),
             )),
-            ConfigEdit::SetMemoryPhase1Model {
-                phase_1_model,
-            } => Ok(self.write_profile_value(
+            ConfigEdit::SetMemoryPhase1Model { phase_1_model } => Ok(self.write_profile_value(
                 &["memories", "phase_1_model"],
                 phase_1_model
                     .as_ref()
                     .map(|model_value| value(model_value.clone())),
             )),
-            ConfigEdit::SetMemoryPhase2Model {
-                phase_2_model,
-            } => Ok(self.write_profile_value(
+            ConfigEdit::SetMemoryPhase2Model { phase_2_model } => Ok(self.write_profile_value(
                 &["memories", "phase_2_model"],
                 phase_2_model
                     .as_ref()

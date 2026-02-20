@@ -219,7 +219,7 @@ pub(crate) fn record_model_sub_vouch(
 
         entry.recent_events.push(ModelSubVouchEvent {
             verdict: verdict.key().to_string(),
-            task_bucket: task_bucket.clone(),
+            task_bucket: task_bucket,
         });
         if entry.recent_events.len() > MAX_STORED_RECENT_EVENTS {
             let excess = entry

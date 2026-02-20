@@ -167,14 +167,13 @@ async fn process_anthropic_sse<S>(
                             return;
                         }
                         saw_any_output = true;
-                        if !text.is_empty() {
-                            if tx_event
+                        if !text.is_empty()
+                            && tx_event
                                 .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
                                 .await
                                 .is_err()
-                            {
-                                return;
-                            }
+                        {
+                            return;
                         }
                         blocks.insert(
                             index,
@@ -200,17 +199,16 @@ async fn process_anthropic_sse<S>(
                             return;
                         }
                         saw_any_output = true;
-                        if !thinking.is_empty() {
-                            if tx_event
+                        if !thinking.is_empty()
+                            && tx_event
                                 .send(Ok(ResponseEvent::ReasoningContentDelta {
                                     delta: thinking.clone(),
                                     content_index: 0,
                                 }))
                                 .await
                                 .is_err()
-                            {
-                                return;
-                            }
+                        {
+                            return;
                         }
                         blocks.insert(
                             index,

@@ -16,6 +16,7 @@ use toml::Value as TomlValue;
 const BUILT_IN_EXPLORER_CONFIG: &str = include_str!("builtins/explorer.toml");
 const BUILT_IN_CLAUDE_OPUS_CONFIG: &str = include_str!("builtins/claude-opus.toml");
 const BUILT_IN_CLAUDE_SONNET_CONFIG: &str = include_str!("builtins/claude-sonnet.toml");
+const BUILT_IN_CLAUDE_HAIKU_CONFIG: &str = include_str!("builtins/claude-haiku.toml");
 const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
@@ -225,6 +226,21 @@ Rules:
                     }
                 ),
                 (
+                    "claude-haiku".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Claude Haiku 4.5 (200K context) for fastest responses.
+Typical tasks:
+- Quick code reviews and simple refactoring
+- Fast iteration on small changes
+- Lightweight exploration and validation
+Rules:
+- Prefer this role for speed-critical tasks with limited scope.
+- Best for tasks that don't require deep reasoning or large context."#.to_string()),
+                        config_file: Some("claude-haiku.toml".to_string().parse().unwrap_or_default()),
+                        tags: vec!["fast".to_string(), "lightweight".to_string()],
+                    }
+                ),
+                (
                     "worker".to_string(),
                     AgentRoleConfig {
                         description: Some(r#"Use for execution and production work.
@@ -250,6 +266,7 @@ Rules:
             "explorer.toml" => Some(BUILT_IN_EXPLORER_CONFIG),
             "claude-opus.toml" => Some(BUILT_IN_CLAUDE_OPUS_CONFIG),
             "claude-sonnet.toml" => Some(BUILT_IN_CLAUDE_SONNET_CONFIG),
+            "claude-haiku.toml" => Some(BUILT_IN_CLAUDE_HAIKU_CONFIG),
             _ => None,
         }
     }
@@ -608,6 +625,10 @@ writable_roots = ["./sandbox-root"]
         assert_eq!(
             built_in::config_file_contents(Path::new("claude-sonnet.toml")),
             Some(BUILT_IN_CLAUDE_SONNET_CONFIG)
+        );
+        assert_eq!(
+            built_in::config_file_contents(Path::new("claude-haiku.toml")),
+            Some(BUILT_IN_CLAUDE_HAIKU_CONFIG)
         );
         assert_eq!(
             built_in::config_file_contents(Path::new("missing.toml")),

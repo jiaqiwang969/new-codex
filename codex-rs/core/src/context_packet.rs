@@ -182,19 +182,32 @@ pub(crate) async fn build_context_packet(
 
     // Add Entire summary section
     if config.include_entire_summary && config.max_entire_checkpoints > 0 {
-        if let Ok(checkpoints) = entire_integration::get_recent_entire_checkpoints(
-            turn_context.cwd.as_path(),
-            config.max_entire_checkpoints,
-        )
-        .await
+        // Try to get checkpoints with AI summaries if enabled
+        let checkpoints_result = if turn_context.config.memories.entire_summary_enabled {
+            entire_integration::get_recent_entire_checkpoints_with_summaries(
+                turn_context.cwd.as_path(),
+                config.max_entire_checkpoints,
+                Some(&sess.services.model_client),
+                Some(&sess.services.models_manager),
+                Some(&turn_context.config),
+            )
+            .await
+        } else {
+            entire_integration::get_recent_entire_checkpoints(
+                turn_context.cwd.as_path(),
+                config.max_entire_checkpoints,
+            )
+            .await
+        };
+
+        if let Ok(checkpoints) = checkpoints_result
+            && !checkpoints.is_empty()
         {
-            if !checkpoints.is_empty() {
-                let summary = entire_integration::format_checkpoints_summary(&checkpoints);
-                let summary = truncate_text_bytes(&summary, config.max_entire_summary_bytes);
-                let summary = summary.trim();
-                if !summary.is_empty() {
-                    sections.push(format!("Recent AI Sessions (via Entire):\n{summary}"));
-                }
+            let summary = entire_integration::format_checkpoints_summary(&checkpoints);
+            let summary = truncate_text_bytes(&summary, config.max_entire_summary_bytes);
+            let summary = summary.trim();
+            if !summary.is_empty() {
+                sections.push(format!("Recent AI Sessions (via Entire):\n{summary}"));
             }
         }
     }

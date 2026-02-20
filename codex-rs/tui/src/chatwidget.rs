@@ -1597,7 +1597,7 @@ impl ChatWidget {
 
     fn context_remaining_percent(&self, info: &TokenUsageInfo) -> Option<i64> {
         info.model_context_window.map(|window| {
-            info.total_token_usage
+            info.last_token_usage
                 .percent_of_context_window_remaining(window)
         })
     }
@@ -1607,7 +1607,7 @@ impl ChatWidget {
             return None;
         }
 
-        Some(info.total_token_usage.tokens_in_context_window())
+        Some(info.last_token_usage.tokens_in_context_window())
     }
 
     fn restore_pre_review_token_info(&mut self) {
@@ -6054,7 +6054,7 @@ impl ChatWidget {
         let usage = self
             .token_info
             .as_ref()
-            .map(|info| &info.total_token_usage)
+            .map(|info| &info.last_token_usage)
             .unwrap_or(&default_usage);
         Some(
             usage
@@ -6891,8 +6891,7 @@ impl ChatWidget {
 
     pub(crate) fn open_model_entire_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
         let configured = self.config.memories.entire_summary_model.as_deref();
-        let effective = configured
-            .unwrap_or(codex_core::DEFAULT_ENTIRE_SUMMARY_MODEL);
+        let effective = configured.unwrap_or(codex_core::DEFAULT_ENTIRE_SUMMARY_MODEL);
 
         let presets: Vec<ModelPreset> = presets
             .into_iter()
@@ -6906,10 +6905,7 @@ impl ChatWidget {
         })];
         items.push(SelectionItem {
             name: format!("Default ({effective})"),
-            description: Some(
-                "Use the built-in default model for Entire summaries."
-                    .to_string(),
-            ),
+            description: Some("Use the built-in default model for Entire summaries.".to_string()),
             is_current: configured.is_none(),
             actions: inherit_actions,
             dismiss_on_select: true,
@@ -6980,10 +6976,12 @@ impl ChatWidget {
         self.open_model_memory_phase1_popup_with_presets(presets);
     }
 
-    pub(crate) fn open_model_memory_phase1_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
+    pub(crate) fn open_model_memory_phase1_popup_with_presets(
+        &mut self,
+        presets: Vec<ModelPreset>,
+    ) {
         let configured = self.config.memories.phase_1_model.as_deref();
-        let effective = configured
-            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL);
+        let effective = configured.unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL);
 
         let presets: Vec<ModelPreset> = presets
             .into_iter()
@@ -7071,10 +7069,12 @@ impl ChatWidget {
         self.open_model_memory_phase2_popup_with_presets(presets);
     }
 
-    pub(crate) fn open_model_memory_phase2_popup_with_presets(&mut self, presets: Vec<ModelPreset>) {
+    pub(crate) fn open_model_memory_phase2_popup_with_presets(
+        &mut self,
+        presets: Vec<ModelPreset>,
+    ) {
         let configured = self.config.memories.phase_2_model.as_deref();
-        let effective = configured
-            .unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
+        let effective = configured.unwrap_or(codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL);
 
         let presets: Vec<ModelPreset> = presets
             .into_iter()

@@ -1427,7 +1427,7 @@ impl ModelClientSession {
         model_info: &ModelInfo,
         effort: Option<ReasoningEffortConfig>,
     ) -> Result<ResponseStream> {
-        use crate::anthropic_content::build_anthropic_messages;
+        use crate::anthropic_content::build_anthropic_messages_and_extract_memory_requirements;
         use crate::anthropic_content::build_anthropic_tools;
         use crate::anthropic_content::normalize_anthropic_base_url;
         use crate::anthropic_streaming::spawn_anthropic_sse_stream;
@@ -1469,14 +1469,24 @@ impl ModelClientSession {
         };
 
         let formatted_input = prompt.get_formatted_input();
-        let messages = build_anthropic_messages(&formatted_input);
+        let (messages, memory_citation_requirements) =
+            build_anthropic_messages_and_extract_memory_requirements(&formatted_input);
         if messages.is_empty() {
             return Err(CodexErr::UnsupportedOperation(
                 "Anthropic requests require at least one message".to_string(),
             ));
         }
 
-        let instructions = prompt.base_instructions.text.trim().to_string();
+        // Build system prompt: base instructions + memory citation requirements
+        let mut instructions = prompt.base_instructions.text.trim().to_string();
+        if let Some(memory_requirements) = memory_citation_requirements {
+            if !instructions.is_empty() {
+                instructions.push_str("\n\n");
+            }
+            instructions.push_str("## Memory Citation Requirements\n\n");
+            instructions.push_str(&memory_requirements);
+        }
+
         let tools = build_anthropic_tools(&prompt.tools);
         let reasoning_effort = effort.or(model_info.default_reasoning_level);
         let enable_thinking = anthropic_thinking_enabled(reasoning_effort);

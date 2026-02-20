@@ -109,8 +109,12 @@ impl SlashCommand {
                 "choose Responses fallback utility model when needed"
             }
             SlashCommand::ModelEntire => "choose model for Entire checkpoint WHY-focused summaries",
-            SlashCommand::ModelMemoryPhase1 => "choose model for Memory phase-1 (fast code scanning)",
-            SlashCommand::ModelMemoryPhase2 => "choose model for Memory phase-2 (deep code analysis)",
+            SlashCommand::ModelMemoryPhase1 => {
+                "choose model for Memory phase-1 (fast code scanning)"
+            }
+            SlashCommand::ModelMemoryPhase2 => {
+                "choose model for Memory phase-2 (deep code analysis)"
+            }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (Default / Collaborative / Plan)",

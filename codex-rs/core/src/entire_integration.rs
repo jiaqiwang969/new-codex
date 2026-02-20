@@ -1,7 +1,12 @@
+use crate::client::ModelClient;
+use crate::config::Config;
+use crate::entire_summary_generator;
+use crate::models_manager::manager::ModelsManager;
 use chrono::DateTime;
 use chrono::Utc;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -13,9 +18,50 @@ pub struct EntireCheckpoint {
     pub prompt_summary: String,
     pub files_changed: Vec<String>,
     pub model_used: String,
+    pub ai_summary: Option<codex_hooks::EntireSummary>,
 }
 
-/// Get recent Entire checkpoints from git history
+/// Get recent Entire checkpoints from git history with AI summaries
+pub async fn get_recent_entire_checkpoints_with_summaries(
+    cwd: &Path,
+    limit: usize,
+    base_client: Option<&ModelClient>,
+    models_manager: Option<&Arc<ModelsManager>>,
+    config: Option<&Config>,
+) -> Result<Vec<EntireCheckpoint>, Box<dyn std::error::Error>> {
+    let checkpoints = get_recent_entire_checkpoints(cwd, limit).await?;
+
+    // If config is provided and entire_summary is enabled, try to load or generate summaries
+    if let (Some(client), Some(manager), Some(cfg)) = (base_client, models_manager, config)
+        && cfg.memories.entire_summary_enabled
+    {
+        let mut enriched = Vec::new();
+        for mut checkpoint in checkpoints {
+            // Try to load existing summary
+            if let Some(summary) =
+                entire_summary_generator::load_summary_if_exists(cwd, &checkpoint.checkpoint_id)
+                    .await
+            {
+                checkpoint.ai_summary = Some(summary);
+            } else {
+                // Generate summary asynchronously in background
+                spawn_summary_generation(
+                    &checkpoint,
+                    cwd.to_path_buf(),
+                    client.clone(),
+                    Arc::clone(manager),
+                    cfg.clone(),
+                );
+            }
+            enriched.push(checkpoint);
+        }
+        return Ok(enriched);
+    }
+
+    Ok(checkpoints)
+}
+
+/// Get recent Entire checkpoints from git history (without AI summaries)
 pub async fn get_recent_entire_checkpoints(
     cwd: &Path,
     limit: usize,
@@ -94,11 +140,38 @@ async fn read_checkpoint_details(
     Ok(EntireCheckpoint {
         checkpoint_id: checkpoint_id.to_string(),
         commit_hash: commit_hash.to_string(),
-        timestamp: DateTime::from_timestamp(timestamp, 0).unwrap_or_else(|| Utc::now()),
+        timestamp: DateTime::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now),
         prompt_summary,
         files_changed,
         model_used,
+        ai_summary: None,
     })
+}
+
+fn spawn_summary_generation(
+    checkpoint: &EntireCheckpoint,
+    repo_root: std::path::PathBuf,
+    base_client: ModelClient,
+    models_manager: Arc<ModelsManager>,
+    config: Config,
+) {
+    let checkpoint_id = checkpoint.checkpoint_id.clone();
+    let input = codex_hooks::EntireSummaryInput {
+        thread_id: "unknown".to_string(), // We don't have this from git history
+        turn_id: "unknown".to_string(),
+        user_prompt: checkpoint.prompt_summary.clone(),
+        ai_response: format!("Modified {} files", checkpoint.files_changed.len()),
+        files_changed: checkpoint.files_changed.clone(),
+    };
+
+    entire_summary_generator::generate_and_save_summary_async(
+        input,
+        checkpoint_id,
+        repo_root,
+        base_client,
+        models_manager,
+        config,
+    );
 }
 
 fn is_git_repo(cwd: &Path) -> bool {
@@ -133,7 +206,7 @@ fn get_commit_message_summary(
     // Truncate to 200 characters
     let summary = message.chars().take(200).collect::<String>();
     Ok(if message.len() > 200 {
-        format!("{}...", summary)
+        format!("{summary}...")
     } else {
         summary
     })
@@ -158,7 +231,7 @@ fn get_checkpoint_files(
 
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect())
 }
 
@@ -167,11 +240,11 @@ fn get_checkpoint_model(
     checkpoint_id: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Try to read from entire branch
-    let branch_name = format!("entire/{}", checkpoint_id);
+    let branch_name = format!("entire/{checkpoint_id}");
 
     let output = Command::new("git")
         .arg("show")
-        .arg(format!("{}:session.json", branch_name))
+        .arg(format!("{branch_name}:session.json"))
         .current_dir(cwd)
         .output()?;
 
@@ -190,6 +263,13 @@ pub fn format_checkpoints_summary(checkpoints: &[EntireCheckpoint]) -> String {
 
     let mut lines = Vec::new();
     for checkpoint in checkpoints {
+        // Use AI summary if available, otherwise use git commit summary
+        let summary_text = if let Some(ai_summary) = &checkpoint.ai_summary {
+            format!("{} → {}", ai_summary.motivation, ai_summary.outcome)
+        } else {
+            checkpoint.prompt_summary.clone()
+        };
+
         let time_ago = format_time_ago(&checkpoint.timestamp);
         let files = format_files_list(&checkpoint.files_changed);
         let checkpoint_short = if checkpoint.checkpoint_id.len() > 8 {
@@ -205,8 +285,7 @@ pub fn format_checkpoints_summary(checkpoints: &[EntireCheckpoint]) -> String {
         };
 
         lines.push(format!(
-            "- [{}] {}{}: {} (files: {})",
-            time_ago, checkpoint_short, model_info, checkpoint.prompt_summary, files
+            "- [{time_ago}] {checkpoint_short}{model_info}: {summary_text} ({files})"
         ));
     }
 
@@ -232,7 +311,7 @@ fn format_time_ago(timestamp: &DateTime<Utc>) -> String {
         if mins < 1 {
             "just now".to_string()
         } else {
-            format!("{}m ago", mins)
+            format!("{mins}m ago")
         }
     } else if duration.num_days() < 1 {
         format!("{}h ago", duration.num_hours())

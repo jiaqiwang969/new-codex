@@ -41,6 +41,7 @@ pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
 pub(crate) const CONTEXT_WINDOW_128K: i64 = 128_000;
 pub(crate) const CONTEXT_WINDOW_256K: i64 = 256_000;
 pub(crate) const CONTEXT_WINDOW_2M: i64 = 2_000_000;
+pub(crate) const CONTEXT_WINDOW_200K: i64 = 200_000;
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
     include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
 const GPT_5_3_CODEX_SPARK_INSTRUCTIONS_TEMPLATE: &str =
@@ -225,6 +226,14 @@ fn context_window_for_grok_slug(slug: &str) -> i64 {
         131_072
     } else {
         CONTEXT_WINDOW_256K
+    }
+}
+
+fn context_window_for_claude_slug(slug: &str) -> i64 {
+    if slug.contains("haiku") {
+        CONTEXT_WINDOW_200K
+    } else {
+        CONTEXT_WINDOW_1M
     }
 }
 
@@ -491,7 +500,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: false,
             support_verbosity: false,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(CONTEXT_WINDOW_1M),
+            context_window: Some(context_window_for_claude_slug(slug)),
             default_reasoning_level: Some(ReasoningEffort::High),
             input_modalities: vec![InputModality::Text, InputModality::Image],
             experimental_supported_tools: vec![
