@@ -204,6 +204,33 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
         },
         // Deprecated models.
         ModelPreset {
+            id: "gemini-3.1-pro-preview".to_string(),
+            model: "gemini-3.1-pro-preview".to_string(),
+            display_name: "Gemini 3.1 Pro".to_string(),
+            description: "Google Gemini 3.1 Pro with enhanced reasoning and 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
             id: "gemini-3-pro-preview".to_string(),
             model: "gemini-3-pro-preview".to_string(),
             display_name: "Gemini 3 Pro".to_string(),
@@ -388,6 +415,30 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                 ReasoningEffortPreset {
                     effort: ReasoningEffort::High,
                     description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+        },
+        ModelPreset {
+            id: "claude-haiku-4-5-20251001".to_string(),
+            model: "claude-haiku-4-5-20251001".to_string(),
+            display_name: "Claude Haiku 4.5".to_string(),
+            description: "Anthropic Claude Haiku 4.5 — fastest responses with 200K context."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses optimized for speed".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
                 },
             ],
             supports_personality: false,
@@ -629,10 +680,16 @@ mod tests {
             .iter()
             .find(|preset| preset.model == "claude-sonnet-4-6")
             .expect("claude sonnet preset should exist");
+        let haiku = PRESETS
+            .iter()
+            .find(|preset| preset.model == "claude-haiku-4-5-20251001")
+            .expect("claude haiku preset should exist");
 
         assert!(opus.show_in_picker);
         assert_eq!(opus.default_reasoning_effort, ReasoningEffort::High);
         assert!(sonnet.show_in_picker);
         assert_eq!(sonnet.default_reasoning_effort, ReasoningEffort::Medium);
+        assert!(haiku.show_in_picker);
+        assert_eq!(haiku.default_reasoning_effort, ReasoningEffort::Low);
     }
 }
