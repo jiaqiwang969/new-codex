@@ -343,6 +343,9 @@ mod tests {
                 "model",
                 "model-sub",
                 "model-sub-responses",
+                "model-entire",
+                "model-memory-phase1",
+                "model-memory-phase2",
                 "mention",
                 "mcp"
             ]

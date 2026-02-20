@@ -419,7 +419,7 @@ impl StatusHistoryCell {
         let entire_tracing = describe_entire_tracing(config);
         let memory_phase_one = resolve_memory_model_display(
             config.memories.phase_1_model.as_deref(),
-            None,
+            config.model_sub.as_deref(),
             codex_core::DEFAULT_MEMORY_PHASE_ONE_MODEL,
             "memories.phase_1_model",
         );
@@ -723,6 +723,9 @@ impl HistoryCell for StatusHistoryCell {
         let directory_value = format_directory_display(&self.directory, Some(value_width));
 
         lines.push(formatter.line("Model", model_spans));
+        if let Some(model_provider) = self.model_provider.as_ref() {
+            lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));
+        }
         if let Some(team_profile_label) = self.team_profile_label {
             lines.push(formatter.line("Team profile", vec![Span::from(team_profile_label)]));
         }
@@ -751,6 +754,12 @@ impl HistoryCell for StatusHistoryCell {
             "Utility source",
             vec![Span::from(self.utility_model_source.clone())],
         ));
+        if let Some(utility_model_provider) = self.utility_model_provider.as_ref() {
+            lines.push(formatter.line(
+                "Utility provider",
+                vec![Span::from(utility_model_provider.clone())],
+            ));
+        }
         if self.show_utility_model_responses {
             let mut utility_model_responses_spans =
                 vec![Span::from(self.utility_model_responses_name.clone())];
@@ -758,6 +767,14 @@ impl HistoryCell for StatusHistoryCell {
                 utility_model_responses_spans.push(Span::from(" (inherit)").dim());
             }
             lines.push(formatter.line("Resp. util model", utility_model_responses_spans));
+            if let Some(utility_model_responses_provider) =
+                self.utility_model_responses_provider.as_ref()
+            {
+                lines.push(formatter.line(
+                    "Resp. util prov",
+                    vec![Span::from(utility_model_responses_provider.clone())],
+                ));
+            }
         }
         lines.push(formatter.line("Memory scope", vec![Span::from(self.memory_scope.clone())]));
         lines.push(formatter.line(

@@ -17,6 +17,7 @@ expression: sanitized
 │  Entire tracing:      not configured (set notify=["entire", "hooks", "codex" │
 │  Memory phase-1:      gpt-5.3-codex-spark (memory default)                   │
 │  Memory phase-2:      gpt-5.3-codex (memory default)                         │
+│  Entire summary:      claude-sonnet-4-6 (memory default)                     │
 │  Directory: [[workspace]]                                                    │
 │  Permissions:         Custom (read-only, on-request)                         │
 │  Agents.md:           <none>                                                 │

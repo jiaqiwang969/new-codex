@@ -368,7 +368,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
                 },
             ],
             default_reasoning_effort: ReasoningEffort::High,
-            input_modalities: vec![InputModality::Text],
+            input_modalities: vec![InputModality::Text, InputModality::Image],
             supports_personality: false,
             is_default: false,
         },
@@ -418,7 +418,30 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
                 },
             ],
             default_reasoning_effort: ReasoningEffort::Medium,
-            input_modalities: vec![InputModality::Text],
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
+            id: "claude-haiku-4-5-20251001".to_string(),
+            model: "claude-haiku-4-5-20251001".to_string(),
+            upgrade: None,
+            display_name: "Claude Haiku 4.5".to_string(),
+            description: "Anthropic Claude Haiku 4.5 — fastest responses with 200K context."
+                .to_string(),
+            hidden: false,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Low,
+                    description: "Fast responses optimized for speed".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Low,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
             supports_personality: false,
             is_default: false,
         },
@@ -484,6 +507,7 @@ async fn list_models_pagination_works() -> Result<()> {
         "claude-opus-4-6",
         "gpt-5.1-codex-mini",
         "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
     ];
 
     let mut cursor: Option<String> = None;
