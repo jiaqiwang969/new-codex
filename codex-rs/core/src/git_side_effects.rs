@@ -13,7 +13,7 @@ pub struct GitState {
     pub uncommitted_files: BTreeMap<PathBuf, Option<SystemTime>>,
 }
 
-pub async fn track_tool_side_effects<T, F, Fut>(
+pub(crate) async fn track_tool_side_effects<T, F, Fut>(
     cwd: &Path,
     call_id: String,
     session: &Session,

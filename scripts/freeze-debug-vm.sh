@@ -21,9 +21,9 @@ orb start ${VM_NAME} >/dev/null
 
 echo "=> 2. Injecting Frozen State into Sandbox..."
 orb -m ${VM_NAME} -u jqwang bash -c "
-    echo '  -> Copying source code (excluding mac target dir)...'
+    echo '  -> Copying source code (excluding mac target dir & locks)...'
     mkdir -p ~/${PROJECT_NAME}
-    cd ${SOURCE_CODEX_DIR} && tar -cf - --exclude='target' . | (cd ~/${PROJECT_NAME} && tar -xf -)
+    cd ${SOURCE_CODEX_DIR} && tar -cf - --exclude='target' --exclude='.git/index.lock' . | (cd ~/${PROJECT_NAME} && tar -xf -)
     
     echo '  -> Copying runtime state (~/.codex)...'
     mkdir -p ~/.codex
@@ -45,7 +45,13 @@ eval \"\$ENV_CMD \\\"
     echo '========================================'
     echo '🛠️ Starting Codex in Self-Debug Mode...'
     echo '========================================'
-    codex \\\\\\\"I am a cloned instance of Codex running in an isolated VM sandbox. I just panicked and crashed my macOS host. My code and runtime state (including ~/.codex Entire checkpoints) have been perfectly frozen and cloned here. Use \`entire rewind\` to go back to the state before the crash, analyze the project source code to find the root cause, fix it, and verify it. Do not use any MCP or external API, focus on my own source code.\\\\\\\"
+    
+    PANIC_CONTEXT=\\\"\\\"
+    if [ -f \\\"last_panic.log\\\" ]; then
+        PANIC_CONTEXT=\\\"\n\nThe panic backtrace is:\n\n\$(cat last_panic.log)\\\"
+    fi
+
+    codex \\\\\\\"I am a cloned instance of Codex running in an isolated VM sandbox. I just panicked and crashed my macOS host. My code and runtime state (including ~/.codex Entire checkpoints) have been perfectly frozen and cloned here.\${PANIC_CONTEXT}\n\nUse \`entire rewind\` to go back to the state before the crash, analyze the project source code to find the root cause, fix it, and verify it with tests/builds. Do not use any MCP or external API, focus on my own source code.\\\\\\\"
 \\\"\"
 INNER_EOF
     chmod +x ~/start-debug.sh

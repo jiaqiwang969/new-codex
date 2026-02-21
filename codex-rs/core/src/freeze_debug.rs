@@ -24,6 +24,12 @@ pub fn install_freeze_panic_hook() {
             crate::git_info::resolve_root_git_project_for_trust(&cwd)
         });
 
+        // Write the panic info to a log file so the sandbox Codex knows what happened
+        if let Some(ref root) = repo_root {
+            let panic_msg = format!("{:#?}", panic_info);
+            let _ = std::fs::write(root.join("last_panic.log"), panic_msg);
+        }
+
         // Use absolute path for the script for now (tailored to jqwang's machine)
         let script_path = "/Users/jqwang/01-agent/new-codex/scripts/freeze-debug-vm.sh";
         
