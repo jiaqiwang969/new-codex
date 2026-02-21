@@ -448,6 +448,300 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             supported_in_api: true,
             input_modalities: vec![InputModality::Text, InputModality::Image],
         },
+        // Antigravity Gemini models
+        ModelPreset {
+            id: "antigravity/gemini-3.1-pro-high".to_string(),
+            model: "antigravity/gemini-3.1-pro-high".to_string(),
+            display_name: "Antigravity Gemini 3.1 Pro High".to_string(),
+            description: "Gemini 3.1 Pro High via CLIProxyAPI with full thoughtSignature support and 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gemini-3.1-pro-low".to_string(),
+            model: "antigravity/gemini-3.1-pro-low".to_string(),
+            display_name: "Antigravity Gemini 3.1 Pro Low".to_string(),
+            description: "Gemini 3.1 Pro Low via CLIProxyAPI — cost-efficient pro variant with 1M context."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gemini-3-pro-high".to_string(),
+            model: "antigravity/gemini-3-pro-high".to_string(),
+            display_name: "Antigravity Gemini 3 Pro High".to_string(),
+            description: "Gemini 3 Pro High via CLIProxyAPI with deep reasoning and 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gemini-3-flash".to_string(),
+            model: "antigravity/gemini-3-flash".to_string(),
+            display_name: "Antigravity Gemini 3 Flash".to_string(),
+            description: "Gemini 3 Flash via CLIProxyAPI — fast and efficient with 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gemini-2.5-flash".to_string(),
+            model: "antigravity/gemini-2.5-flash".to_string(),
+            display_name: "Antigravity Gemini 2.5 Flash".to_string(),
+            description: "Gemini 2.5 Flash via CLIProxyAPI — ultra-fast with 1M context.".to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses optimized for speed".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gemini-2.5-flash-lite".to_string(),
+            model: "antigravity/gemini-2.5-flash-lite".to_string(),
+            display_name: "Antigravity Gemini 2.5 Flash Lite".to_string(),
+            description: "Gemini 2.5 Flash Lite via CLIProxyAPI — lowest-latency Gemini path."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses optimized for speed".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gemini-3-pro-image-preview".to_string(),
+            model: "antigravity/gemini-3-pro-image-preview".to_string(),
+            display_name: "Antigravity Gemini 3 Pro Image".to_string(),
+            description: "Gemini 3 Pro Image via CLIProxyAPI for text, image understanding, and image generation."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description:
+                    "Default Gemini reasoning behaviour for image workflows.".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
+            id: "antigravity/gpt-oss-120b-medium".to_string(),
+            model: "antigravity/gpt-oss-120b-medium".to_string(),
+            display_name: "Antigravity GPT-OSS 120B Medium".to_string(),
+            description: "GPT-OSS 120B Medium via CLIProxyAPI for general text and coding tasks."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text],
+        },
+        ModelPreset {
+            id: "antigravity/tab_flash_lite_preview".to_string(),
+            model: "antigravity/tab_flash_lite_preview".to_string(),
+            display_name: "Antigravity Tab Flash Lite Preview".to_string(),
+            description: "Tab Flash Lite Preview via CLIProxyAPI for ultra-fast text completions."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Low,
+                description: "Fast responses optimized for latency".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text],
+        },
+        ModelPreset {
+            id: "antigravity/tab_jump_flash_lite_preview".to_string(),
+            model: "antigravity/tab_jump_flash_lite_preview".to_string(),
+            display_name: "Antigravity Tab Jump Flash Lite Preview".to_string(),
+            description:
+                "Tab Jump Flash Lite Preview via CLIProxyAPI for low-latency text workflows."
+                    .to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Low,
+                description: "Fast responses optimized for latency".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text],
+        },
+        // Antigravity Anthropic models
+        ModelPreset {
+            id: "antigravity/claude-sonnet-4-6".to_string(),
+            model: "antigravity/claude-sonnet-4-6".to_string(),
+            display_name: "Antigravity Claude Sonnet 4.6".to_string(),
+            description: "Claude Sonnet 4.6 via CLIProxyAPI — fast execution with 1M context."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced speed and reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+        },
+        ModelPreset {
+            id: "antigravity/claude-opus-4-6-thinking".to_string(),
+            model: "antigravity/claude-opus-4-6-thinking".to_string(),
+            display_name: "Antigravity Claude Opus 4.6 Thinking".to_string(),
+            description: "Claude Opus 4.6 Thinking via CLIProxyAPI — deep reasoning with extended thinking and 1M context."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning for general tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Deep reasoning for complex problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::XHigh,
+                    description: "Maximum reasoning depth with extended thinking".to_string(),
+                },
+            ],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+        },
         // Deprecated models.
         ModelPreset {
             id: "gpt-5-codex".to_string(),

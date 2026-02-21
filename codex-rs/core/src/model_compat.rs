@@ -46,6 +46,14 @@ pub(crate) fn normalized_anthropic_model_slug(slug: &str) -> Option<&str> {
         && stripped.starts_with("claude-")
     {
         Some(stripped)
+    } else if let Some(stripped) = slug.strip_prefix("antigravity/")
+        && stripped.starts_with("claude-")
+    {
+        Some(stripped)
+    } else if let Some(stripped) = slug.strip_prefix("antigravity-anthropic/")
+        && stripped.starts_with("claude-")
+    {
+        Some(stripped)
     } else {
         None
     }

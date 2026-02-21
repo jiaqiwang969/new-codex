@@ -31,12 +31,16 @@ const GEMINI_PROVIDER_NAME: &str = "Gemini";
 const GEMMA_PROVIDER_NAME: &str = "Gemma";
 const GROK_PROVIDER_NAME: &str = "Grok";
 const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
+const ANTIGRAVITY_GEMINI_PROVIDER_NAME: &str = "Antigravity Gemini";
+const ANTIGRAVITY_ANTHROPIC_PROVIDER_NAME: &str = "Antigravity Anthropic";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const GEMINI_PROVIDER_ID: &str = "gemini";
 pub const GEMMA_PROVIDER_ID: &str = "gemma";
 pub const GROK_PROVIDER_ID: &str = "grok";
+pub const ANTIGRAVITY_GEMINI_PROVIDER_ID: &str = "antigravity-gemini";
+pub const ANTIGRAVITY_ANTHROPIC_PROVIDER_ID: &str = "antigravity-anthropic";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 
 /// Wire protocol that the provider speaks.
@@ -336,6 +340,14 @@ impl ModelProviderInfo {
         self.name == ANTHROPIC_PROVIDER_NAME
     }
 
+    pub fn is_antigravity_gemini(&self) -> bool {
+        self.name == ANTIGRAVITY_GEMINI_PROVIDER_NAME
+    }
+
+    pub fn is_antigravity_anthropic(&self) -> bool {
+        self.name == ANTIGRAVITY_ANTHROPIC_PROVIDER_NAME
+    }
+
     /// Apply this provider's HTTP headers (both static and env-based) to a
     /// `reqwest::RequestBuilder`. This is used by the Gemini streaming path
     /// which builds its own requests outside of the `codex-api` layer.
@@ -420,6 +432,50 @@ impl ModelProviderInfo {
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        }
+    }
+
+    pub fn create_antigravity_gemini_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: "Antigravity Gemini".into(),
+            base_url: None,
+            env_key: Some("ANTIGRAVITY_API_KEY".into()),
+            env_key_instructions: Some("Set ANTIGRAVITY_API_KEY to your CLIProxyAPI key.".into()),
+            experimental_bearer_token: None,
+            wire_api: WireApi::Gemini,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: true,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        }
+    }
+
+    pub fn create_antigravity_anthropic_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: "Antigravity Anthropic".into(),
+            base_url: None,
+            env_key: Some("ANTIGRAVITY_API_KEY".into()),
+            env_key_instructions: Some("Set ANTIGRAVITY_API_KEY to your CLIProxyAPI key.".into()),
+            experimental_bearer_token: None,
+            wire_api: WireApi::Anthropic,
+            query_params: None,
+            http_headers: Some(
+                [("anthropic-version".to_string(), "2023-06-01".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: true,
             supports_websockets: false,
             account_pool: Vec::new(),
         }

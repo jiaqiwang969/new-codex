@@ -237,16 +237,33 @@ fn context_window_for_claude_slug(slug: &str) -> i64 {
     }
 }
 
+fn normalize_slug_for_fallback_model_metadata(slug: &str) -> &str {
+    [
+        "openai/",
+        "google/",
+        "anthropic/",
+        "xai/",
+        "antigravity/",
+        "antigravity-gemini/",
+        "antigravity-anthropic/",
+    ]
+    .iter()
+    .find_map(|prefix| slug.strip_prefix(prefix))
+    .unwrap_or(slug)
+}
+
 // todo(aibrahim): remove most of the entries here when enabling models.json
 pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
-    if slug.starts_with("o3") || slug.starts_with("o4-mini") {
+    let normalized_slug = normalize_slug_for_fallback_model_metadata(slug);
+
+    if normalized_slug.starts_with("o3") || normalized_slug.starts_with("o4-mini") {
         model_info!(
             slug,
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             supports_reasoning_summaries: true,
             context_window: Some(200_000),
         )
-    } else if slug.starts_with("codex-mini-latest") {
+    } else if normalized_slug.starts_with("codex-mini-latest") {
         model_info!(
             slug,
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
@@ -254,34 +271,34 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: true,
             context_window: Some(200_000),
         )
-    } else if slug.starts_with("gpt-4.1") {
+    } else if normalized_slug.starts_with("gpt-4.1") {
         model_info!(
             slug,
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             supports_reasoning_summaries: false,
             context_window: Some(1_047_576),
         )
-    } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
+    } else if normalized_slug.starts_with("gpt-oss") {
         model_info!(
             slug,
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
             context_window: Some(96_000),
         )
-    } else if slug.starts_with("gpt-4o") {
+    } else if normalized_slug.starts_with("gpt-4o") {
         model_info!(
             slug,
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             supports_reasoning_summaries: false,
             context_window: Some(128_000),
         )
-    } else if slug.starts_with("gpt-3.5") {
+    } else if normalized_slug.starts_with("gpt-3.5") {
         model_info!(
             slug,
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             supports_reasoning_summaries: false,
             context_window: Some(16_385),
         )
-    } else if slug.starts_with("test-gpt-5") {
+    } else if normalized_slug.starts_with("test-gpt-5") {
         model_info!(
             slug,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
@@ -297,7 +314,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: true,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
         )
-    } else if slug.starts_with("exp-codex") || slug.starts_with("codex-1p") {
+    } else if normalized_slug.starts_with("exp-codex") || normalized_slug.starts_with("codex-1p") {
         model_info!(
             slug,
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
@@ -317,7 +334,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if slug.starts_with("exp-") {
+    } else if normalized_slug.starts_with("exp-") {
         model_info!(
             slug,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
@@ -331,7 +348,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if slug.starts_with("gpt-5.3-codex-spark") {
+    } else if normalized_slug.starts_with("gpt-5.3-codex-spark") {
         model_info!(
             slug,
             base_instructions: GPT_5_3_CODEX_SPARK_INSTRUCTIONS.to_string(),
@@ -355,9 +372,9 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 }),
             }),
         )
-    } else if slug.starts_with("gpt-5.3-codex")
-        || slug.starts_with("gpt-5.2-codex")
-        || slug.starts_with("bengalfox")
+    } else if normalized_slug.starts_with("gpt-5.3-codex")
+        || normalized_slug.starts_with("gpt-5.2-codex")
+        || normalized_slug.starts_with("bengalfox")
     {
         model_info!(
             slug,
@@ -379,9 +396,9 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 }),
             }),
         )
-    } else if slug.starts_with("gpt-5.1-codex")
-        || slug.starts_with("gpt-5-codex")
-        || slug.starts_with("codex-")
+    } else if normalized_slug.starts_with("gpt-5.1-codex")
+        || normalized_slug.starts_with("gpt-5-codex")
+        || normalized_slug.starts_with("codex-")
     {
         model_info!(
             slug,
@@ -395,7 +412,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
         )
-    } else if slug.starts_with("gpt-5.2") || slug.starts_with("boomslang") {
+    } else if normalized_slug.starts_with("gpt-5.2") || normalized_slug.starts_with("boomslang") {
         model_info!(
             slug,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
@@ -410,7 +427,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh_non_codex(),
         )
-    } else if slug.starts_with("gpt-5.1") {
+    } else if normalized_slug.starts_with("gpt-5.1") {
         model_info!(
             slug,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
@@ -425,7 +442,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_non_codex(),
         )
-    } else if slug.starts_with("gpt-5") {
+    } else if normalized_slug.starts_with("gpt-5") {
         model_info!(
             slug,
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
@@ -453,7 +470,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if slug.starts_with("gemini-") {
+    } else if normalized_slug.starts_with("gemini-") {
         model_info!(
             slug,
             base_instructions: GEMINI_INSTRUCTIONS.to_string(),
@@ -470,7 +487,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 "read_file".to_string(),
             ],
         )
-    } else if is_gemma_model_slug(slug) {
+    } else if is_gemma_model_slug(normalized_slug) {
         // Local Gemma deployments often run with a smaller llama.cpp context
         // window than Gemini cloud models. Use a leaner system prompt and a
         // realistic default window so requests fit by default.
@@ -490,7 +507,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 "read_file".to_string(),
             ],
         )
-    } else if is_anthropic_model_slug(slug) {
+    } else if is_anthropic_model_slug(normalized_slug) {
         model_info!(
             slug,
             base_instructions: format!("{BASE_INSTRUCTIONS_WITH_APPLY_PATCH}\n\n{CLAUDE_INSTRUCTIONS}"),
@@ -500,7 +517,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: false,
             support_verbosity: false,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(context_window_for_claude_slug(slug)),
+            context_window: Some(context_window_for_claude_slug(normalized_slug)),
             default_reasoning_level: Some(ReasoningEffort::High),
             input_modalities: vec![InputModality::Text, InputModality::Image],
             experimental_supported_tools: vec![
@@ -509,7 +526,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 "read_file".to_string(),
             ],
         )
-    } else if is_grok_model_slug(slug) {
+    } else if is_grok_model_slug(normalized_slug) {
         // Grok speaks an OpenAI-compatible Responses API, but tool support differs from OpenAI:
         // - `custom` (freeform) tools are rejected by xAI (so use JSON apply_patch if enabled)
         // - `web_search` does not accept `external_web_access` toggles (cached/live)
@@ -524,7 +541,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: true,
             default_verbosity: Some(Verbosity::Low),
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(context_window_for_grok_slug(slug)),
+            context_window: Some(context_window_for_grok_slug(normalized_slug)),
             supported_reasoning_levels: Vec::new(),
             experimental_supported_tools: vec![
                 "grep_files".to_string(),
@@ -638,6 +655,50 @@ mod tests {
             model.input_modalities,
             vec![InputModality::Text, InputModality::Image]
         );
+    }
+
+    #[test]
+    fn antigravity_gemini_models_reuse_gemini_metadata_without_fallback() {
+        let model = find_model_info_for_slug("antigravity/gemini-3.1-pro-high");
+
+        assert_eq!(model.slug, "antigravity/gemini-3.1-pro-high".to_string());
+        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
+        assert!(!model.used_fallback_model_metadata);
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+        assert!(model.supports_parallel_tool_calls);
+        assert_eq!(
+            model.experimental_supported_tools,
+            vec![
+                "grep_files".to_string(),
+                "list_dir".to_string(),
+                "read_file".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn antigravity_gpt_oss_models_reuse_gpt_oss_metadata_without_fallback() {
+        let model = find_model_info_for_slug("antigravity/gpt-oss-120b-medium");
+
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+        assert!(!model.used_fallback_model_metadata);
+        assert_eq!(model.context_window, Some(96_000));
+    }
+
+    #[test]
+    fn antigravity_anthropic_models_reuse_claude_metadata_without_fallback() {
+        let model = find_model_info_for_slug("antigravity-anthropic/claude-sonnet-4-6");
+
+        assert_eq!(
+            model.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+        assert!(!model.used_fallback_model_metadata);
+        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));
     }
 
     #[test]

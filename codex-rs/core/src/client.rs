@@ -1292,21 +1292,11 @@ impl ModelClientSession {
             None => None,
         };
 
-        // Respect provider-local key rotation (account_pool updates env_key).
-        let gemini_api_key = if let Some(env_key) = provider.env_key.as_deref() {
-            std::env::var(env_key)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    auth.as_ref()
-                        .and_then(|auth| auth.api_key_for_env_key(env_key))
-                        .map(str::to_string)
-                })
-        } else {
+        let gemini_api_key = resolve_provider_api_key(provider, auth.as_ref()).or_else(|| {
+            if provider.env_key.is_some() {
+                return None;
+            }
             crate::auth::read_gemini_api_key_from_env().or_else(|| {
-                // Try to read from auth.json (~/.codex/auth.json) which may contain
-                // a GEMINI_API_KEY field.
                 if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
                     crate::auth::read_gemini_api_key_from_auth_json(
                         &codex_home,
@@ -1316,13 +1306,17 @@ impl ModelClientSession {
                     None
                 }
             })
-        };
+        });
 
         let make_request_builder = || {
             let mut req_builder = client.post(&url);
             req_builder = provider.apply_http_headers(req_builder);
             if let Some(api_key) = gemini_api_key.as_deref() {
-                req_builder = req_builder.header("x-goog-api-key", api_key);
+                req_builder = if provider.requires_openai_auth {
+                    req_builder.bearer_auth(api_key)
+                } else {
+                    req_builder.header("x-goog-api-key", api_key)
+                };
             }
             req_builder
         };
@@ -1446,27 +1440,18 @@ impl ModelClientSession {
             None => None,
         };
 
-        let anthropic_api_key = if let Some(env_key) = provider.env_key.as_deref() {
-            std::env::var(env_key)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    auth.as_ref()
-                        .and_then(|auth| auth.api_key_for_env_key(env_key))
-                        .map(str::to_string)
-                })
-                .ok_or_else(|| {
-                    CodexErr::EnvVar(crate::error::EnvVarError {
-                        var: env_key.to_string(),
-                        instructions: provider.env_key_instructions.clone(),
-                    })
-                })?
-        } else {
+        let Some(env_key) = provider.env_key.as_deref() else {
             return Err(CodexErr::UnsupportedOperation(
                 "Anthropic providers must define env_key".to_string(),
             ));
         };
+        let anthropic_api_key =
+            resolve_provider_api_key(provider, auth.as_ref()).ok_or_else(|| {
+                CodexErr::EnvVar(crate::error::EnvVarError {
+                    var: env_key.to_string(),
+                    instructions: provider.env_key_instructions.clone(),
+                })
+            })?;
 
         let formatted_input = prompt.get_formatted_input();
         let (messages, memory_citation_requirements) =
@@ -1609,6 +1594,22 @@ impl ModelClientSession {
         let byte_stream = response.bytes_stream();
         Ok(spawn_anthropic_sse_stream(byte_stream, idle_timeout))
     }
+}
+
+fn resolve_provider_api_key(
+    provider: &ModelProviderInfo,
+    auth: Option<&CodexAuth>,
+) -> Option<String> {
+    let env_key = provider.env_key.as_deref()?;
+    std::env::var(env_key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            auth.and_then(|auth| auth.api_key_for_env_key(env_key))
+                .map(str::to_string)
+        })
+        .or_else(|| auth.and_then(CodexAuth::api_key).map(str::to_string))
 }
 
 fn validate_image_input_compat(prompt: &Prompt, model_slug: &str) -> Result<()> {
@@ -2053,6 +2054,7 @@ mod tests {
     use super::ModelClient;
     use super::anthropic_thinking_enabled_with_env;
     use super::sanitize_reasoning_effort_for_model;
+    use crate::auth::CodexAuth;
     use codex_api::common::Reasoning;
     use codex_otel::OtelManager;
     use codex_protocol::ThreadId;
@@ -2064,6 +2066,7 @@ mod tests {
     use codex_protocol::protocol::SubAgentSource;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn test_model_client(session_source: SessionSource) -> ModelClient {
         let provider = crate::model_provider_info::create_oss_provider_with_base_url(
@@ -2138,6 +2141,40 @@ mod tests {
             .get("x-openai-subagent")
             .and_then(|value| value.to_str().ok());
         assert_eq!(value, Some("memory_consolidation"));
+    }
+
+    #[test]
+    fn resolve_provider_api_key_uses_env_specific_mapping_first() {
+        let mut provider =
+            crate::model_provider_info::ModelProviderInfo::create_anthropic_provider();
+        provider.env_key = Some("__CODEX_TEST_ANTIGRAVITY_KEY__".to_string());
+
+        let auth = CodexAuth::from_api_key_and_env_keys_for_testing(
+            "fallback-key",
+            HashMap::from([(
+                "__CODEX_TEST_ANTIGRAVITY_KEY__".to_string(),
+                "mapped-key".to_string(),
+            )]),
+        );
+
+        assert_eq!(
+            super::resolve_provider_api_key(&provider, Some(&auth)),
+            Some("mapped-key".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_provider_api_key_falls_back_to_primary_auth_key() {
+        let mut provider =
+            crate::model_provider_info::ModelProviderInfo::create_anthropic_provider();
+        provider.env_key = Some("__CODEX_TEST_MISSING_KEY__".to_string());
+
+        let auth = CodexAuth::from_api_key_and_env_keys_for_testing("fallback-key", HashMap::new());
+
+        assert_eq!(
+            super::resolve_provider_api_key(&provider, Some(&auth)),
+            Some("fallback-key".to_string())
+        );
     }
 
     #[tokio::test]

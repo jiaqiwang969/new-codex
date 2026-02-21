@@ -1029,7 +1029,17 @@ impl SessionConfiguration {
 }
 
 fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
-    if is_gemma_model_slug(model_slug) {
+    // Check for antigravity prefix first
+    if model_slug.starts_with("antigravity/claude-")
+        || model_slug.starts_with("antigravity-anthropic/")
+    {
+        Some(crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID)
+    } else if model_slug.starts_with("antigravity/")
+        || model_slug.starts_with("antigravity-gemini/")
+    {
+        // Antigravity non-Claude models use the native Gemini endpoint in this integration.
+        Some(crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID)
+    } else if is_gemma_model_slug(model_slug) {
         Some(crate::model_provider_info::GEMMA_PROVIDER_ID)
     } else if model_slug.starts_with("gemini-") {
         Some(crate::model_provider_info::GEMINI_PROVIDER_ID)
@@ -1053,6 +1063,12 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
                     && !provider.is_gemini())
         }
         crate::model_provider_info::ANTHROPIC_PROVIDER_ID => {
+            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
+        }
+        crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID => {
+            provider.wire_api == crate::model_provider_info::WireApi::Gemini
+        }
+        crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID => {
             provider.wire_api == crate::model_provider_info::WireApi::Anthropic
         }
         crate::model_provider_info::GROK_PROVIDER_ID => provider.is_grok(),
@@ -2926,16 +2942,52 @@ impl Session {
         self.record_conversation_items(ctx, &[item]).await;
     }
 
+    fn normalize_model_slug_for_server_model_check(slug: &str) -> &str {
+        [
+            "openai/",
+            "google/",
+            "anthropic/",
+            "xai/",
+            "antigravity/",
+            "antigravity-gemini/",
+            "antigravity-anthropic/",
+        ]
+        .iter()
+        .find_map(|prefix| slug.strip_prefix(prefix))
+        .unwrap_or(slug)
+    }
+
+    fn should_warn_on_server_model_mismatch(
+        provider_wire_api: crate::model_provider_info::WireApi,
+        requested_model: &str,
+        server_model: &str,
+    ) -> bool {
+        if provider_wire_api != crate::model_provider_info::WireApi::Responses {
+            return false;
+        }
+
+        let requested_model_normalized =
+            Self::normalize_model_slug_for_server_model_check(requested_model);
+        let server_model_normalized =
+            Self::normalize_model_slug_for_server_model_check(server_model);
+        !server_model_normalized.eq_ignore_ascii_case(requested_model_normalized)
+    }
+
     async fn maybe_warn_on_server_model_mismatch(
         self: &Arc<Self>,
         turn_context: &Arc<TurnContext>,
         server_model: String,
     ) -> bool {
         let requested_model = turn_context.model_info.slug.clone();
-        let server_model_normalized = server_model.to_ascii_lowercase();
-        let requested_model_normalized = requested_model.to_ascii_lowercase();
-        if server_model_normalized == requested_model_normalized {
-            info!("server reported model {server_model} (matches requested model)");
+        if !Self::should_warn_on_server_model_mismatch(
+            turn_context.provider.wire_api,
+            &requested_model,
+            &server_model,
+        ) {
+            info!(
+                provider_wire_api = ?turn_context.provider.wire_api,
+                "server reported model {server_model} (no mismatch warning needed for requested model {requested_model})"
+            );
             return false;
         }
 
@@ -7142,6 +7194,46 @@ mod tests {
         assert_eq!(third, None);
     }
 
+    #[test]
+    fn server_model_warning_ignores_non_responses_prefix_only_differences() {
+        assert!(
+            !Session::should_warn_on_server_model_mismatch(
+                crate::model_provider_info::WireApi::Anthropic,
+                "antigravity/claude-sonnet-4-6",
+                "claude-sonnet-4-6",
+            ),
+            "anthropic wire API should not trigger cyber fallback warning",
+        );
+        assert!(
+            !Session::should_warn_on_server_model_mismatch(
+                crate::model_provider_info::WireApi::Gemini,
+                "antigravity/gemini-3.1-pro-high",
+                "gemini-3.1-pro-high",
+            ),
+            "gemini wire API should not trigger cyber fallback warning",
+        );
+    }
+
+    #[test]
+    fn server_model_warning_normalizes_known_namespace_prefixes_for_responses() {
+        assert!(
+            !Session::should_warn_on_server_model_mismatch(
+                crate::model_provider_info::WireApi::Responses,
+                "openai/gpt-5.3-codex",
+                "gpt-5.3-codex",
+            ),
+            "namespaced and bare slugs should match",
+        );
+        assert!(
+            Session::should_warn_on_server_model_mismatch(
+                crate::model_provider_info::WireApi::Responses,
+                "gpt-5.3-codex",
+                "gpt-5.2",
+            ),
+            "true fallback downgrade should still warn",
+        );
+    }
+
     #[tokio::test]
     async fn provider_switch_history_sanitizer_drops_encrypted_reasoning_items() {
         let session_configuration = make_session_configuration_for_tests().await;
@@ -7604,6 +7696,33 @@ mod tests {
 
         assert!(next.provider.is_openai());
         assert_eq!(next.provider_id, "openai");
+    }
+
+    #[tokio::test]
+    async fn apply_switches_to_antigravity_gemini_provider_for_non_claude_antigravity_models() {
+        let (session, _) = make_session_and_context().await;
+        let session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let (next, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model(
+                    "antigravity/gpt-oss-120b-medium",
+                )),
+                ..Default::default()
+            })
+            .expect("model switch to antigravity non-claude model should be valid");
+
+        assert_eq!(
+            next.provider_id,
+            crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID
+        );
+        assert_eq!(
+            next.provider.wire_api,
+            crate::model_provider_info::WireApi::Gemini
+        );
     }
 
     #[tokio::test]
@@ -8977,11 +9096,20 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
     }
 
     async fn build_test_config(codex_home: &Path) -> Config {
-        ConfigBuilder::default()
+        let mut config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
             .build()
             .await
-            .expect("load default test config")
+            .expect("load default test config");
+        config.model_providers.insert(
+            crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID.to_string(),
+            crate::model_provider_info::ModelProviderInfo::create_antigravity_gemini_provider(),
+        );
+        config.model_providers.insert(
+            crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID.to_string(),
+            crate::model_provider_info::ModelProviderInfo::create_antigravity_anthropic_provider(),
+        );
+        config
     }
 
     fn otel_manager(
