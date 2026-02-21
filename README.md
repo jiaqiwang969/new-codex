@@ -51,3 +51,9 @@
   协作、图像处理、git 可视化的多模型 AI 开发平台。
 
   详细的技术文档、代码组织、配置说明和 MCP 用法请参阅 [codex-rs/README.md](./codex-rs/README.md)。
+
+  7. 时光机沙箱调试 (Time Freeze Sandbox)
+
+  - 提供 `scripts/freeze-debug-vm.sh`，基于 OrbStack + Nix Flake 实现 **12秒级** 的运行态克隆。
+  - 在 CLI 发生崩溃或逻辑错误时，瞬间将当前的源码目录、Git 脏工作区和 `~/.codex` 状态（包含 SQLite 记忆和 Entire checkpoint 历史）打包注入到一个完全隔离的 NixOS 容器中。
+  - 配合 `entire rewind` 和 `nix develop`，在新沙箱中进行完美的“时间倒流”与断点调试，修复完成后可将补丁带回母机。如果修复失败，直接销毁沙箱，对 macOS 宿主机实现**零污染**。
