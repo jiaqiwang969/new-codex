@@ -214,3 +214,4 @@ pub use thread_memory::build_thread_memory_trace_items;
 pub mod compact;
 pub mod memory_trace;
 pub mod otel_init;
+pub mod git_side_effects;

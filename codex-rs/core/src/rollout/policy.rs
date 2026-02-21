@@ -166,6 +166,7 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_) => None,
+        | EventMsg::CollabResumeBegin(_)
+        | EventMsg::FileSystemMutated(_) => None,
     }
 }

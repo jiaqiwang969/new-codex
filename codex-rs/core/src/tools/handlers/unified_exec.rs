@@ -176,23 +176,33 @@ impl ToolHandler for UnifiedExecHandler {
                     return Ok(output);
                 }
 
-                manager
-                    .exec_command(
-                        ExecCommandRequest {
-                            command,
-                            process_id,
-                            yield_time_ms,
-                            max_output_tokens,
-                            workdir,
-                            network: context.turn.network.clone(),
-                            tty,
-                            sandbox_permissions,
-                            justification,
-                            prefix_rule,
-                        },
-                        &context,
-                    )
-                    .await
+                let cwd_clone = cwd.clone();
+                let call_id_clone = context.call_id.clone();
+                let session_clone = context.session.clone();
+                let turn_clone = context.turn.clone();
+                crate::git_side_effects::track_tool_side_effects(
+                    &cwd_clone,
+                    call_id_clone,
+                    session_clone.as_ref(),
+                    turn_clone.as_ref(),
+                    || async {
+                        manager.exec_command(
+                            ExecCommandRequest {
+                                command,
+                                process_id,
+                                yield_time_ms,
+                                max_output_tokens,
+                                workdir,
+                                network: context.turn.network.clone(),
+                                tty,
+                                sandbox_permissions,
+                                justification,
+                                prefix_rule,
+                            },
+                            &context,
+                        ).await
+                    }
+                ).await
                     .map_err(|err| {
                         FunctionCallError::RespondToModel(format!("exec_command failed: {err:?}"))
                     })?

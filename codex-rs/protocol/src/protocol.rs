@@ -1005,6 +1005,7 @@ pub enum EventMsg {
 
     /// Notification advising the user that something they are using has been
     /// deprecated and should be phased out.
+    FileSystemMutated(FileSystemMutatedEvent),
     DeprecationNotice(DeprecationNoticeEvent),
 
     BackgroundEvent(BackgroundEventEvent),
@@ -2269,6 +2270,14 @@ pub struct TerminalInteractionEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct BackgroundEventEvent {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FileSystemMutatedEvent {
+    pub call_id: String,
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

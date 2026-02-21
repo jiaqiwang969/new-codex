@@ -603,6 +603,7 @@ pub(crate) struct TurnContext {
     memory_read_path_source: OnceCell<Option<memories::MemoryReadPathSource>>,
     hook_memory_context: OnceCell<Option<HookEventMemoryContext>>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
+    pub(crate) side_effects_files: std::sync::Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 impl TurnContext {
     pub(crate) fn model_context_window(&self) -> Option<i64> {
@@ -658,6 +659,8 @@ impl TurnContext {
         .with_agent_roles(config.agent_roles.clone());
 
         Self {
+            side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+
             sub_id: self.sub_id.clone(),
             config: Arc::new(config),
             auth_manager: self.auth_manager.clone(),
@@ -1301,6 +1304,8 @@ impl Session {
                 .enabled(Feature::UseLinuxSandboxBwrap),
         ));
         TurnContext {
+            side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+
             sub_id,
             config: per_turn_config.clone(),
             auth_manager: auth_manager_for_context,
@@ -4822,7 +4827,10 @@ async fn spawn_review_thread(
             .enabled(Feature::UseLinuxSandboxBwrap),
     ));
 
+
     let review_turn_context = TurnContext {
+        side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+
         sub_id: review_turn_id,
         config: per_turn_config,
         auth_manager: auth_manager_for_context,
@@ -5231,12 +5239,16 @@ pub(crate) async fn run_turn(
                         let user_prompt = sampling_request_input_messages.join("\n");
                         let ai_response = last_agent_message.clone().unwrap_or_default();
 
+                        let side_effects_guard = turn_context.side_effects_files.lock().await;
+                        let files_changed: Vec<String> = side_effects_guard.iter().cloned().collect();
+                        drop(side_effects_guard);
+
                         let input = codex_hooks::EntireSummaryInput {
                             thread_id: sess.conversation_id.to_string(),
                             turn_id: turn_context.sub_id.clone(),
                             user_prompt,
                             ai_response,
-                            files_changed: vec![],
+                            files_changed,
                         };
 
                         if let Ok(summary) =
