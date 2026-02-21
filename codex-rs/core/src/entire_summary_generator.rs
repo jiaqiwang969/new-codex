@@ -171,13 +171,14 @@ fn output_schema() -> serde_json::Value {
     json!({
         "type": "object",
         "properties": {
-            "motivation": { "type": "string" },
-            "approach": { "type": "string" },
+            "is_meaningful": { "type": "boolean" },
+            "motivation": { "type": ["string", "null"] },
+            "approach": { "type": ["string", "null"] },
             "challenges": { "type": ["string", "null"] },
             "tradeoffs": { "type": ["string", "null"] },
-            "outcome": { "type": "string" }
+            "outcome": { "type": ["string", "null"] }
         },
-        "required": ["motivation", "approach", "challenges", "tradeoffs", "outcome"],
+        "required": ["is_meaningful", "motivation", "approach", "challenges", "tradeoffs", "outcome"],
         "additionalProperties": false
     })
 }

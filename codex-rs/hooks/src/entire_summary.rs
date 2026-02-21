@@ -26,11 +26,12 @@ pub struct EntireSummaryInput {
 /// Generated WHY-focused summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntireSummary {
-    pub motivation: String,
-    pub approach: String,
+    pub is_meaningful: bool,
+    pub motivation: Option<String>,
+    pub approach: Option<String>,
     pub challenges: Option<String>,
     pub tradeoffs: Option<String>,
-    pub outcome: String,
+    pub outcome: Option<String>,
 }
 
 /// Builds the WHY-focused prompt for summary generation.
@@ -55,8 +56,9 @@ AI Response:
 Files Changed:
 {files_list}
 
-Generate a structured summary that answers these key questions:
+First, evaluate if this session contains meaningful work (e.g., code changes, technical discussions, architectural decisions, debugging). If it's just trivial chit-chat (like "hi", "how are you"), set `is_meaningful` to false and leave the rest as null.
 
+If it IS meaningful, generate a structured summary that answers these key questions:
 1. MOTIVATION: Why did the user need this? What problem were they solving?
 2. APPROACH: What solution was chosen? Were alternatives considered?
 3. CHALLENGES: What obstacles were encountered? How were they overcome? (optional if none)
@@ -65,11 +67,12 @@ Generate a structured summary that answers these key questions:
 
 Return a JSON object with this structure:
 {{
-  "motivation": "1-2 sentences explaining the problem/need",
-  "approach": "1-2 sentences describing the chosen solution",
-  "challenges": "1 sentence about obstacles (or null if none)",
-  "tradeoffs": "1 sentence about compromises (or null if none)",
-  "outcome": "1-2 sentences summarizing what was achieved"
+  "is_meaningful": true or false,
+  "motivation": "1-2 sentences explaining the problem/need (or null)",
+  "approach": "1-2 sentences describing the chosen solution (or null)",
+  "challenges": "1 sentence about obstacles (or null)",
+  "tradeoffs": "1 sentence about compromises (or null)",
+  "outcome": "1-2 sentences summarizing what was achieved (or null)"
 }}
 
 Focus on decision rationale and context that helps future developers understand "why this way?"

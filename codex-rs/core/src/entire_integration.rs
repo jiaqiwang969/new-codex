@@ -265,7 +265,15 @@ pub fn format_checkpoints_summary(checkpoints: &[EntireCheckpoint]) -> String {
     for checkpoint in checkpoints {
         // Use AI summary if available, otherwise use git commit summary
         let summary_text = if let Some(ai_summary) = &checkpoint.ai_summary {
-            format!("{} → {}", ai_summary.motivation, ai_summary.outcome)
+            if ai_summary.is_meaningful {
+                format!(
+                    "{} → {}",
+                    ai_summary.motivation.as_deref().unwrap_or("N/A"),
+                    ai_summary.outcome.as_deref().unwrap_or("N/A")
+                )
+            } else {
+                checkpoint.prompt_summary.clone()
+            }
         } else {
             checkpoint.prompt_summary.clone()
         };

@@ -5259,17 +5259,19 @@ pub(crate) async fn run_turn(
                                 tracing::warn!("Failed to save Entire summary: {}", e);
                             }
 
-                            let commit_message = format!(
-                                "{} → {}\n\nMotivation: {}\nApproach: {}\nChallenges: {}\nTradeoffs: {}",
-                                summary.motivation,
-                                summary.outcome,
-                                summary.motivation,
-                                summary.approach,
-                                summary.challenges.as_deref().unwrap_or("None"),
-                                summary.tradeoffs.as_deref().unwrap_or("None")
-                            );
-                            if !sampling_request_input_messages.is_empty() {
-                                sampling_request_input_messages[0] = commit_message;
+                            if summary.is_meaningful {
+                                let commit_message = format!(
+                                    "{} → {}\n\nMotivation: {}\nApproach: {}\nChallenges: {}\nTradeoffs: {}",
+                                    summary.motivation.as_deref().unwrap_or("N/A"),
+                                    summary.outcome.as_deref().unwrap_or("N/A"),
+                                    summary.motivation.as_deref().unwrap_or("N/A"),
+                                    summary.approach.as_deref().unwrap_or("N/A"),
+                                    summary.challenges.as_deref().unwrap_or("None"),
+                                    summary.tradeoffs.as_deref().unwrap_or("None")
+                                );
+                                if !sampling_request_input_messages.is_empty() {
+                                    sampling_request_input_messages[0] = commit_message;
+                                }
                             }
                         }
                     }
