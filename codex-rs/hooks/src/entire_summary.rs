@@ -100,7 +100,7 @@ pub async fn save_summary(
         .await
         .context("Failed to create .entire/summaries directory")?;
 
-    let summary_path = summaries_dir.join(format!("{}.json", checkpoint_id));
+    let summary_path = summaries_dir.join(format!("{checkpoint_id}.json"));
     let summary_json =
         serde_json::to_string_pretty(summary).context("Failed to serialize summary")?;
 
@@ -116,7 +116,7 @@ pub async fn load_summary(repo_root: &Path, checkpoint_id: &str) -> Result<Optio
     let summary_path = repo_root
         .join(".entire")
         .join("summaries")
-        .join(format!("{}.json", checkpoint_id));
+        .join(format!("{checkpoint_id}.json"));
 
     if !summary_path.exists() {
         return Ok(None);
