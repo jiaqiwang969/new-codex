@@ -3107,6 +3107,38 @@ impl Session {
                 .into(),
             );
         }
+
+        if turn_context.config.memories.entire_summary_enabled {
+            if let Ok(checkpoints) =
+                crate::entire_integration::get_recent_entire_checkpoints_with_summaries(
+                    turn_context.cwd.as_path(),
+                    3, // max checkpoints for main agent
+                    Some(&self.services.model_client),
+                    Some(&self.services.models_manager),
+                    Some(&turn_context.config),
+                )
+                .await
+            {
+                if !checkpoints.is_empty() {
+                    let summary =
+                        crate::entire_integration::format_checkpoints_summary(&checkpoints);
+                    let summary =
+                        codex_utils_string::take_last_bytes_at_char_boundary(&summary, 3000)
+                            .trim()
+                            .to_string();
+                    if !summary.is_empty() {
+                        items.push(
+                            DeveloperInstructions::new(format!(
+                                "Recent AI Sessions (via Entire):\n{}",
+                                summary
+                            ))
+                            .into(),
+                        );
+                    }
+                }
+            }
+        }
+
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         let (collaboration_mode, base_instructions) = {
             let state = self.state.lock().await;
@@ -5186,6 +5218,62 @@ pub(crate) async fn run_turn(
                     last_agent_message = sampling_request_last_agent_message;
                     let memory_context = turn_context.resolve_hook_memory_context().await;
                     let memory = turn_context.resolve_memory_link().await;
+
+                    let mut sampling_request_input_messages = sampling_request_input_messages;
+
+                    if turn_context.config.memories.entire_summary_enabled {
+                        sess.notify_background_event(
+                            &turn_context,
+                            "Generating Entire session summary...".to_string(),
+                        )
+                        .await;
+
+                        let user_prompt = sampling_request_input_messages.join("\n");
+                        let ai_response = last_agent_message.clone().unwrap_or_default();
+
+                        let input = codex_hooks::EntireSummaryInput {
+                            thread_id: sess.conversation_id.to_string(),
+                            turn_id: turn_context.sub_id.clone(),
+                            user_prompt,
+                            ai_response,
+                            files_changed: vec![],
+                        };
+
+                        if let Ok(summary) =
+                            crate::entire_summary_generator::generate_entire_summary(
+                                &input,
+                                &sess.services.model_client,
+                                &sess.services.models_manager,
+                                &turn_context.config,
+                            )
+                            .await
+                        {
+                            let repo_root = turn_context.cwd.clone();
+                            if let Err(e) = codex_hooks::save_summary(
+                                &repo_root,
+                                &turn_context.sub_id,
+                                &summary,
+                            )
+                            .await
+                            {
+                                tracing::warn!("Failed to save Entire summary: {}", e);
+                            }
+
+                            let commit_message = format!(
+                                "{} → {}\n\nMotivation: {}\nApproach: {}\nChallenges: {}\nTradeoffs: {}",
+                                summary.motivation,
+                                summary.outcome,
+                                summary.motivation,
+                                summary.approach,
+                                summary.challenges.as_deref().unwrap_or("None"),
+                                summary.tradeoffs.as_deref().unwrap_or("None")
+                            );
+                            if !sampling_request_input_messages.is_empty() {
+                                sampling_request_input_messages[0] = commit_message;
+                            }
+                        }
+                    }
+
                     let memory_scope_version = memory
                         .as_ref()
                         .and_then(|memory| memory.scope_version.clone());
