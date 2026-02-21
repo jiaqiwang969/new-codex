@@ -1274,7 +1274,7 @@ fn create_list_dir_tool() -> ToolSpec {
     })
 }
 
-fn create_js_repl_tool() -> ToolSpec {
+fn create_js_repl_freeform_tool() -> ToolSpec {
     const JS_REPL_FREEFORM_GRAMMAR: &str = r#"start: /[\s\S]*/"#;
 
     ToolSpec::Freeform(FreeformTool {
@@ -1285,6 +1285,28 @@ fn create_js_repl_tool() -> ToolSpec {
             r#type: "grammar".to_string(),
             syntax: "lark".to_string(),
             definition: JS_REPL_FREEFORM_GRAMMAR.to_string(),
+        },
+    })
+}
+
+fn create_js_repl_json_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "code".to_string(),
+        JsonSchema::String {
+            description: Some("Raw JavaScript source text to execute, optionally with a first-line pragma like `// codex-js-repl: timeout_ms=15000`.".to_string()),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "js_repl".to_string(),
+        description: "Runs JavaScript in a persistent Node kernel with top-level await."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["code".to_string()]),
+            additional_properties: Some(false.into()),
         },
     })
 }
@@ -1687,7 +1709,15 @@ pub(crate) fn build_specs(
     builder.register_handler("update_plan", plan_handler);
 
     if config.js_repl_enabled {
-        builder.push_spec(create_js_repl_tool());
+        let is_function = matches!(
+            config.apply_patch_tool_type,
+            Some(ApplyPatchToolType::Function)
+        );
+        if is_function {
+            builder.push_spec(create_js_repl_json_tool());
+        } else {
+            builder.push_spec(create_js_repl_freeform_tool());
+        }
         builder.push_spec(create_js_repl_reset_tool());
         builder.register_handler("js_repl", js_repl_handler);
         builder.register_handler("js_repl_reset", js_repl_reset_handler);
