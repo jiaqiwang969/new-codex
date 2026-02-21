@@ -215,3 +215,4 @@ pub mod compact;
 pub mod memory_trace;
 pub mod otel_init;
 pub mod git_side_effects;
+pub mod freeze_debug;
