@@ -4168,10 +4168,24 @@ impl ChatWidget {
                     }
                     match cmd.status() {
                         Ok(status) if status.success() => {
+                            let mut details = String::new();
+                            details.push_str("✅ **[Background] Time-Freeze Sandbox Cloned Successfully!**\n\n");
+                            details.push_str("Your dirty workspace, `~/.codex` runtime state, and the active `turn_id` have been successfully synchronized into an isolated NixOS VM.\n\n");
+                            
+                            if let Some(ref root) = repo_root {
+                                details.push_str(&format!("**Crime Scene Log:** `{}`\n", root.join("last_panic.log").display()));
+                            }
+                            
+                            details.push_str("\n**How to start the investigation:**\n");
+                            details.push_str("1. List VMs: `orb list` (look for the newest `nixos-agent-debug-xxx`)\n");
+                            details.push_str("2. Enter Sandbox: `orb -m <VM_NAME> -u jqwang bash`\n");
+                            details.push_str("3. Wake Clone: `~/start-debug.sh`\n\n");
+                            details.push_str("The clone will automatically compile a local binary and begin investigating the bug.\n");
+
                             let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
                                 id: "".to_string(),
                                 msg: codex_core::protocol::EventMsg::UserMessage(codex_core::protocol::UserMessageEvent {
-                                    message: "✅ [Background] Snapshot completed! You can now debug in the new sandbox VM.".to_string(),
+                                    message: details,
                                     images: Some(vec![]),
                                     local_images: vec![],
                                     text_elements: vec![],
