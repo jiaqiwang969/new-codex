@@ -1763,7 +1763,13 @@ impl Config {
         for (key, mut provider) in cfg.model_providers.into_iter() {
             if matches!(
                 key.as_str(),
-                "openai" | GEMINI_PROVIDER_ID | GEMMA_PROVIDER_ID | GROK_PROVIDER_ID
+                "openai"
+                    | GEMINI_PROVIDER_ID
+                    | GEMMA_PROVIDER_ID
+                    | GROK_PROVIDER_ID
+                    | ANTHROPIC_PROVIDER_ID
+                    | ANTIGRAVITY_GEMINI_PROVIDER_ID
+                    | ANTIGRAVITY_ANTHROPIC_PROVIDER_ID
             ) && let Some(existing) = model_providers.get(&key)
             {
                 provider.name = existing.name.clone();
