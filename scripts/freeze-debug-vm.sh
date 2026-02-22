@@ -37,9 +37,9 @@ cd ~/${PROJECT_NAME}
 # If there is a flake.nix, wrap the command in nix develop
 if [ -f flake.nix ]; then
     # Inject sqlite into the nix shell alongside the flake's devShell
-    ENV_CMD=\"nix develop -c nix shell nixpkgs#sqlite -c bash\"
+    ENV_CMD="nix develop -c nix shell nixpkgs#sqlite -c bash"
 else
-    ENV_CMD=\"bash\"
+    ENV_CMD="bash"
 fi
 
 # We write the inner execution logic to a temporary script to avoid complex eval quoting issues
@@ -49,39 +49,39 @@ echo '========================================'
 echo '🛠️ Starting Codex in Self-Debug Mode...'
 echo '========================================'
 
-PANIC_CONTEXT=\"\"
-if [ -f \"last_panic.log\" ]; then
-    PANIC_CONTEXT=\"\n\nThe panic backtrace is:\n\n\$(cat last_panic.log)\"
+PANIC_CONTEXT=""
+if [ -f "last_panic.log" ]; then
+    PANIC_CONTEXT="\n\nThe panic backtrace is:\n\n$(cat last_panic.log)"
 fi
 
 # Ensure git identity exists in the sandbox so commits don't fail
 if ! git config --global user.name >/dev/null 2>&1; then
-    git config --global user.name \"jiaqiwang969\"
-    git config --global user.email \"jiaqiwang969@gmail.com\"
+    git config --global user.name "jiaqiwang969"
+    git config --global user.email "jiaqiwang969@gmail.com"
 fi
 
-echo '🔧 Checking for \`entire\` CLI tool...'
+echo '🔧 Checking for `entire` CLI tool...'
 if ! command -v entire > /dev/null 2>&1; then
-    echo '📦 Installing \`entire\` for the sandbox...'
+    echo '📦 Installing `entire` for the sandbox...'
     mkdir -p ~/bin
     if ! command -v cargo > /dev/null 2>&1; then
-        export PATH=\"\$HOME/.cargo/bin:\$PATH\"
+        export PATH="$HOME/.cargo/bin:$PATH"
     fi
     cargo install --git https://github.com/jiaqiwang969/cli entire --locked || true
-    export PATH=\"\$HOME/.cargo/bin:~/bin:\$PATH\"
+    export PATH="$HOME/.cargo/bin:~/bin:$PATH"
 fi
 
 echo '⚙️ Compiling local Linux binary for debugging...'
-if [ -f \"Cargo.toml\" ]; then
-    if grep -q \"codex-cli\" Cargo.toml; then
+if [ -f "Cargo.toml" ]; then
+    if grep -q "codex-cli" Cargo.toml; then
         cargo build -p codex-cli
-        BIN_PATH=\"./target/debug/codex-cli\"
+        BIN_PATH="./target/debug/codex-cli"
     else
         cargo build
-        BIN_PATH=\"./target/debug/\$(basename \$PWD)\"
+        BIN_PATH="./target/debug/$(basename $PWD)"
     fi
 else
-    BIN_PATH=\"codex\"
+    BIN_PATH="codex"
 fi
 
 echo '🚀 Booting the clone...'
@@ -99,13 +99,13 @@ YOUR MISSION:
 5. VERIFY: Run `cargo check -p codex-cli` or `cargo test` to ensure your fix compiles. DO NOT USE EXTERNAL APIS. Rely entirely on local tools and source code.
 PROMPT_EOF
 
-echo -e \"\$PANIC_CONTEXT\" >> /tmp/debug-prompt.txt
+echo -e "$PANIC_CONTEXT" >> /tmp/debug-prompt.txt
 
-\$BIN_PATH \"\$(cat /tmp/debug-prompt.txt)\"
+$BIN_PATH "$(cat /tmp/debug-prompt.txt)"
 EXEC_EOF
 
 chmod +x /tmp/debug-exec.sh
-\$ENV_CMD /tmp/debug-exec.sh
+$ENV_CMD /tmp/debug-exec.sh
 INNER_EOF
     chmod +x ~/start-debug.sh
 ORB_EOF
