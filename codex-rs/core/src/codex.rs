@@ -1059,20 +1059,23 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
     match provider_id {
         crate::model_provider_info::GEMINI_PROVIDER_ID => {
             provider.wire_api == crate::model_provider_info::WireApi::Gemini
+                && !provider.is_antigravity_gemini()
         }
         crate::model_provider_info::GEMMA_PROVIDER_ID => {
             provider.is_gemma()
                 || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                    && !provider.is_gemini())
+                    && !provider.is_gemini()
+                    && !provider.is_antigravity_gemini())
         }
         crate::model_provider_info::ANTHROPIC_PROVIDER_ID => {
             provider.wire_api == crate::model_provider_info::WireApi::Anthropic
+                && !provider.is_antigravity_anthropic()
         }
         crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Gemini
+            provider.is_antigravity_gemini()
         }
         crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
+            provider.is_antigravity_anthropic()
         }
         crate::model_provider_info::GROK_PROVIDER_ID => provider.is_grok(),
         _ => false,
