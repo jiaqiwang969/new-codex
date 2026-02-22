@@ -3664,33 +3664,56 @@ impl ChatWidget {
                     self.add_error_message("❌ The /freeze command is an experimental sandbox feature that requires NixOS/OrbStack support. To use it, you must explicitly set `freeze_sandbox_debug = true` in the [features] table of your ~/.codex/config.toml.".to_string());
                     return;
                 }
+
                 let reason = "User detected a logic bug or strange behavior.".to_string();
-                self.add_info_message(format!("🧊 Freezing moment for self-debugging..."), None);
-                
-                let mut cmd = std::process::Command::new("bash");
-                let script_path = std::env::temp_dir().join("codex-freeze-debug-vm.sh");
-                let _ = std::fs::write(&script_path, codex_core::freeze_debug::FREEZE_SCRIPT);
-                cmd.arg(&script_path);
-                
-                let repo_root = std::env::current_dir().ok().and_then(|cwd| {
-                    codex_core::git_info::resolve_root_git_project_for_trust(&cwd)
-                });
-                if let Some(ref root) = repo_root {
-                    cmd.arg(root.to_string_lossy().as_ref());
-                    let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
-                }
-                
-                match cmd.status() {
-                    Ok(status) if status.success() => {
-                        self.add_info_message("✅ Snapshot completed! You can now debug in the new sandbox VM.".to_string(), None);
-                    },
-                    Ok(status) => {
-                        self.add_error_message(format!("⚠️ Sandbox script exited with {status}."));
-                    },
-                    Err(e) => {
-                        self.add_error_message(format!("❌ Failed to execute freeze-debug-vm.sh: {e}"));
+                self.add_info_message(format!("🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."), None);
+                let app_event_tx = self.app_event_tx.clone();
+                std::thread::spawn(move || {
+                    let mut cmd = std::process::Command::new("bash");
+                    let script_path = std::env::temp_dir().join("codex-freeze-debug-vm.sh");
+                    let _ = std::fs::write(&script_path, codex_core::freeze_debug::FREEZE_SCRIPT);
+                    cmd.arg(&script_path);
+                    
+                    let repo_root = std::env::current_dir().ok().and_then(|cwd| {
+                        codex_core::git_info::resolve_root_git_project_for_trust(&cwd)
+                    });
+                    if let Some(ref root) = repo_root {
+                        cmd.arg(root.to_string_lossy().as_ref());
+                        let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
                     }
-                }
+                    
+                    match cmd.status() {
+                        Ok(status) if status.success() => {
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
+                                id: "".to_string(),
+                                msg: codex_core::protocol::EventMsg::UserMessage(codex_core::protocol::UserMessageEvent {
+                                    message: "✅ [Background] Snapshot completed! You can now debug in the new sandbox VM.".to_string(),
+                                    images: Some(vec![]),
+                                    local_images: vec![],
+                                    text_elements: vec![],
+                                }),
+                            }));
+                        },
+                        Ok(status) => {
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
+                                id: "".to_string(),
+                                msg: codex_core::protocol::EventMsg::Error(codex_core::protocol::ErrorEvent {
+                                    message: format!("⚠️ Sandbox script exited with {status}."),
+                                    codex_error_info: None,
+                                }),
+                            }));
+                        },
+                        Err(e) => {
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
+                                id: "".to_string(),
+                                msg: codex_core::protocol::EventMsg::Error(codex_core::protocol::ErrorEvent {
+                                    message: format!("❌ Failed to execute freeze-debug-vm.sh: {e}"),
+                                    codex_error_info: None,
+                                }),
+                            }));
+                        }
+                    }
+                });
             }
             SlashCommand::Rollout => {
                 if let Some(path) = self.rollout_path() {
