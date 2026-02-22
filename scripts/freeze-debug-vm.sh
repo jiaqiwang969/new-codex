@@ -51,7 +51,23 @@ eval \"\$ENV_CMD \\\"
         PANIC_CONTEXT=\\\"\n\nThe panic backtrace is:\n\n\$(cat last_panic.log)\\\"
     fi
 
-    codex \\\\\\\"I am a cloned instance of Codex running in an isolated VM sandbox. I just panicked and crashed my macOS host. My code and runtime state (including ~/.codex Entire checkpoints) have been perfectly frozen and cloned here.\${PANIC_CONTEXT}\n\nUse \`entire rewind\` to go back to the state before the crash, analyze the project source code to find the root cause, fix it, and verify it with tests/builds. Do not use any MCP or external API, focus on my own source code.\\\\\\\"
+    echo '⚙️ Compiling local Linux binary for debugging...'
+    if [ -f \\\"Cargo.toml\\\" ]; then
+        # Check if codex-cli exists to run a specific package, otherwise just run
+        if grep -q \\\"codex-cli\\\" Cargo.toml; then
+            cargo build -p codex-cli
+            BIN_PATH=\\\"./target/debug/codex-cli\\\"
+        else
+            cargo build
+            BIN_PATH=\\\"./target/debug/\$(basename \$PWD)\\\"
+        fi
+        
+        echo '🚀 Booting the clone...'
+        \$BIN_PATH \\\\\\\"I am a cloned instance of Codex running in an isolated VM sandbox. I just crashed or exhibited a logic bug on my macOS host. My code and runtime state (including ~/.codex Entire checkpoints) have been perfectly frozen and cloned here.\${PANIC_CONTEXT}\n\nUse \`entire rewind\` to go back to the state before the crash, analyze the project source code to find the root cause, fix it, and verify it with tests/builds. Do not use any MCP or external API, focus on my own source code.\\\\\\\"
+    else
+        echo '⚠️ Not a Rust project? Falling back to global codex...'
+        codex \\\\\\\"I am a cloned instance of Codex running in an isolated VM sandbox. I just crashed or exhibited a logic bug on my macOS host. My code and runtime state (including ~/.codex Entire checkpoints) have been perfectly frozen and cloned here.\${PANIC_CONTEXT}\n\nUse \`entire rewind\` to go back to the state before the crash, analyze the project source code to find the root cause, fix it, and verify it with tests/builds. Do not use any MCP or external API, focus on my own source code.\\\\\\\"
+    fi
 \\\"\"
 INNER_EOF
     chmod +x ~/start-debug.sh
