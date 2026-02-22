@@ -559,6 +559,14 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
         (GROK_PROVIDER_ID, P::create_grok_provider()),
         (ANTHROPIC_PROVIDER_ID, P::create_anthropic_provider()),
         (
+            ANTIGRAVITY_GEMINI_PROVIDER_ID,
+            P::create_antigravity_gemini_provider(),
+        ),
+        (
+            ANTIGRAVITY_ANTHROPIC_PROVIDER_ID,
+            P::create_antigravity_anthropic_provider(),
+        ),
+        (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
         ),

@@ -1,10 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::git_info::{get_git_repo_root, run_git_command_with_timeout};
-use crate::codex::{Session, TurnContext};
-use crate::protocol::{EventMsg, FileSystemMutatedEvent};
+use crate::codex::Session;
+use crate::codex::TurnContext;
+use crate::git_info::get_git_repo_root;
+use crate::git_info::run_git_command_with_timeout;
+use crate::protocol::EventMsg;
+use crate::protocol::FileSystemMutatedEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitState {
@@ -27,7 +32,7 @@ where
     let before_state = capture_git_state(cwd).await;
     let result = f().await;
     let after_state = capture_git_state(cwd).await;
-    
+
     if let (Some(b), Some(a)) = (before_state, after_state) {
         let changed_files = compute_git_side_effects(&b, &a).await;
         if !changed_files.is_empty() {
@@ -40,13 +45,15 @@ where
                     string_files.push(file_str);
                 }
             }
-            session.send_event(
-                turn,
-                EventMsg::FileSystemMutated(FileSystemMutatedEvent {
-                    call_id,
-                    files: string_files,
-                })
-            ).await;
+            session
+                .send_event(
+                    turn,
+                    EventMsg::FileSystemMutated(FileSystemMutatedEvent {
+                        call_id,
+                        files: string_files,
+                    }),
+                )
+                .await;
         }
     }
     result
@@ -54,7 +61,7 @@ where
 
 pub async fn capture_git_state(cwd: &Path) -> Option<GitState> {
     let repo_root = get_git_repo_root(cwd)?;
-    
+
     // Get HEAD hash
     let head_output = run_git_command_with_timeout(&["rev-parse", "HEAD"], &repo_root).await;
     let head_hash = head_output.and_then(|out| {
@@ -64,9 +71,10 @@ pub async fn capture_git_state(cwd: &Path) -> Option<GitState> {
             None
         }
     });
-    
+
     // Get uncommitted files
-    let status_output = run_git_command_with_timeout(&["status", "--porcelain", "-z"], &repo_root).await;
+    let status_output =
+        run_git_command_with_timeout(&["status", "--porcelain", "-z"], &repo_root).await;
     let mut uncommitted_files = BTreeMap::new();
     if let Some(out) = status_output {
         if out.status.success() {
@@ -75,17 +83,18 @@ pub async fn capture_git_state(cwd: &Path) -> Option<GitState> {
             let mut i = 0;
             while i < parts.len() {
                 let part = parts[i];
-                if part.is_empty() { i += 1; continue; }
+                if part.is_empty() {
+                    i += 1;
+                    continue;
+                }
                 let status = &part[0..2];
                 let path_str = &part[3..];
                 let abs_path = repo_root.join(path_str);
-                
-                let mtime = std::fs::metadata(&abs_path)
-                    .and_then(|m| m.modified())
-                    .ok();
-                
+
+                let mtime = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
+
                 uncommitted_files.insert(abs_path, mtime);
-                
+
                 if status.starts_with('R') || status.starts_with('C') {
                     i += 1;
                 }
@@ -93,7 +102,7 @@ pub async fn capture_git_state(cwd: &Path) -> Option<GitState> {
             }
         }
     }
-    
+
     Some(GitState {
         repo_root,
         head_hash,
@@ -105,9 +114,9 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
     if before.repo_root != after.repo_root {
         return Vec::new();
     }
-    
+
     let mut changed_files = BTreeSet::new();
-    
+
     // 1. Uncommitted files that changed mtime or are new.
     for (path, after_mtime) in &after.uncommitted_files {
         if let Some(before_mtime) = before.uncommitted_files.get(path) {
@@ -119,11 +128,15 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
             changed_files.insert(path.clone());
         }
     }
-    
+
     // 2. If HEAD changed, diff the two commits.
     if before.head_hash != after.head_hash {
         if let (Some(old_head), Some(new_head)) = (&before.head_hash, &after.head_hash) {
-            let diff_out = run_git_command_with_timeout(&["diff", "--name-only", "-z", old_head, new_head], &before.repo_root).await;
+            let diff_out = run_git_command_with_timeout(
+                &["diff", "--name-only", "-z", old_head, new_head],
+                &before.repo_root,
+            )
+            .await;
             if let Some(out) = diff_out {
                 if out.status.success() {
                     let diff_str = String::from_utf8_lossy(&out.stdout);
@@ -137,7 +150,11 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
         } else if before.head_hash.is_none() && after.head_hash.is_some() {
             // First commit
             let new_head = after.head_hash.as_ref().unwrap();
-            let diff_out = run_git_command_with_timeout(&["show", "--name-only", "--format=", "-z", new_head], &before.repo_root).await;
+            let diff_out = run_git_command_with_timeout(
+                &["show", "--name-only", "--format=", "-z", new_head],
+                &before.repo_root,
+            )
+            .await;
             if let Some(out) = diff_out {
                 if out.status.success() {
                     let diff_str = String::from_utf8_lossy(&out.stdout);
@@ -150,6 +167,6 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
             }
         }
     }
-    
+
     changed_files.into_iter().collect()
 }

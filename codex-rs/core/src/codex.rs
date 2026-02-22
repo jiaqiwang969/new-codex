@@ -603,7 +603,8 @@ pub(crate) struct TurnContext {
     memory_read_path_source: OnceCell<Option<memories::MemoryReadPathSource>>,
     hook_memory_context: OnceCell<Option<HookEventMemoryContext>>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
-    pub(crate) side_effects_files: std::sync::Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>>,
+    pub(crate) side_effects_files:
+        std::sync::Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 impl TurnContext {
     pub(crate) fn model_context_window(&self) -> Option<i64> {
@@ -659,7 +660,9 @@ impl TurnContext {
         .with_agent_roles(config.agent_roles.clone());
 
         Self {
-            side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+            side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::BTreeSet::new(),
+            )),
 
             sub_id: self.sub_id.clone(),
             config: Arc::new(config),
@@ -928,8 +931,9 @@ impl SessionConfiguration {
 
         let mut provider_switch_label: Option<String> = None;
 
-        if let Some(target_provider_id) = target_provider_id {
-            if !provider_matches_builtin_family(&next_configuration.provider, target_provider_id) {
+        if updates.collaboration_mode.is_some() {
+            if let Some(target_provider_id) = target_provider_id {
+                if !provider_matches_builtin_family(&next_configuration.provider, target_provider_id) {
                 // Use the merged provider map (built-in + user-defined from config.toml)
                 // so that custom providers with account_pool, env_keys, etc. are preserved.
                 let providers = &next_configuration
@@ -984,13 +988,12 @@ impl SessionConfiguration {
             } else {
                 original_config.user_configured_provider.clone()
             };
-            crate::config::apply_primary_account_pool_selection(&mut restored_provider);
-
             next_configuration.provider_id = resolve_provider_id_for_provider(
                 providers,
                 &restored_provider,
                 &original_config.model_provider_id,
             );
+            crate::config::apply_primary_account_pool_selection(&mut restored_provider);
             next_configuration.provider = restored_provider;
 
             let account_label = account_index_label(&next_configuration.provider);
@@ -1008,12 +1011,13 @@ impl SessionConfiguration {
             // model family: restore the user's explicitly configured provider
             // (before auto-switching).
             let old_provider_id = next_configuration.provider_id.clone();
-            let restored_provider = original_config.user_configured_provider.clone();
+            let mut restored_provider = original_config.user_configured_provider.clone();
             next_configuration.provider_id = resolve_provider_id_for_provider(
                 &original_config.model_providers,
                 &restored_provider,
                 &original_config.model_provider_id,
             );
+            crate::config::apply_primary_account_pool_selection(&mut restored_provider);
             next_configuration.provider = restored_provider;
             let account_label = account_index_label(&next_configuration.provider);
             let base_url = next_configuration
@@ -1026,6 +1030,7 @@ impl SessionConfiguration {
                 old_provider_id, next_configuration.provider_id, account_label, base_url, new_model
             ));
         }
+        } // End if updates.model.is_some()
 
         Ok((next_configuration, provider_switch_label))
     }
@@ -1307,7 +1312,9 @@ impl Session {
                 .enabled(Feature::UseLinuxSandboxBwrap),
         ));
         TurnContext {
-            side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+            side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::BTreeSet::new(),
+            )),
 
             sub_id,
             config: per_turn_config.clone(),
@@ -4830,9 +4837,10 @@ async fn spawn_review_thread(
             .enabled(Feature::UseLinuxSandboxBwrap),
     ));
 
-
     let review_turn_context = TurnContext {
-        side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
+        side_effects_files: std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::BTreeSet::new(),
+        )),
 
         sub_id: review_turn_id,
         config: per_turn_config,
@@ -5237,12 +5245,13 @@ pub(crate) async fn run_turn(
                         let ai_response = last_agent_message.clone().unwrap_or_default();
 
                         let side_effects_guard = turn_context.side_effects_files.lock().await;
-                        let files_changed: Vec<String> = side_effects_guard.iter().cloned().collect();
+                        let files_changed: Vec<String> =
+                            side_effects_guard.iter().cloned().collect();
                         drop(side_effects_guard);
 
                         let has_files_changed = !files_changed.is_empty();
-                        let is_trivial_prompt = sampling_request_input_messages.len() == 1 
-                            && sampling_request_input_messages[0].len() < 10 
+                        let is_trivial_prompt = sampling_request_input_messages.len() == 1
+                            && sampling_request_input_messages[0].len() < 10
                             && !has_files_changed;
 
                         if !is_trivial_prompt {

@@ -6,6 +6,8 @@ use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::is_openai_model_slug;
 use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
+use crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID;
+use crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID;
 use crate::model_provider_info::GEMINI_PROVIDER_ID;
 use crate::model_provider_info::GEMMA_PROVIDER_ID;
 use crate::model_provider_info::GROK_PROVIDER_ID;
@@ -16,7 +18,15 @@ use codex_protocol::openai_models::ModelInfo;
 pub const DEFAULT_UTILITY_MODEL: &str = "gpt-5.1-codex-mini";
 
 pub(crate) fn provider_id_for_model_slug(model_slug: &str) -> Option<&'static str> {
-    if model_slug.starts_with("gemini-") {
+    if model_slug.starts_with("antigravity/claude-")
+        || model_slug.starts_with("antigravity-anthropic/")
+    {
+        Some(ANTIGRAVITY_ANTHROPIC_PROVIDER_ID)
+    } else if model_slug.starts_with("antigravity/")
+        || model_slug.starts_with("antigravity-gemini/")
+    {
+        Some(ANTIGRAVITY_GEMINI_PROVIDER_ID)
+    } else if model_slug.starts_with("gemini-") {
         Some(GEMINI_PROVIDER_ID)
     } else if is_gemma_model_slug(model_slug) {
         Some(GEMMA_PROVIDER_ID)
@@ -124,15 +134,22 @@ pub(crate) async fn client_and_model_for_slug(
 
 fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &str) -> bool {
     match provider_id {
-        GEMINI_PROVIDER_ID => provider.wire_api == crate::model_provider_info::WireApi::Gemini,
+        GEMINI_PROVIDER_ID => {
+            provider.wire_api == crate::model_provider_info::WireApi::Gemini
+                && !provider.is_antigravity_gemini()
+        }
         GEMMA_PROVIDER_ID => {
             provider.is_gemma()
                 || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                    && !provider.is_gemini())
+                    && !provider.is_gemini()
+                    && !provider.is_antigravity_gemini())
         }
         ANTHROPIC_PROVIDER_ID => {
             provider.wire_api == crate::model_provider_info::WireApi::Anthropic
+                && !provider.is_antigravity_anthropic()
         }
+        ANTIGRAVITY_GEMINI_PROVIDER_ID => provider.is_antigravity_gemini(),
+        ANTIGRAVITY_ANTHROPIC_PROVIDER_ID => provider.is_antigravity_anthropic(),
         GROK_PROVIDER_ID => provider.is_grok(),
         _ => false,
     }

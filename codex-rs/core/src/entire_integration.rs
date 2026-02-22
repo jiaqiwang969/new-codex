@@ -45,10 +45,11 @@ pub async fn get_recent_entire_checkpoints_with_summaries(
                 checkpoint.ai_summary = Some(summary);
             } else {
                 // Generate summary asynchronously in background
-                let is_trivial_prompt = checkpoint.prompt_summary.len() < 10 
-                    && (checkpoint.prompt_summary.to_lowercase().contains("hi") || checkpoint.prompt_summary.to_lowercase().contains("hello")) 
+                let is_trivial_prompt = checkpoint.prompt_summary.len() < 10
+                    && (checkpoint.prompt_summary.to_lowercase().contains("hi")
+                        || checkpoint.prompt_summary.to_lowercase().contains("hello"))
                     && checkpoint.files_changed.is_empty();
-                
+
                 if !is_trivial_prompt {
                     // Generate summary asynchronously in background
                     spawn_summary_generation(

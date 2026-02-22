@@ -141,7 +141,9 @@ impl SlashCommand {
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
-            SlashCommand::Freeze => "snapshot this moment for auto-debugging a logic bug in a cloned sandbox",
+            SlashCommand::Freeze => {
+                "snapshot this moment for auto-debugging a logic bug in a cloned sandbox"
+            }
         }
     }
 

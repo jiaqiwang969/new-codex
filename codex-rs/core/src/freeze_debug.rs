@@ -1,5 +1,6 @@
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -7,7 +8,10 @@ static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 pub const FREEZE_SCRIPT: &str = include_str!("../../../scripts/freeze-debug-vm.sh");
 
 pub fn install_freeze_panic_hook(config: &crate::config::Config) {
-    if !config.features.enabled(crate::features::Feature::FreezeSandboxDebug) {
+    if !config
+        .features
+        .enabled(crate::features::Feature::FreezeSandboxDebug)
+    {
         return;
     }
     if HOOK_INSTALLED.swap(true, Ordering::Relaxed) {
@@ -25,9 +29,9 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
         eprintln!("========================================================");
 
         // Find the current workspace dynamically if possible
-        let repo_root = std::env::current_dir().ok().and_then(|cwd| {
-            crate::git_info::resolve_root_git_project_for_trust(&cwd)
-        });
+        let repo_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| crate::git_info::resolve_root_git_project_for_trust(&cwd));
 
         // Write the panic info to a log file so the sandbox Codex knows what happened
         if let Some(ref root) = repo_root {
@@ -37,7 +41,7 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
 
         // Use absolute path for the script for now (tailored to jqwang's machine)
         let script_path = "/Users/jqwang/01-agent/new-codex/scripts/freeze-debug-vm.sh";
-        
+
         let mut cmd = Command::new("bash");
         cmd.arg(script_path);
 
@@ -47,7 +51,9 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
 
         match cmd.status() {
             Ok(status) if status.success() => {
-                eprintln!("✅ Sandbox cloning completed successfully! You can now debug in isolation.");
+                eprintln!(
+                    "✅ Sandbox cloning completed successfully! You can now debug in isolation."
+                );
             }
             Ok(status) => {
                 eprintln!("⚠️ Sandbox script exited with {status}.");

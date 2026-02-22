@@ -186,26 +186,29 @@ impl ToolHandler for UnifiedExecHandler {
                     session_clone.as_ref(),
                     turn_clone.as_ref(),
                     || async {
-                        manager.exec_command(
-                            ExecCommandRequest {
-                                command,
-                                process_id,
-                                yield_time_ms,
-                                max_output_tokens,
-                                workdir,
-                                network: context.turn.network.clone(),
-                                tty,
-                                sandbox_permissions,
-                                justification,
-                                prefix_rule,
-                            },
-                            &context,
-                        ).await
-                    }
-                ).await
-                    .map_err(|err| {
-                        FunctionCallError::RespondToModel(format!("exec_command failed: {err:?}"))
-                    })?
+                        manager
+                            .exec_command(
+                                ExecCommandRequest {
+                                    command,
+                                    process_id,
+                                    yield_time_ms,
+                                    max_output_tokens,
+                                    workdir,
+                                    network: context.turn.network.clone(),
+                                    tty,
+                                    sandbox_permissions,
+                                    justification,
+                                    prefix_rule,
+                                },
+                                &context,
+                            )
+                            .await
+                    },
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("exec_command failed: {err:?}"))
+                })?
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;

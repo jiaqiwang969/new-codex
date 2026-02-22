@@ -2088,10 +2088,14 @@ impl ChatWidget {
     fn on_file_system_mutated(&mut self, ev: codex_core::protocol::FileSystemMutatedEvent) {
         if !ev.files.is_empty() {
             let mut txt = "[Detected File Changes via Shell]
-".to_string();
+"
+            .to_string();
             for f in ev.files {
-                txt.push_str(&format!("  └ 📝 M {}
-", f));
+                txt.push_str(&format!(
+                    "  └ 📝 M {}
+",
+                    f
+                ));
             }
             self.on_agent_message(txt);
         }
@@ -3666,16 +3670,26 @@ impl ChatWidget {
             SlashCommand::Apps => {
                 self.add_connectors_output();
             }
-            
+
             SlashCommand::Freeze => {
-                if !self.config.features.enabled(codex_core::features::Feature::FreezeSandboxDebug) {
+                if !self
+                    .config
+                    .features
+                    .enabled(codex_core::features::Feature::FreezeSandboxDebug)
+                {
                     self.add_error_message("❌ The /freeze command is an experimental sandbox feature that requires NixOS/OrbStack support. To use it, you must explicitly set `freeze_sandbox_debug = true` in the [features] table of your ~/.codex/config.toml.".to_string());
                     return;
                 }
 
-                let target_turn = self.active_turn_id.as_ref().or(self.last_completed_turn_id.as_ref());
+                let target_turn = self
+                    .active_turn_id
+                    .as_ref()
+                    .or(self.last_completed_turn_id.as_ref());
                 let reason = if let Some(turn_id) = target_turn {
-                    format!("User detected a logic bug or strange behavior during active turn: {}.", turn_id)
+                    format!(
+                        "User detected a logic bug or strange behavior during active turn: {}.",
+                        turn_id
+                    )
                 } else {
                     "User detected a logic bug or strange behavior.".to_string()
                 };
@@ -3686,15 +3700,18 @@ impl ChatWidget {
                     let script_path = std::env::temp_dir().join("codex-freeze-debug-vm.sh");
                     let _ = std::fs::write(&script_path, codex_core::freeze_debug::FREEZE_SCRIPT);
                     cmd.arg(&script_path);
-                    
+
                     let repo_root = std::env::current_dir().ok().and_then(|cwd| {
                         codex_core::git_info::resolve_root_git_project_for_trust(&cwd)
                     });
                     if let Some(ref root) = repo_root {
                         cmd.arg(root.to_string_lossy().as_ref());
-                        let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
+                        let _ = std::fs::write(
+                            root.join("last_panic.log"),
+                            format!("Behavioral Bug Snapshot: {}", reason),
+                        );
                     }
-                    
+
                     match cmd.status() {
                         Ok(status) if status.success() => {
                             let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
@@ -3706,24 +3723,36 @@ impl ChatWidget {
                                     text_elements: vec![],
                                 }),
                             }));
-                        },
+                        }
                         Ok(status) => {
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
-                                id: "".to_string(),
-                                msg: codex_core::protocol::EventMsg::Error(codex_core::protocol::ErrorEvent {
-                                    message: format!("⚠️ Sandbox script exited with {status}."),
-                                    codex_error_info: None,
-                                }),
-                            }));
-                        },
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                                codex_core::protocol::Event {
+                                    id: "".to_string(),
+                                    msg: codex_core::protocol::EventMsg::Error(
+                                        codex_core::protocol::ErrorEvent {
+                                            message: format!(
+                                                "⚠️ Sandbox script exited with {status}."
+                                            ),
+                                            codex_error_info: None,
+                                        },
+                                    ),
+                                },
+                            ));
+                        }
                         Err(e) => {
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
-                                id: "".to_string(),
-                                msg: codex_core::protocol::EventMsg::Error(codex_core::protocol::ErrorEvent {
-                                    message: format!("❌ Failed to execute freeze-debug-vm.sh: {e}"),
-                                    codex_error_info: None,
-                                }),
-                            }));
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                                codex_core::protocol::Event {
+                                    id: "".to_string(),
+                                    msg: codex_core::protocol::EventMsg::Error(
+                                        codex_core::protocol::ErrorEvent {
+                                            message: format!(
+                                                "❌ Failed to execute freeze-debug-vm.sh: {e}"
+                                            ),
+                                            codex_error_info: None,
+                                        },
+                                    ),
+                                },
+                            ));
                         }
                     }
                 });
@@ -5564,7 +5593,10 @@ impl ChatWidget {
                 self.on_agent_reasoning_final();
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
-            EventMsg::TurnStarted(e) => { self.active_turn_id = Some(e.turn_id); self.on_task_started() },
+            EventMsg::TurnStarted(e) => {
+                self.active_turn_id = Some(e.turn_id);
+                self.on_task_started()
+            }
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message, ..
             }) => self.on_task_complete(last_agent_message, from_replay),
