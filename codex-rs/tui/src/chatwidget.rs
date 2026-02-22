@@ -4182,15 +4182,9 @@ impl ChatWidget {
                             details.push_str("3. Wake Clone: `~/start-debug.sh`\n\n");
                             details.push_str("The clone will automatically compile a local binary and begin investigating the bug.\n");
 
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
-                                id: "".to_string(),
-                                msg: codex_core::protocol::EventMsg::UserMessage(codex_core::protocol::UserMessageEvent {
-                                    message: details,
-                                    images: Some(vec![]),
-                                    local_images: vec![],
-                                    text_elements: vec![],
-                                }),
-                            }));
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
+                                Box::new(crate::history_cell::new_info_event(details, None))
+                            ));
                         },
                         Ok(status) => {
                             let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
@@ -4460,13 +4454,9 @@ impl ChatWidget {
                     let err_msg = String::from_utf8_lossy(&output.stderr);
                     let out_msg = String::from_utf8_lossy(&output.stdout);
                     let full_err = format!("⚠️ Sandbox script exited with {}.\nStderr: {}\nStdout: {}", output.status, err_msg, out_msg);
-                    let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
-                        id: "".to_string(),
-                        msg: codex_core::protocol::EventMsg::Error(codex_core::protocol::ErrorEvent {
-                            message: full_err,
-                            codex_error_info: None,
-                        }),
-                    }));
+                    let _ = app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
+                        Box::new(crate::history_cell::new_error_event(full_err))
+                    ));
                 },
                 Err(e) => {
                     let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
