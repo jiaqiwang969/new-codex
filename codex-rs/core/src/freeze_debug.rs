@@ -65,3 +65,5 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
         eprintln!("========================================================");
     }));
 }
+
+// Force rebuild to pick up new bash script

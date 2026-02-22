@@ -20,7 +20,7 @@ orb clone nixos-agent-02 ${VM_NAME} >/dev/null
 orb start ${VM_NAME} >/dev/null
 
 echo "=> 2. Injecting Frozen State into Sandbox..."
-orb -m ${VM_NAME} -u jqwang bash -c "
+orb -m ${VM_NAME} -u jqwang bash << 'ORB_EOF'
     echo '  -> Copying source code (excluding mac target dir & locks)...'
     mkdir -p ~/${PROJECT_NAME}
     cd ${SOURCE_CODEX_DIR} && tar -cf - --exclude='target' --exclude='.git/index.lock' . | (cd ~/${PROJECT_NAME} && tar -xf -)
@@ -108,7 +108,7 @@ chmod +x /tmp/debug-exec.sh
 \$ENV_CMD /tmp/debug-exec.sh
 INNER_EOF
     chmod +x ~/start-debug.sh
-"
+ORB_EOF
 
 echo "========================================"
 echo "✅ Environment Frozen and Cloned successfully!"

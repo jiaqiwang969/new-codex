@@ -170,6 +170,7 @@ impl SlashCommand {
                 | SlashCommand::ImageQuality
                 | SlashCommand::AspectRatio
                 | SlashCommand::SandboxReadRoot
+                | SlashCommand::Freeze
         )
     }
 

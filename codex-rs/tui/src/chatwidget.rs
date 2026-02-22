@@ -4429,6 +4429,8 @@ impl ChatWidget {
         
         std::thread::spawn(move || {
             let mut cmd = std::process::Command::new("bash");
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
             let script_path = std::env::temp_dir().join("codex-freeze-debug-vm.sh");
             let _ = std::fs::write(&script_path, codex_core::freeze_debug::FREEZE_SCRIPT);
             cmd.arg(&script_path);
@@ -4442,8 +4444,8 @@ impl ChatWidget {
                 let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
             }
             
-            match cmd.status() {
-                Ok(status) if status.success() => {
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
                     let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
                         id: "".to_string(),
                         msg: codex_core::protocol::EventMsg::UserMessage(codex_core::protocol::UserMessageEvent {
@@ -4454,11 +4456,14 @@ impl ChatWidget {
                         }),
                     }));
                 },
-                Ok(status) => {
+                Ok(output) => {
+                    let err_msg = String::from_utf8_lossy(&output.stderr);
+                    let out_msg = String::from_utf8_lossy(&output.stdout);
+                    let full_err = format!("⚠️ Sandbox script exited with {}.\nStderr: {}\nStdout: {}", output.status, err_msg, out_msg);
                     let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_core::protocol::Event {
                         id: "".to_string(),
                         msg: codex_core::protocol::EventMsg::Error(codex_core::protocol::ErrorEvent {
-                            message: format!("⚠️ Sandbox script exited with {status}."),
+                            message: full_err,
                             codex_error_info: None,
                         }),
                     }));
