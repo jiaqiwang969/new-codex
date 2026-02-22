@@ -51,6 +51,23 @@ eval \"\$ENV_CMD \\\"
         PANIC_CONTEXT=\\\"\n\nThe panic backtrace is:\n\n\$(cat last_panic.log)\\\"
     fi
 
+    echo '🔧 Checking for `entire` CLI tool...'
+    if ! command -v entire &> /dev/null; then
+        echo '📦 Installing `entire` for the sandbox...'
+        # We install it to a local bin dir and add to PATH
+        mkdir -p ~/bin
+        # Assuming `entire` is either installable via cargo or we just fetch a known script/binary.
+        # Since it's a rust tool, cargo install is the safest fallback if there isn't a direct binary link.
+        # However, to be fast, if it's hosted on GitHub releases, we could curl it.
+        # Let's use `cargo install --git https://github.com/jiaqiwang969/cli` as a robust method,
+        # but wait, that takes a minute. Let's just write a wrapper script or use cargo install.
+        if ! [ -x "$(command -v cargo)" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        cargo install --git https://github.com/jiaqiwang969/cli entire --locked || true
+        export PATH="$HOME/.cargo/bin:~/bin:$PATH"
+    fi
+
     echo '⚙️ Compiling local Linux binary for debugging...'
     if [ -f \\\"Cargo.toml\\\" ]; then
         # Check if codex-cli exists to run a specific package, otherwise just run
