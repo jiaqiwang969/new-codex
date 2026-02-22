@@ -11,6 +11,7 @@
   ...
 }:
 rustPlatform.buildRustPackage (_: {
+  auditable = false;
 
   pname = "codex-rs";
   inherit version;
