@@ -10,9 +10,7 @@
   ...
 }:
 rustPlatform.buildRustPackage (_: {
-  env = {
-    PKG_CONFIG_PATH = "${openssl.dev}/lib/pkgconfig:$PKG_CONFIG_PATH";
-  };
+
   pname = "codex-rs";
   inherit version;
   cargoLock.lockFile = ./Cargo.lock;
@@ -30,8 +28,11 @@ rustPlatform.buildRustPackage (_: {
     cmake
     llvmPackages.clang
     llvmPackages.libclang.lib
-    openssl
     pkg-config
+  ];
+
+  buildInputs = [
+    openssl
     libcap.dev
   ];
 
