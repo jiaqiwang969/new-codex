@@ -1546,7 +1546,18 @@ fn normalize_provider_account(account: &ModelProviderAccount) -> Option<ModelPro
 }
 
 pub(crate) fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
-    if provider.current_account().is_some() {
+    // If we have an explicitly set base_url AND env_key, we might consider it fully configured.
+    // However, if the user defines an account pool in config-pool.toml but leaves the top-level
+    // base_url empty, or we want to allow the pool to be the source of truth, we should prefer 
+    // the primary account in the pool if it exists.
+    // To allow proper pool rotation later, we don't return early just because the top-level is set.
+    
+    // In our case, the pool's top level definition HAS a base_url, so current_account().is_some()
+    // is true. Let's make sure we still pick up the base_url/env_key from the pool or let the
+    // existing one be. Actually, if we just want to ensure the pool's default is respected,
+    // maybe we shouldn't early return if the top level has a value but we are switching.
+
+    if provider.current_account().is_some() && provider.account_pool.is_empty() {
         return;
     }
 
