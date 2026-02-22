@@ -3,6 +3,8 @@ source: tui/src/chatwidget/tests.rs
 expression: terminal.backend()
 ---
 "                                                                                "
+"• Running sleep 2                                                               "
+"                                                                                "
 "• Working (0s • esc to interrupt) · 1 background terminal running · /ps to view "
 "                                                                                "
 "                                                                                "

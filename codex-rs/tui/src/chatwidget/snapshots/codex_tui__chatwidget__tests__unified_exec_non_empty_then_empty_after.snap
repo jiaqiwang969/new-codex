@@ -2,6 +2,8 @@
 source: tui/src/chatwidget/tests.rs
 expression: combined
 ---
+• Running just fix
+
 ↳ Interacted with background terminal · just fix
   └ pwd
 

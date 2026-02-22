@@ -1982,7 +1982,7 @@ impl ChatWidget {
             }
             // Unified exec may be parsed as Unknown; keep the working indicator visible regardless.
             self.bottom_pane.ensure_status_indicator();
-            if !is_standard_tool_call(&ev.parsed_cmd) {
+            if !is_standard_tool_call(&ev.parsed_cmd) && ev.source != ExecCommandSource::UnifiedExecStartup {
                 return;
             }
         }

@@ -1649,6 +1649,8 @@ async fn make_chatwidget_manual(
         current_turn_known_collab_agent_changes: Vec::new(),
         current_turn_known_collab_agent_seen: HashSet::new(),
         suppressed_exec_calls: HashSet::new(),
+        active_turn_id: None,
+        last_completed_turn_id: None,
         skills_all: Vec::new(),
         skills_initial_state: None,
         last_unified_wait: None,
