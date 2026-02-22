@@ -33,7 +33,7 @@ rustPlatform.buildRustPackage (_: {
 
   buildInputs = [
     openssl
-    libcap.dev
+    libcap
   ];
 
   cargoLock.outputHashes = {
