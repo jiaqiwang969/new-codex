@@ -496,6 +496,7 @@ pub(crate) struct ChatWidget {
     bottom_pane: BottomPane,
     active_cell: Option<Box<dyn HistoryCell>>,
     active_turn_id: Option<String>,
+    last_completed_turn_id: Option<String>,
     /// Monotonic-ish counter used to invalidate transcript overlay caching.
     ///
     /// The transcript overlay appends a cached "live tail" for the current active cell. Most
@@ -2758,6 +2759,7 @@ impl ChatWidget {
         let current_cwd = Some(config.cwd.clone());
         let mut widget = Self {
             active_turn_id: None,
+            last_completed_turn_id: None,
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -2937,6 +2939,7 @@ impl ChatWidget {
 
         let mut widget = Self {
             active_turn_id: None,
+            last_completed_turn_id: None,
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -3119,6 +3122,7 @@ impl ChatWidget {
             }),
             active_cell: None,
             active_turn_id: None,
+            last_completed_turn_id: None,
             active_cell_revision: 0,
             config,
             skills_all: Vec::new(),
@@ -3669,7 +3673,8 @@ impl ChatWidget {
                     return;
                 }
 
-                let reason = if let Some(turn_id) = &self.active_turn_id {
+                let target_turn = self.active_turn_id.as_ref().or(self.last_completed_turn_id.as_ref());
+                let reason = if let Some(turn_id) = target_turn {
                     format!("User detected a logic bug or strange behavior during active turn: {}.", turn_id)
                 } else {
                     "User detected a logic bug or strange behavior.".to_string()
