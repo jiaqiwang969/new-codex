@@ -4,6 +4,7 @@
   openssl,
   rustPlatform,
   pkg-config,
+  libcap,
   lib,
   version ? "0.0.0",
   ...
@@ -31,6 +32,7 @@ rustPlatform.buildRustPackage (_: {
     llvmPackages.libclang.lib
     openssl
     pkg-config
+    libcap.dev
   ];
 
   cargoLock.outputHashes = {
