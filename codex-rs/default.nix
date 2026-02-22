@@ -1,10 +1,11 @@
 {
+  stdenv,
   cmake,
   llvmPackages,
   openssl,
   rustPlatform,
   pkg-config,
-  libcap,
+  libcap ? null,
   lib,
   version ? "0.0.0",
   ...
@@ -33,8 +34,7 @@ rustPlatform.buildRustPackage (_: {
 
   buildInputs = [
     openssl
-    libcap
-  ];
+  ] ++ lib.optional stdenv.isLinux libcap;
 
   cargoLock.outputHashes = {
     "ratatui-0.29.0" = "sha256-HBvT5c8GsiCxMffNjJGLmHnvG77A6cqEL+1ARurBXho=";
