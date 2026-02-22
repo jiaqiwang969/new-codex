@@ -4,7 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Installs a global panic hook that automatically clones the Codex state into an isolated NixOS VM when a crash occurs.
-pub fn install_freeze_panic_hook() {
+pub const FREEZE_SCRIPT: &str = include_str!("../../../scripts/freeze-debug-vm.sh");
+
+pub fn install_freeze_panic_hook(config: &crate::config::Config) {
+    if !config.features.enabled(crate::features::Feature::FreezeSandboxDebug) {
+        return;
+    }
     if HOOK_INSTALLED.swap(true, Ordering::Relaxed) {
         return; // Already installed
     }

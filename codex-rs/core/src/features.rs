@@ -91,6 +91,8 @@ pub enum Feature {
     /// Allow the model to request web searches that fetch cached content.
     /// Takes precedence over `WebSearchRequest`.
     WebSearchCached,
+    /// Allow creating NixOS/OrbStack clones for debugging behavioral anomalies via `/freeze` or panic hooks.
+    FreezeSandboxDebug,
     /// Legacy search-tool feature flag kept for backward compatibility.
     SearchTool,
     /// Use the bubblewrap-based Linux sandbox pipeline.
@@ -461,6 +463,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::WebSearchCached,
         key: "web_search_cached",
         stage: Stage::Deprecated,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::FreezeSandboxDebug,
+        key: "freeze_sandbox_debug",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {

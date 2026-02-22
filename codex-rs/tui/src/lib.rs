@@ -301,6 +301,8 @@ pub async fn run_main(
     )
     .await;
 
+    codex_core::freeze_debug::install_freeze_panic_hook(&config);
+
     #[allow(clippy::print_stderr)]
     match check_execpolicy_for_warnings(&config.config_layer_stack).await {
         Ok(None) => {}

@@ -3658,7 +3658,40 @@ impl ChatWidget {
             SlashCommand::Apps => {
                 self.add_connectors_output();
             }
-            SlashCommand::Panic => { panic!("User initiated panic via /panic"); },
+            
+            SlashCommand::Freeze => {
+                if !self.config.features.enabled(codex_core::features::Feature::FreezeSandboxDebug) {
+                    self.add_error_message("❌ The /freeze command is an experimental sandbox feature that requires NixOS/OrbStack support. To use it, you must explicitly set `freeze_sandbox_debug = true` in the [features] table of your ~/.codex/config.toml.".to_string());
+                    return;
+                }
+                let reason = "User detected a logic bug or strange behavior.".to_string();
+                self.add_info_message(format!("🧊 Freezing moment for self-debugging..."), None);
+                
+                let mut cmd = std::process::Command::new("bash");
+                let script_path = std::env::temp_dir().join("codex-freeze-debug-vm.sh");
+                let _ = std::fs::write(&script_path, codex_core::freeze_debug::FREEZE_SCRIPT);
+                cmd.arg(&script_path);
+                
+                let repo_root = std::env::current_dir().ok().and_then(|cwd| {
+                    codex_core::git_info::resolve_root_git_project_for_trust(&cwd)
+                });
+                if let Some(ref root) = repo_root {
+                    cmd.arg(root.to_string_lossy().as_ref());
+                    let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
+                }
+                
+                match cmd.status() {
+                    Ok(status) if status.success() => {
+                        self.add_info_message("✅ Snapshot completed! You can now debug in the new sandbox VM.".to_string(), None);
+                    },
+                    Ok(status) => {
+                        self.add_error_message(format!("⚠️ Sandbox script exited with {status}."));
+                    },
+                    Err(e) => {
+                        self.add_error_message(format!("❌ Failed to execute freeze-debug-vm.sh: {e}"));
+                    }
+                }
+            }
             SlashCommand::Rollout => {
                 if let Some(path) = self.rollout_path() {
                     self.add_info_message(
