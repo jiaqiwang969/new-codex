@@ -54,8 +54,8 @@ eval \"\$ENV_CMD \\\"
 
     # Ensure git identity exists in the sandbox so commits don't fail
     if ! git config --global user.name >/dev/null 2>&1; then
-        git config --global user.name "Cyber-Forensic Clone"
-        git config --global user.email "clone@codex.sandbox"
+        git config --global user.name "jiaqiwang969"
+        git config --global user.email "jiaqiwang969@gmail.com"
     fi
 
     echo '🔧 Checking for `entire` CLI tool...'
