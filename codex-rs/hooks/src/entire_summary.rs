@@ -85,10 +85,10 @@ Keep it concise but informative. Return ONLY the JSON object."#,
 
 /// Truncates a response to a maximum character count.
 fn truncate_response(response: &str, max_chars: usize) -> String {
-    if response.len() <= max_chars {
-        response.to_string()
+    if let Some((idx, _)) = response.char_indices().nth(max_chars) {
+        format!("{}... [truncated]", &response[..idx])
     } else {
-        format!("{}... [truncated]", &response[..max_chars])
+        response.to_string()
     }
 }
 
