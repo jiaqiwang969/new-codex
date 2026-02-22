@@ -1092,31 +1092,56 @@ fn resolve_provider_id_for_provider(
     provider: &ModelProviderInfo,
     fallback_provider_id: &str,
 ) -> String {
+    // Exact match (handles unmodified providers perfectly).
     if let Some(candidate) = providers.get(fallback_provider_id)
         && candidate == provider
     {
         return fallback_provider_id.to_string();
     }
 
-    let mut matching_provider_ids = providers
+    let mut exact_matches = providers
         .iter()
         .filter_map(|(id, candidate)| (candidate == provider).then_some(id.clone()))
         .collect::<Vec<_>>();
-    if matching_provider_ids.is_empty() {
-        return fallback_provider_id.to_string();
-    }
-    if matching_provider_ids.len() == 1 {
-        return matching_provider_ids.remove(0);
+
+    if !exact_matches.is_empty() {
+        if exact_matches.len() == 1 {
+            return exact_matches.remove(0);
+        }
+        exact_matches.sort();
+        if let Some(openai_id) = exact_matches.iter().find(|id| id.as_str() == "openai") {
+            return openai_id.clone();
+        }
+        return exact_matches.remove(0);
     }
 
-    matching_provider_ids.sort();
-    if let Some(openai_id) = matching_provider_ids
-        .iter()
-        .find(|id| id.as_str() == "openai")
+    // Fallback: match by invariant `name`.
+    // This is required because `apply_primary_account_pool_selection` mutates `base_url`
+    // and `env_key` in the current provider, causing exact equality to fail against the
+    // raw configuration map `providers`.
+    if let Some(candidate) = providers.get(fallback_provider_id)
+        && candidate.name == provider.name
     {
-        return openai_id.clone();
+        return fallback_provider_id.to_string();
     }
-    matching_provider_ids.remove(0)
+
+    let mut name_matches = providers
+        .iter()
+        .filter_map(|(id, candidate)| (candidate.name == provider.name).then_some(id.clone()))
+        .collect::<Vec<_>>();
+
+    if !name_matches.is_empty() {
+        if name_matches.len() == 1 {
+            return name_matches.remove(0);
+        }
+        name_matches.sort();
+        if let Some(openai_id) = name_matches.iter().find(|id| id.as_str() == "openai") {
+            return openai_id.clone();
+        }
+        return name_matches.remove(0);
+    }
+
+    fallback_provider_id.to_string()
 }
 
 fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> usize {
