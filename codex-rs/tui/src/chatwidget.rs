@@ -495,6 +495,7 @@ pub(crate) struct ChatWidget {
     codex_op_tx: UnboundedSender<Op>,
     bottom_pane: BottomPane,
     active_cell: Option<Box<dyn HistoryCell>>,
+    active_turn_id: Option<String>,
     /// Monotonic-ish counter used to invalidate transcript overlay caching.
     ///
     /// The transcript overlay appends a cached "live tail" for the current active cell. Most
@@ -2756,6 +2757,7 @@ impl ChatWidget {
 
         let current_cwd = Some(config.cwd.clone());
         let mut widget = Self {
+            active_turn_id: None,
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -2934,6 +2936,7 @@ impl ChatWidget {
         let current_cwd = Some(config.cwd.clone());
 
         let mut widget = Self {
+            active_turn_id: None,
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
@@ -3115,6 +3118,7 @@ impl ChatWidget {
                 skills: None,
             }),
             active_cell: None,
+            active_turn_id: None,
             active_cell_revision: 0,
             config,
             skills_all: Vec::new(),
@@ -3665,7 +3669,11 @@ impl ChatWidget {
                     return;
                 }
 
-                let reason = "User detected a logic bug or strange behavior.".to_string();
+                let reason = if let Some(turn_id) = &self.active_turn_id {
+                    format!("User detected a logic bug or strange behavior during active turn: {}.", turn_id)
+                } else {
+                    "User detected a logic bug or strange behavior.".to_string()
+                };
                 self.add_info_message(format!("🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."), None);
                 let app_event_tx = self.app_event_tx.clone();
                 std::thread::spawn(move || {
@@ -5551,7 +5559,7 @@ impl ChatWidget {
                 self.on_agent_reasoning_final();
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
-            EventMsg::TurnStarted(_) => self.on_task_started(),
+            EventMsg::TurnStarted(e) => { self.active_turn_id = Some(e.turn_id); self.on_task_started() },
             EventMsg::TurnComplete(TurnCompleteEvent {
                 last_agent_message, ..
             }) => self.on_task_complete(last_agent_message, from_replay),
