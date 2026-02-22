@@ -36,7 +36,8 @@ cd ~/${PROJECT_NAME}
 
 # If there is a flake.nix, wrap the command in nix develop
 if [ -f flake.nix ]; then
-    ENV_CMD=\"nix develop -c bash -c\"
+    # Inject sqlite into the nix shell alongside the flake's devShell
+    ENV_CMD=\"nix develop -c nix shell nixpkgs#sqlite -c bash -c\"
 else
     ENV_CMD=\"bash -c\"
 fi
@@ -49,6 +50,12 @@ eval \"\$ENV_CMD \\\"
     PANIC_CONTEXT=\\\"\\\"
     if [ -f \\\"last_panic.log\\\" ]; then
         PANIC_CONTEXT=\\\"\n\nThe panic backtrace is:\n\n\$(cat last_panic.log)\\\"
+    fi
+
+    # Ensure git identity exists in the sandbox so commits don't fail
+    if ! git config --global user.name >/dev/null 2>&1; then
+        git config --global user.name "Cyber-Forensic Clone"
+        git config --global user.email "clone@codex.sandbox"
     fi
 
     echo '🔧 Checking for `entire` CLI tool...'
