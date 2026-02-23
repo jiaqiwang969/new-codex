@@ -52,8 +52,11 @@
 
   详细的技术文档、代码组织、配置说明和 MCP 用法请参阅 [codex-rs/README.md](./codex-rs/README.md)。
 
-  7. 时光机沙箱调试 (Time Freeze Sandbox)
+  7. 时空定格沙箱调试 (Time-Freeze Sandbox)
 
-  - 提供 `scripts/freeze-debug-vm.sh`，基于 OrbStack + Nix Flake 实现 **12秒级** 的运行态克隆。
-  - 在 CLI 发生崩溃或逻辑错误时，瞬间将当前的源码目录、Git 脏工作区和 `~/.codex` 状态（包含 SQLite 记忆和 Entire checkpoint 历史）打包注入到一个完全隔离的 NixOS 容器中。
-  - 配合 `entire rewind` 和 `nix develop`，在新沙箱中进行完美的“时间倒流”与断点调试，修复完成后可将补丁带回母机。如果修复失败，直接销毁沙箱，对 macOS 宿主机实现**零污染**。
+  这是一个专为高阶玩家打造的**“赛博法医”级调试流水线**。当 Codex 发生底层崩溃，或者在多轮对话中突然“降智（逻辑崩盘）”时，你可以无需打断工作流，瞬间抓取案发现场。
+
+  - **一键定格 (`/freeze`)**：在 TUI 聊天框输入 `/freeze 你的代码写得狗屁不通`。系统会在后台（无阻塞）瞬间提取你当前的脏代码工作区、`~/.codex` 的全部 SQLite 记忆、以及隐藏的 `entire` 时间线。
+  - **平行宇宙克隆**：利用 OrbStack 与 NixOS，在 12 秒内克隆出一台完全隔离的虚拟机（如 `nixos-agent-debug-xxx`），并将案发现场 1:1 物理投射进去。
+  - **Meta-Agent 自我审判**：在沙箱内运行 `~/start-debug.sh`，系统将用刚抓取的脏代码当场编译出一个带 Bug 的 Codex 实体，并注入包含案发回合（Turn ID）和报错日志的最高级系统指令（Meta-Prompt）。这个克隆体会在沙箱里自己翻旧账（`entire explain`）、查源码、并修复自己，且绝对不会污染你的 macOS 宿主机。
+  - **前置依赖**：依赖 OrbStack 及 `nixos-config` 的母舰架构（`nixos-agent-02` 作为克隆素体）。需要在 `~/.codex/config.toml` 中显式开启 `features.freeze_sandbox_debug = true` 解锁。
