@@ -54,9 +54,14 @@
 
   7. 时空定格沙箱调试 (Time-Freeze Sandbox)
 
-  这是一个专为高阶玩家打造的**“赛博法医”级调试流水线**。当 Codex 发生底层崩溃，或者在多轮对话中突然“降智（逻辑崩盘）”时，你可以无需打断工作流，瞬间抓取案发现场。
+  这是一个专为高阶玩家打造的**“赛博法医”级代码自愈流水线**。当 Codex 在多轮对话中突然“逻辑崩盘”，或者遭遇了底层 Panic 崩溃时，你可以无需打断当前的开发心流，一键定格并剥离案发现场，让 Codex 的“克隆体”在平行宇宙里对过去的自己进行调查和修复。
 
-  - **一键定格 (`/freeze`)**：在 TUI 聊天框输入 `/freeze 你的代码写得狗屁不通`。系统会在后台（无阻塞）瞬间提取你当前的脏代码工作区、`~/.codex` 的全部 SQLite 记忆、以及隐藏的 `entire` 时间线。
-  - **平行宇宙克隆**：利用 OrbStack 与 NixOS，在 12 秒内克隆出一台完全隔离的虚拟机（如 `nixos-agent-debug-xxx`），并将案发现场 1:1 物理投射进去。
-  - **Meta-Agent 自我审判**：在沙箱内运行 `~/start-debug.sh`，系统将用刚抓取的脏代码当场编译出一个带 Bug 的 Codex 实体，并注入包含案发回合（Turn ID）和报错日志的最高级系统指令（Meta-Prompt）。这个克隆体会在沙箱里自己翻旧账（`entire explain`）、查源码、并修复自己，且绝对不会污染你的 macOS 宿主机。
-  - **前置依赖**：依赖 OrbStack 及 `nixos-config` 的母舰架构（`nixos-agent-02` 作为克隆素体）。需要在 `~/.codex/config.toml` 中显式开启 `features.freeze_sandbox_debug = true` 解锁。
+  **核心工作流：**
+  - **一键快照 (`/freeze`)**：在 TUI 聊天框输入 `/freeze 你的逻辑完全错了`。系统会在后台（不阻塞界面）瞬间提取你当前的**脏代码工作区**、`~/.codex` 的全部 **SQLite 记忆卷宗**、以及 **Entire 的历史时间线**。
+  - **平行宇宙克隆**：利用 OrbStack 底层的 APFS 快照技术，在 12 秒内从母体（`nixos-agent-02`）零成本分裂出一台完全隔离的 NixOS 虚拟机，并将现场物理投射进去。
+  - **Meta-Agent 降临**：根据 TUI 面板的引导，进入沙箱执行 `~/start-debug.sh`。系统会利用 Nix 缓存**当场编译出包含 Bug 的 Linux 实体**，并给克隆体注入终极指令（Meta-Prompt）与死前日志（Turn ID）。克隆体将自动使用 `entire` 和 `sqlite3` 查阅“前世”的对话记录，分析源码，修复 Bug，并执行 `cargo check` 验明正身。
+
+  **如何开启：**
+  - 此功能依赖特定的系统底层架构（OrbStack + `nixos-config`），属进阶实验特性。
+  - 请在 `~/.codex/config.toml` 中显式添加 `[features] freeze_sandbox_debug = true` 进行解锁。
+  - 你的宿主机需要预先通过 `make orb/bootstrap-agent NIXNAME=vm-aarch64-orb-agent-02` 备好克隆母体。
