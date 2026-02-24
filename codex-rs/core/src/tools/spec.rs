@@ -18,6 +18,7 @@ use crate::tools::handlers::multi_agents::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_user_input_tool_description;
 use crate::tools::registry::ToolRegistryBuilder;
+use crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
@@ -233,6 +234,41 @@ fn create_approval_parameters() -> BTreeMap<String, JsonSchema> {
     properties
 }
 
+
+fn create_request_security_override_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "request_security_override".to_string(),
+        description: r#"Request a temporary bypass from the macOS Kernel Endpoint Security Daemon.
+The filesystem is strictly protected by a kernel-level security daemon that blocks file deletions (unlinking) and moves to trash (renaming to ~/.Trash) in protected zones.
+If your task legitimately requires deleting files or moving them out of the protected zones, you will get an 'Operation not permitted' error.
+In such cases, you MUST call this tool to request an override for the specific directory.
+You MUST set sandbox_permissions to 'require_escalated' to ask the user for approval. Do not ask for the whole home directory."#.to_string(),
+        parameters: serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute path of the directory or file you need permission to delete or move."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why you need this security override. This will be shown to the user."
+                },
+                "sandbox_permissions": {
+                    "type": "string",
+                    "description": "Must be set to 'require_escalated' to trigger the approval flow."
+                },
+                "justification": {
+                    "type": "string",
+                    "description": "A short question for the user asking for approval, e.g. 'Do you want to allow me to delete the legacy module?'"
+                }
+            },
+            "required": ["path", "reason", "sandbox_permissions", "justification"]
+        })).unwrap(),
+        strict: false,
+    })
+}
+
 fn create_exec_command_tool() -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
@@ -402,6 +438,34 @@ Examples of valid command strings:
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["command".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_ephemeral_sandbox_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "command".to_string(),
+            JsonSchema::String {
+                description: Some("The shell command to execute in the isolated disposable sandbox.".to_string()),
+            },
+        ),
+        (
+            "justification".to_string(),
+            JsonSchema::String {
+                description: Some("Reason for using the ephemeral sandbox (e.g. 'Running untrusted python script').".to_string()),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "exec_ephemeral_sandbox".to_string(),
+        description: "Creates an instantaneous, zero-cost, disposable NixOS Linux VM sandbox using OverlayFS, and runs a single shell command inside it. Use this when you need to run high-risk commands, compile or test untrusted code, or when you need absolute isolation without modifying the real host filesystem.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["command".to_string(), "justification".to_string()]),
             additional_properties: Some(false.into()),
         },
     })
@@ -1685,6 +1749,11 @@ pub(crate) fn build_specs(
         }
         ConfigShellToolType::ShellCommand => {
             builder.push_spec_with_parallel_support(create_shell_command_tool(), true);
+            builder.push_spec_with_parallel_support(create_ephemeral_sandbox_tool(), false);
+            builder.register_handler(
+                "exec_ephemeral_sandbox",
+                std::sync::Arc::new(crate::tools::handlers::EphemeralSandboxHandler),
+            );
         }
     }
 
@@ -1762,6 +1831,13 @@ pub(crate) fn build_specs(
     {
         let read_file_handler = Arc::new(ReadFileHandler);
         builder.push_spec_with_parallel_support(create_read_file_tool(), true);
+
+        builder.push_spec_with_parallel_support(create_request_security_override_tool(), false);
+        builder.register_handler(
+            "request_security_override",
+            Arc::new(crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler),
+        );
+
         builder.register_handler("read_file", read_file_handler);
     }
 
@@ -1814,6 +1890,13 @@ pub(crate) fn build_specs(
 
     builder.push_spec_with_parallel_support(create_view_image_tool(), true);
     builder.register_handler("view_image", view_image_handler);
+
+    
+        builder.push_spec_with_parallel_support(create_request_security_override_tool(), false);
+        builder.register_handler(
+            "request_security_override",
+            Arc::new(crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler),
+        );
 
     if config.collab_tools {
         let multi_agent_handler = Arc::new(MultiAgentHandler);

@@ -51,3 +51,8 @@ where
         FunctionCallError::RespondToModel(format!("failed to parse function arguments: {err}"))
     })
 }
+
+mod ephemeral_sandbox;
+pub use ephemeral_sandbox::EphemeralSandboxHandler;
+
+pub mod request_security_override;

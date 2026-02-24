@@ -266,6 +266,27 @@ fn get_command(args: &ExecCommandArgs, session_shell: Arc<Shell>) -> Vec<String>
 fn format_response(response: &UnifiedExecResponse) -> String {
     let mut sections = Vec::new();
 
+    // --- Codex Security Interceptor ---
+    // Detect if the kernel ES daemon just blocked this AI's file operation.
+    let mut modified_output = response.output.clone();
+    if response.exit_code.unwrap_or(0) != 0 && modified_output.contains("Operation not permitted") {
+        let warning = r#"
+
+================================================================================
+🚨 KERNEL SECURITY DAEMON INTERVENTION 🚨
+Your operation was intercepted and BLOCKED by the macOS Endpoint Security Daemon.
+You DO NOT have permission to delete or move this file/directory out of the protected zone.
+
+DO NOT try to use python, node, or other tools to bypass this; it will fail at the OS kernel level.
+
+REQUIRED ACTION:
+If this deletion is ABSOLUTELY NECESSARY for your task, you MUST use the `request_security_override` tool to apply for a temporary clearance.
+Warning: Your request will be escalated to your human superior for strict review. Proceed only if fully justified.
+================================================================================"#;
+        modified_output.push_str(warning);
+    }
+
+
     if !response.chunk_id.is_empty() {
         sections.push(format!("Chunk ID: {}", response.chunk_id));
     }
@@ -287,7 +308,7 @@ fn format_response(response: &UnifiedExecResponse) -> String {
     }
 
     sections.push("Output:".to_string());
-    sections.push(response.output.clone());
+    sections.push(modified_output);
 
     sections.join("\n")
 }
