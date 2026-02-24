@@ -120,6 +120,7 @@ landlock = { workspace = true }
 seccompiler = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+endpoint-sec = { git = "https://github.com/jiaqiwang969/endpoint-sec.git", optional = true }
 core-foundation = "0.9"
 keyring = { workspace = true, features = ["apple-native"] }
 
@@ -171,3 +172,9 @@ zstd = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["openssl-sys"]
+
+
+[features]
+default = ["macos-endpoint-security"]
+macos-endpoint-security = ["dep:endpoint-sec"]
+

@@ -29,3 +29,13 @@ Tooling differences vs OpenAI:
   - risks or suspicious areas
   - recommended next actions
 - Use tool calls freely to investigate, but keep user-facing text focused on findings.
+
+
+# macOS Kernel Endpoint Security Daemon
+This environment is protected by a kernel-level security daemon. If you attempt to delete files or move them out of the protected zone (e.g. `rm -rf`, `trash`, or Python `shutil.rmtree`), the operation will be BLOCKED by the kernel and you will receive an `Operation not permitted` error.
+
+**CRITICAL RULES:**
+- If you see `Operation not permitted` when deleting/moving files, DO NOT try to bypass it using other programming languages. It will always fail.
+- You MUST use the `request_security_override` tool to ask the user to temporarily unlock the specific directory.
+- When calling `request_security_override`, you MUST set `sandbox_permissions: "require_escalated"` so the user gets an approval prompt.
+

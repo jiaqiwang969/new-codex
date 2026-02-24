@@ -126,8 +126,13 @@ enum Subcommand {
     #[cfg(target_os = "macos")]
     App(app_cmd::AppCommand),
 
+
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
+
+    /// Run the background Endpoint Security daemon (requires root)
+    EsDaemon,
+
 
     /// Run commands within a Codex-provided sandbox.
     Sandbox(SandboxArgs),
@@ -716,6 +721,8 @@ async fn run_thread_memory_backfill(
     let config =
         Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
 
+    ensure_es_daemon_running_if_configured(&config);
+
     if !config.features.enabled(Feature::Sqlite) {
         anyhow::bail!("SQLite state DB is disabled. Re-run with --enable sqlite.");
     }
@@ -1130,6 +1137,90 @@ fn stage_str(stage: codex_core::features::Stage) -> &'static str {
     }
 }
 
+
+#[cfg(target_os = "macos")]
+fn ensure_es_daemon_running_if_configured(config: &codex_core::config::Config) {
+    if config.endpoint_security {
+        use std::process::Command;
+        use std::path::PathBuf;
+        
+        let output = Command::new("pgrep").arg("-f").arg("codex es-daemon").output();
+        if let Ok(out) = output {
+            if !out.stdout.is_empty() {
+                return;
+            }
+        }
+
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex"));
+        let exe_path = current_exe.to_string_lossy().to_string();
+
+        let check_sign = Command::new("codesign")
+            .arg("-d")
+            .arg("--entitlements")
+            .arg(":-")
+            .arg(&exe_path)
+            .output();
+            
+        let needs_sign = match check_sign {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                !stdout.contains("com.apple.developer.endpoint-security.client")
+            },
+            Err(_) => true,
+        };
+
+        eprintln!("Endpoint Security is enabled in config.toml. Starting background daemon...");
+        
+        let mut script = String::new();
+
+        if needs_sign {
+            eprintln!("  -> First-time setup: Self-signing Codex with Endpoint Security entitlements...");
+            let plist_path = "/tmp/codex_es.plist";
+            script.push_str(&format!("cat << 'EOF_PLIST' > {}
+", plist_path));
+            script.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+");
+            script.push_str("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+");
+            script.push_str("<plist version=\"1.0\">
+<dict>
+");
+            script.push_str("    <key>com.apple.developer.endpoint-security.client</key>
+    <true/>
+");
+            script.push_str("</dict>
+</plist>
+EOF_PLIST
+");
+            script.push_str(&format!("codesign -s - -f --entitlements {} {}
+", plist_path, exe_path));
+        }
+
+        // Must run in background in a way that AppleScript returns immediately
+        script.push_str(&format!("{} es-daemon > /tmp/codex-es-daemon.log 2>&1 &
+", exe_path));
+
+        let script_path = "/tmp/codex_start_daemon.sh";
+        std::fs::write(script_path, &script).unwrap();
+        Command::new("chmod").arg("+x").arg(script_path).output().unwrap();
+
+        let osascript_arg = format!(
+            "do shell script \"{}\" with administrator privileges",
+            script_path
+        );
+        
+        let mut cmd = Command::new("osascript");
+        cmd.arg("-e").arg(osascript_arg);
+        
+        if let Ok(mut child) = cmd.spawn() {
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_es_daemon_running_if_configured(_config: &codex_core::config::Config) {}
+
 fn main() -> anyhow::Result<()> {
     arg0_dispatch_or_else(|codex_linux_sandbox_exe| async move {
         cli_main(codex_linux_sandbox_exe).await?;
@@ -1155,6 +1246,14 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut interactive.config_overrides,
                 root_config_overrides.clone(),
             );
+            
+                        // We need config to check endpoint security
+            let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
+                interactive.config_overrides.parse_overrides().unwrap_or_default(),
+                codex_core::config::ConfigOverrides::default()
+            ).await?;
+            ensure_es_daemon_running_if_configured(&config);
+            
             let exit_info = run_interactive_tui(interactive, codex_linux_sandbox_exe).await?;
             handle_app_exit(exit_info)?;
         }
@@ -1163,6 +1262,14 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
+            
+                        // Start Daemon if needed
+            let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
+                exec_cli.config_overrides.parse_overrides().unwrap_or_default(),
+                codex_core::config::ConfigOverrides::default()
+            ).await?;
+            ensure_es_daemon_running_if_configured(&config);
+
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::Review(review_args)) => {
@@ -1288,7 +1395,31 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             );
             run_logout(logout_cli.config_overrides).await;
         }
+
+        Some(Subcommand::EsDaemon) => {
+            #[cfg(target_os = "macos")]
+            {
+                codex_core::es_daemon::run_daemon()?;
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                anyhow::bail!("Endpoint Security daemon is only supported on macOS with 'macos-endpoint-security' feature enabled.");
+            }
+        }
+
+        Some(Subcommand::EsDaemon) => {
+            #[cfg(target_os = "macos")]
+            {
+                codex_core::es_daemon::run_daemon()?;
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                anyhow::bail!("Endpoint Security daemon is only supported on macOS with 'macos-endpoint-security' feature enabled.");
+            }
+        }
         Some(Subcommand::Completion(completion_cli)) => {
+
+
             print_completion(completion_cli);
         }
         Some(Subcommand::Cloud(mut cloud_cli)) => {
@@ -1390,6 +1521,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     overrides,
                 )
                 .await?;
+                
+                ensure_es_daemon_running_if_configured(&config);
+
                 let mut rows = Vec::with_capacity(codex_core::features::FEATURES.len());
                 let mut name_width = 0;
                 let mut stage_width = 0;

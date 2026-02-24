@@ -215,7 +215,9 @@ pub fn prepend_path_entry_for_codex_aliases() -> std::io::Result<Arg0PathEntryGu
 
     // Best-effort cleanup of stale per-session dirs. Ignore failures so startup proceeds.
     if let Err(err) = janitor_cleanup(&temp_root) {
-        eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
+        if err.kind() != std::io::ErrorKind::PermissionDenied {
+            eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
+        }
     }
 
     let temp_dir = tempfile::Builder::new()

@@ -1832,11 +1832,7 @@ pub(crate) fn build_specs(
         let read_file_handler = Arc::new(ReadFileHandler);
         builder.push_spec_with_parallel_support(create_read_file_tool(), true);
 
-        builder.push_spec_with_parallel_support(create_request_security_override_tool(), false);
-        builder.register_handler(
-            "request_security_override",
-            Arc::new(crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler),
-        );
+
 
         builder.register_handler("read_file", read_file_handler);
     }

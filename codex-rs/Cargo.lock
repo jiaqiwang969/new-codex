@@ -1718,6 +1718,7 @@ dependencies = [
  "dirs",
  "dunce",
  "encoding_rs",
+ "endpoint-sec",
  "env-flags",
  "eventsource-stream",
  "futures",
@@ -3490,6 +3491,28 @@ name = "endian-type"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "869b0adbda23651a9c5c0c3d270aac9fcb52e8622a8f2b17e57802d7791962f2"
+
+[[package]]
+name = "endpoint-sec"
+version = "0.4.3"
+source = "git+https://github.com/jiaqiwang969/endpoint-sec.git#5a91e6c11fe97573dc85f5d454b078e4ac1fbe1c"
+dependencies = [
+ "endpoint-sec-sys",
+ "libc",
+ "mach2",
+ "static_assertions",
+]
+
+[[package]]
+name = "endpoint-sec-sys"
+version = "0.4.3"
+source = "git+https://github.com/jiaqiwang969/endpoint-sec.git#5a91e6c11fe97573dc85f5d454b078e4ac1fbe1c"
+dependencies = [
+ "block2",
+ "libc",
+ "mach2",
+ "objc2",
+]
 
 [[package]]
 name = "enum-as-inner"
@@ -5437,6 +5460,15 @@ dependencies = [
  "cc",
  "libc",
  "pkg-config",
+]
+
+[[package]]
+name = "mach2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

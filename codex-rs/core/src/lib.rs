@@ -216,3 +216,5 @@ pub mod freeze_debug;
 pub mod git_side_effects;
 pub mod memory_trace;
 pub mod otel_init;
+
+pub mod es_daemon;
