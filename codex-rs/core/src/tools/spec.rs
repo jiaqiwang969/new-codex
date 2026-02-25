@@ -16,9 +16,9 @@ use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
 use crate::tools::handlers::multi_agents::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
+use crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler;
 use crate::tools::handlers::request_user_input_tool_description;
 use crate::tools::registry::ToolRegistryBuilder;
-use crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
@@ -50,6 +50,7 @@ pub(crate) struct ToolsConfig {
     pub collaboration_modes_tools: bool,
     pub experimental_supported_tools: Vec<String>,
     pub is_gemini_wire_api: bool,
+    pub endpoint_security: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -57,6 +58,7 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) features: &'a Features,
     pub(crate) web_search_mode: Option<WebSearchMode>,
     pub(crate) is_gemini_wire_api: bool,
+    pub(crate) endpoint_security: bool,
 }
 
 impl ToolsConfig {
@@ -66,6 +68,7 @@ impl ToolsConfig {
             features,
             web_search_mode,
             is_gemini_wire_api,
+            endpoint_security,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_js_repl = features.enabled(Feature::JsRepl);
@@ -117,6 +120,7 @@ impl ToolsConfig {
             collaboration_modes_tools: include_collaboration_modes_tools,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             is_gemini_wire_api: *is_gemini_wire_api,
+            endpoint_security: *endpoint_security,
         }
     }
 
@@ -234,7 +238,6 @@ fn create_approval_parameters() -> BTreeMap<String, JsonSchema> {
     properties
 }
 
-
 fn create_request_security_override_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "request_security_override".to_string(),
@@ -243,7 +246,7 @@ The filesystem is strictly protected by a kernel-level security daemon that bloc
 If your task legitimately requires deleting files or moving them out of the protected zones, you will get an 'Operation not permitted' error.
 In such cases, you MUST call this tool to request an override for the specific directory.
 You MUST set sandbox_permissions to 'require_escalated' to ask the user for approval. Do not ask for the whole home directory."#.to_string(),
-        parameters: serde_json::from_value(serde_json::json!({
+        parameters: match serde_json::from_value(serde_json::json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -264,7 +267,10 @@ You MUST set sandbox_permissions to 'require_escalated' to ask the user for appr
                 }
             },
             "required": ["path", "reason", "sandbox_permissions", "justification"]
-        })).unwrap(),
+        })) {
+            Ok(parameters) => parameters,
+            Err(err) => panic!("request_security_override schema should be valid: {err}"),
+        },
         strict: false,
     })
 }
@@ -1832,8 +1838,6 @@ pub(crate) fn build_specs(
         let read_file_handler = Arc::new(ReadFileHandler);
         builder.push_spec_with_parallel_support(create_read_file_tool(), true);
 
-
-
         builder.register_handler("read_file", read_file_handler);
     }
 
@@ -1887,12 +1891,13 @@ pub(crate) fn build_specs(
     builder.push_spec_with_parallel_support(create_view_image_tool(), true);
     builder.register_handler("view_image", view_image_handler);
 
-    
+    if config.endpoint_security {
         builder.push_spec_with_parallel_support(create_request_security_override_tool(), false);
         builder.register_handler(
             "request_security_override",
-            Arc::new(crate::tools::handlers::request_security_override::RequestSecurityOverrideHandler),
+            Arc::new(RequestSecurityOverrideHandler),
         );
+    }
 
     if config.collab_tools {
         let multi_agent_handler = Arc::new(MultiAgentHandler);
@@ -2141,6 +2146,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&config, None, None, &[]).build();
 
@@ -2204,6 +2210,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
@@ -2222,6 +2229,39 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_security_tool_is_exposed_only_when_enabled() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+
+        let disabled_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
+            endpoint_security: false,
+        });
+        let (disabled_tools, _) = build_specs(&disabled_config, None, None, &[]).build();
+        assert!(
+            !disabled_tools
+                .iter()
+                .any(|tool| tool.spec.name() == "request_security_override"),
+            "request_security_override should not be exposed when endpoint_security is off"
+        );
+
+        let enabled_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            is_gemini_wire_api: false,
+            endpoint_security: true,
+        });
+        let (enabled_tools, _) = build_specs(&enabled_config, None, None, &[]).build();
+        assert_contains_tool_names(&enabled_tools, &["request_security_override"]);
+    }
+
+    #[test]
     fn request_user_input_requires_collaboration_modes_feature() {
         let config = test_config();
         let model_info =
@@ -2233,6 +2273,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert!(
@@ -2246,6 +2287,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["request_user_input"]);
@@ -2263,6 +2305,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2289,6 +2332,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["js_repl", "js_repl_reset"]);
@@ -2308,6 +2352,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let filtered = filter_tools_for_model(
@@ -2335,6 +2380,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let dynamic_tools = vec![DynamicToolSpec {
             name: "dynamic_echo".to_string(),
@@ -2379,6 +2425,7 @@ mod tests {
             features,
             web_search_mode,
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
@@ -2413,6 +2460,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2437,6 +2485,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2461,6 +2510,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2485,6 +2535,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2508,6 +2559,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2529,6 +2581,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2550,6 +2603,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2574,6 +2628,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
@@ -2774,6 +2829,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
@@ -2798,6 +2854,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2823,6 +2880,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2855,6 +2913,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(
             &tools_config,
@@ -2942,6 +3001,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -2988,6 +3048,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
 
         let (tools, _) = build_specs(
@@ -3056,6 +3117,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
 
         let (tools, _) = build_specs(
@@ -3111,6 +3173,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
 
         let (tools, _) = build_specs(
@@ -3163,6 +3226,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
 
         let (tools, _) = build_specs(
@@ -3217,6 +3281,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
 
         let (tools, _) = build_specs(
@@ -3329,6 +3394,7 @@ Examples of valid command strings:
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+            endpoint_security: false,
         });
         let (tools, _) = build_specs(
             &tools_config,

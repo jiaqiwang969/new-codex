@@ -656,6 +656,7 @@ impl TurnContext {
             features: &features,
             web_search_mode: self.tools_config.web_search_mode,
             is_gemini_wire_api: provider.wire_api == crate::model_provider_info::WireApi::Gemini,
+            endpoint_security: config.endpoint_security,
         })
         .with_agent_roles(config.agent_roles.clone());
 
@@ -933,103 +934,114 @@ impl SessionConfiguration {
 
         if updates.collaboration_mode.is_some() {
             if let Some(target_provider_id) = target_provider_id {
-                if !provider_matches_builtin_family(&next_configuration.provider, target_provider_id) {
-                // Use the merged provider map (built-in + user-defined from config.toml)
-                // so that custom providers with account_pool, env_keys, etc. are preserved.
+                if !provider_matches_builtin_family(
+                    &next_configuration.provider,
+                    target_provider_id,
+                ) {
+                    // Use the merged provider map (built-in + user-defined from config.toml)
+                    // so that custom providers with account_pool, env_keys, etc. are preserved.
+                    let providers = &next_configuration
+                        .original_config_do_not_use
+                        .model_providers;
+                    let old_provider_id = next_configuration.provider_id.clone();
+                    if let Some(provider) = providers.get(target_provider_id) {
+                        next_configuration.provider_id = target_provider_id.to_string();
+                        next_configuration.provider = provider.clone();
+                        crate::config::apply_primary_account_pool_selection(
+                            &mut next_configuration.provider,
+                        );
+                        let account_label = account_index_label(&next_configuration.provider);
+                        let base_url = next_configuration
+                            .provider
+                            .base_url
+                            .as_deref()
+                            .unwrap_or("(default)");
+                        provider_switch_label = Some(format!(
+                            "{old_provider_id} -> {target_provider_id} [{account_label}] @ {base_url} (model: {new_model})"
+                        ));
+                        tracing::info!(
+                            from_provider = %old_provider_id,
+                            to_provider = %target_provider_id,
+                            account = %account_label,
+                            base_url = %base_url,
+                            "auto-switching provider for model family"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target_provider_id,
+                            available_providers = ?providers.keys().collect::<Vec<_>>(),
+                            "auto-switch: target provider not found in merged provider map"
+                        );
+                    }
+                }
+            } else if is_openai_model_slug(new_model)
+                && next_configuration.provider.wire_api
+                    != crate::model_provider_info::WireApi::Responses
+            {
                 let providers = &next_configuration
                     .original_config_do_not_use
                     .model_providers;
                 let old_provider_id = next_configuration.provider_id.clone();
-                if let Some(provider) = providers.get(target_provider_id) {
-                    next_configuration.provider_id = target_provider_id.to_string();
-                    next_configuration.provider = provider.clone();
-                    crate::config::apply_primary_account_pool_selection(
-                        &mut next_configuration.provider,
-                    );
-                    let account_label = account_index_label(&next_configuration.provider);
-                    let base_url = next_configuration
-                        .provider
-                        .base_url
-                        .as_deref()
-                        .unwrap_or("(default)");
-                    provider_switch_label = Some(format!(
-                        "{old_provider_id} -> {target_provider_id} [{account_label}] @ {base_url} (model: {new_model})"
-                    ));
-                    tracing::info!(
-                        from_provider = %old_provider_id,
-                        to_provider = %target_provider_id,
-                        account = %account_label,
-                        base_url = %base_url,
-                        "auto-switching provider for model family"
-                    );
+
+                let mut restored_provider = if original_config.user_configured_provider.wire_api
+                    == crate::model_provider_info::WireApi::Responses
+                {
+                    original_config.user_configured_provider.clone()
+                } else if let Some(openai) = providers.get("openai") {
+                    openai.clone()
                 } else {
-                    tracing::warn!(
-                        target_provider_id,
-                        available_providers = ?providers.keys().collect::<Vec<_>>(),
-                        "auto-switch: target provider not found in merged provider map"
-                    );
-                }
+                    original_config.user_configured_provider.clone()
+                };
+                next_configuration.provider_id = resolve_provider_id_for_provider(
+                    providers,
+                    &restored_provider,
+                    &original_config.model_provider_id,
+                );
+                crate::config::apply_primary_account_pool_selection(&mut restored_provider);
+                next_configuration.provider = restored_provider;
+
+                let account_label = account_index_label(&next_configuration.provider);
+                let base_url = next_configuration
+                    .provider
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("(default)");
+                provider_switch_label = Some(format!(
+                    "{} -> {} [{}] @ {} (model: {})",
+                    old_provider_id,
+                    next_configuration.provider_id,
+                    account_label,
+                    base_url,
+                    new_model
+                ));
+            } else if provider_is_auto_switched {
+                // Switching FROM a family-specific provider back to a default
+                // model family: restore the user's explicitly configured provider
+                // (before auto-switching).
+                let old_provider_id = next_configuration.provider_id.clone();
+                let mut restored_provider = original_config.user_configured_provider.clone();
+                next_configuration.provider_id = resolve_provider_id_for_provider(
+                    &original_config.model_providers,
+                    &restored_provider,
+                    &original_config.model_provider_id,
+                );
+                crate::config::apply_primary_account_pool_selection(&mut restored_provider);
+                next_configuration.provider = restored_provider;
+                let account_label = account_index_label(&next_configuration.provider);
+                let base_url = next_configuration
+                    .provider
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("(default)");
+                provider_switch_label = Some(format!(
+                    "{} -> {} [{}] @ {} (model: {})",
+                    old_provider_id,
+                    next_configuration.provider_id,
+                    account_label,
+                    base_url,
+                    new_model
+                ));
             }
-        } else if is_openai_model_slug(new_model)
-            && next_configuration.provider.wire_api
-                != crate::model_provider_info::WireApi::Responses
-        {
-            let providers = &next_configuration
-                .original_config_do_not_use
-                .model_providers;
-            let old_provider_id = next_configuration.provider_id.clone();
-
-            let mut restored_provider = if original_config.user_configured_provider.wire_api
-                == crate::model_provider_info::WireApi::Responses
-            {
-                original_config.user_configured_provider.clone()
-            } else if let Some(openai) = providers.get("openai") {
-                openai.clone()
-            } else {
-                original_config.user_configured_provider.clone()
-            };
-            next_configuration.provider_id = resolve_provider_id_for_provider(
-                providers,
-                &restored_provider,
-                &original_config.model_provider_id,
-            );
-            crate::config::apply_primary_account_pool_selection(&mut restored_provider);
-            next_configuration.provider = restored_provider;
-
-            let account_label = account_index_label(&next_configuration.provider);
-            let base_url = next_configuration
-                .provider
-                .base_url
-                .as_deref()
-                .unwrap_or("(default)");
-            provider_switch_label = Some(format!(
-                "{} -> {} [{}] @ {} (model: {})",
-                old_provider_id, next_configuration.provider_id, account_label, base_url, new_model
-            ));
-        } else if provider_is_auto_switched {
-            // Switching FROM a family-specific provider back to a default
-            // model family: restore the user's explicitly configured provider
-            // (before auto-switching).
-            let old_provider_id = next_configuration.provider_id.clone();
-            let mut restored_provider = original_config.user_configured_provider.clone();
-            next_configuration.provider_id = resolve_provider_id_for_provider(
-                &original_config.model_providers,
-                &restored_provider,
-                &original_config.model_provider_id,
-            );
-            crate::config::apply_primary_account_pool_selection(&mut restored_provider);
-            next_configuration.provider = restored_provider;
-            let account_label = account_index_label(&next_configuration.provider);
-            let base_url = next_configuration
-                .provider
-                .base_url
-                .as_deref()
-                .unwrap_or("(default)");
-            provider_switch_label = Some(format!(
-                "{} -> {} [{}] @ {} (model: {})",
-                old_provider_id, next_configuration.provider_id, account_label, base_url, new_model
-            ));
-        }
         } // End if updates.model.is_some()
 
         Ok((next_configuration, provider_switch_label))
@@ -1323,6 +1335,7 @@ impl Session {
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
             is_gemini_wire_api: provider_for_context.wire_api
                 == crate::model_provider_info::WireApi::Gemini,
+            endpoint_security: per_turn_config.endpoint_security,
         })
         .with_agent_roles(per_turn_config.agent_roles.clone());
 
@@ -3148,8 +3161,8 @@ impl Session {
             );
         }
 
-        if turn_context.config.memories.entire_summary_enabled {
-            if let Ok(checkpoints) =
+        if turn_context.config.memories.entire_summary_enabled
+            && let Ok(checkpoints) =
                 crate::entire_integration::get_recent_entire_checkpoints_with_summaries(
                     turn_context.cwd.as_path(),
                     3, // max checkpoints for main agent
@@ -3158,24 +3171,19 @@ impl Session {
                     Some(&turn_context.config),
                 )
                 .await
-            {
-                if !checkpoints.is_empty() {
-                    let summary =
-                        crate::entire_integration::format_checkpoints_summary(&checkpoints);
-                    let summary =
-                        codex_utils_string::take_last_bytes_at_char_boundary(&summary, 3000)
-                            .trim()
-                            .to_string();
-                    if !summary.is_empty() {
-                        items.push(
-                            DeveloperInstructions::new(format!(
-                                "Recent AI Sessions (via Entire):\n{}",
-                                summary
-                            ))
-                            .into(),
-                        );
-                    }
-                }
+            && !checkpoints.is_empty()
+        {
+            let summary = crate::entire_integration::format_checkpoints_summary(&checkpoints);
+            let summary = codex_utils_string::take_last_bytes_at_char_boundary(&summary, 3000)
+                .trim()
+                .to_string();
+            if !summary.is_empty() {
+                items.push(
+                    DeveloperInstructions::new(format!(
+                        "Recent AI Sessions (via Entire):\n{summary}"
+                    ))
+                    .into(),
+                );
             }
         }
 
@@ -4817,6 +4825,7 @@ async fn spawn_review_thread(
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
         is_gemini_wire_api: false,
+        endpoint_security: config.endpoint_security,
     })
     .with_agent_roles(config.agent_roles.clone());
 

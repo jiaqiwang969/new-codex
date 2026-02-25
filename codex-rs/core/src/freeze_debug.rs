@@ -35,7 +35,7 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
 
         // Write the panic info to a log file so the sandbox Codex knows what happened
         if let Some(ref root) = repo_root {
-            let panic_msg = format!("{:#?}", panic_info);
+            let panic_msg = format!("{panic_info:#?}");
             let _ = std::fs::write(root.join("last_panic.log"), panic_msg);
         }
 
@@ -71,3 +71,5 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
 // Force rebuild to pick up new bash script with --noprofile --norc
 
 // Force rebuild to pick up new bash script with unescaped vars
+
+// Force rebuild to pick up new bash script with nixos-debug-base

@@ -126,13 +126,11 @@ enum Subcommand {
     #[cfg(target_os = "macos")]
     App(app_cmd::AppCommand),
 
-
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
 
     /// Run the background Endpoint Security daemon (requires root)
     EsDaemon,
-
 
     /// Run commands within a Codex-provided sandbox.
     Sandbox(SandboxArgs),
@@ -1137,85 +1135,203 @@ fn stage_str(stage: codex_core::features::Stage) -> &'static str {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_quote(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+#[cfg(target_os = "macos")]
+fn has_endpoint_security_entitlement(exe_path: &str) -> bool {
+    let output = std::process::Command::new("codesign")
+        .arg("-d")
+        .arg("--entitlements")
+        .arg(":-")
+        .arg(exe_path)
+        .output();
+
+    let Ok(output) = output else {
+        return false;
+    };
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    combined.contains("com.apple.developer.endpoint-security.client")
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_default_es_policy(config: &codex_core::config::Config) -> std::io::Result<()> {
+    let policy_path = config.codex_home.join("es_policy.json");
+    let protected_zone = config
+        .cwd
+        .canonicalize()
+        .unwrap_or_else(|_| config.cwd.clone())
+        .to_string_lossy()
+        .to_string();
+    let mut policy = if policy_path.exists() {
+        std::fs::read_to_string(&policy_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if !policy.is_object() {
+        policy = serde_json::json!({});
+    }
+    let Some(policy_obj) = policy.as_object_mut() else {
+        return Err(std::io::Error::other("policy file should be a JSON object"));
+    };
+    {
+        let temporary_overrides = policy_obj
+            .entry("temporary_overrides")
+            .or_insert_with(|| serde_json::json!([]));
+        if !temporary_overrides.is_array() {
+            *temporary_overrides = serde_json::json!([]);
+        }
+    }
+    {
+        let temporary_override_expirations = policy_obj
+            .entry("temporary_override_expirations")
+            .or_insert_with(|| serde_json::json!({}));
+        if !temporary_override_expirations.is_object() {
+            *temporary_override_expirations = serde_json::json!({});
+        }
+    }
+    let protected_zones = policy_obj
+        .entry("protected_zones")
+        .or_insert_with(|| serde_json::json!([]));
+    if !protected_zones.is_array() {
+        *protected_zones = serde_json::json!([]);
+    }
+    let Some(protected_zones) = protected_zones.as_array_mut() else {
+        return Err(std::io::Error::other(
+            "policy protected_zones must be a JSON array",
+        ));
+    };
+
+    let normalized_protected_zone = PathBuf::from(protected_zone.as_str())
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(protected_zone.as_str()));
+    let has_zone = protected_zones
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .any(|zone| {
+            let zone_path = PathBuf::from(zone);
+            zone_path.canonicalize().unwrap_or(zone_path) == normalized_protected_zone
+        });
+    if has_zone && policy_path.exists() {
+        return Ok(());
+    }
+    if !has_zone {
+        protected_zones.push(serde_json::Value::String(protected_zone));
+    }
+
+    std::fs::create_dir_all(&config.codex_home)?;
+    let contents = serde_json::to_string_pretty(&policy)
+        .map_err(|err| std::io::Error::other(format!("failed to serialize policy: {err}")))?;
+    std::fs::write(policy_path, contents)
+}
+
+#[cfg(target_os = "macos")]
+fn is_es_daemon_running(exe_path: &str) -> bool {
+    let pattern = format!("{exe_path} es-daemon");
+    std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg(pattern)
+        .output()
+        .map(|output| !output.stdout.is_empty())
+        .unwrap_or(false)
+}
 
 #[cfg(target_os = "macos")]
 fn ensure_es_daemon_running_if_configured(config: &codex_core::config::Config) {
-    if config.endpoint_security {
-        use std::process::Command;
-        use std::path::PathBuf;
-        
-        let output = Command::new("pgrep").arg("-f").arg("codex es-daemon").output();
-        if let Ok(out) = output {
-            if !out.stdout.is_empty() {
-                return;
-            }
-        }
+    if !config.endpoint_security {
+        return;
+    }
 
-        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex"));
-        let exe_path = current_exe.to_string_lossy().to_string();
+    if let Err(err) = ensure_default_es_policy(config) {
+        eprintln!("WARNING: failed to initialize Endpoint Security policy file: {err}");
+    }
 
-        let check_sign = Command::new("codesign")
-            .arg("-d")
-            .arg("--entitlements")
-            .arg(":-")
-            .arg(&exe_path)
-            .output();
-            
-        let needs_sign = match check_sign {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                !stdout.contains("com.apple.developer.endpoint-security.client")
-            },
-            Err(_) => true,
-        };
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex"));
+    let exe_path = current_exe.to_string_lossy().to_string();
+    if is_es_daemon_running(&exe_path) {
+        return;
+    }
 
-        eprintln!("Endpoint Security is enabled in config.toml. Starting background daemon...");
-        
-        let mut script = String::new();
-
-        if needs_sign {
-            eprintln!("  -> First-time setup: Self-signing Codex with Endpoint Security entitlements...");
-            let plist_path = "/tmp/codex_es.plist";
-            script.push_str(&format!("cat << 'EOF_PLIST' > {}
-", plist_path));
-            script.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-");
-            script.push_str("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-");
-            script.push_str("<plist version=\"1.0\">
-<dict>
-");
-            script.push_str("    <key>com.apple.developer.endpoint-security.client</key>
-    <true/>
-");
-            script.push_str("</dict>
-</plist>
-EOF_PLIST
-");
-            script.push_str(&format!("codesign -s - -f --entitlements {} {}
-", plist_path, exe_path));
-        }
-
-        // Must run in background in a way that AppleScript returns immediately
-        script.push_str(&format!("{} es-daemon > /tmp/codex-es-daemon.log 2>&1 &
-", exe_path));
-
-        let script_path = "/tmp/codex_start_daemon.sh";
-        std::fs::write(script_path, &script).unwrap();
-        Command::new("chmod").arg("+x").arg(script_path).output().unwrap();
-
-        let osascript_arg = format!(
-            "do shell script \"{}\" with administrator privileges",
-            script_path
+    if !has_endpoint_security_entitlement(&exe_path) {
+        eprintln!(
+            "WARNING: endpoint_security=true but `{exe_path}` lacks endpoint-security entitlement."
         );
-        
-        let mut cmd = Command::new("osascript");
-        cmd.arg("-e").arg(osascript_arg);
-        
-        if let Ok(mut child) = cmd.spawn() {
-            let _ = child.wait();
+        eprintln!(
+            "WARNING: sign a dedicated daemon binary with the entitlement and rerun `codex`."
+        );
+        return;
+    }
+
+    let policy_path = config.codex_home.join("es_policy.json");
+    let default_protected_zone = config
+        .cwd
+        .canonicalize()
+        .unwrap_or_else(|_| config.cwd.clone())
+        .to_string_lossy()
+        .to_string();
+    let protected_zones =
+        serde_json::to_string(&vec![default_protected_zone]).unwrap_or_else(|_| "[]".to_string());
+
+    let script_body = format!(
+        "set -euo pipefail\nexport CODEX_ES_POLICY_PATH={}\nexport CODEX_ES_DEFAULT_PROTECTED_ZONES={}\nnohup {} es-daemon >> /tmp/codex-es-daemon.log 2>&1 < /dev/null &\n",
+        shell_quote(policy_path.to_string_lossy().as_ref()),
+        shell_quote(&protected_zones),
+        shell_quote(&exe_path),
+    );
+    let script_path =
+        std::env::temp_dir().join(format!("codex_start_es_daemon_{}.sh", std::process::id()));
+    if let Err(err) = std::fs::write(&script_path, script_body) {
+        eprintln!("WARNING: failed to write daemon bootstrap script: {err}");
+        return;
+    }
+    if let Err(err) = std::process::Command::new("chmod")
+        .arg("+x")
+        .arg(&script_path)
+        .output()
+    {
+        eprintln!("WARNING: failed to chmod daemon bootstrap script: {err}");
+        return;
+    }
+
+    let shell_command = format!(
+        "bash {}",
+        shell_quote(script_path.to_string_lossy().as_ref())
+    );
+    let osascript_arg = format!(
+        "do shell script {} with administrator privileges",
+        applescript_quote(&shell_command)
+    );
+    match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(osascript_arg)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("WARNING: failed to start Endpoint Security daemon: exit status {status}");
+        }
+        Err(err) => {
+            eprintln!("WARNING: failed to invoke osascript for daemon startup: {err}");
         }
     }
+
+    let _ = std::fs::remove_file(script_path);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1246,14 +1362,22 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut interactive.config_overrides,
                 root_config_overrides.clone(),
             );
-            
-                        // We need config to check endpoint security
+
+            let cli_kv_overrides = interactive
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let overrides = codex_core::config::ConfigOverrides {
+                config_profile: interactive.config_profile.clone(),
+                ..Default::default()
+            };
             let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
-                interactive.config_overrides.parse_overrides().unwrap_or_default(),
-                codex_core::config::ConfigOverrides::default()
-            ).await?;
+                cli_kv_overrides,
+                overrides,
+            )
+            .await?;
             ensure_es_daemon_running_if_configured(&config);
-            
+
             let exit_info = run_interactive_tui(interactive, codex_linux_sandbox_exe).await?;
             handle_app_exit(exit_info)?;
         }
@@ -1262,12 +1386,20 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            
-                        // Start Daemon if needed
+
+            let cli_kv_overrides = exec_cli
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let overrides = codex_core::config::ConfigOverrides {
+                config_profile: exec_cli.config_profile.clone(),
+                ..Default::default()
+            };
             let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
-                exec_cli.config_overrides.parse_overrides().unwrap_or_default(),
-                codex_core::config::ConfigOverrides::default()
-            ).await?;
+                cli_kv_overrides,
+                overrides,
+            )
+            .await?;
             ensure_es_daemon_running_if_configured(&config);
 
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
@@ -1279,6 +1411,22 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
+
+            let cli_kv_overrides = exec_cli
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let overrides = codex_core::config::ConfigOverrides {
+                config_profile: exec_cli.config_profile.clone(),
+                ..Default::default()
+            };
+            let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
+                cli_kv_overrides,
+                overrides,
+            )
+            .await?;
+            ensure_es_daemon_running_if_configured(&config);
+
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::McpServer) => {
@@ -1337,6 +1485,22 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 all,
                 config_overrides,
             );
+
+            let cli_kv_overrides = interactive
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let overrides = codex_core::config::ConfigOverrides {
+                config_profile: interactive.config_profile.clone(),
+                ..Default::default()
+            };
+            let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
+                cli_kv_overrides,
+                overrides,
+            )
+            .await?;
+            ensure_es_daemon_running_if_configured(&config);
+
             let exit_info = run_interactive_tui(interactive, codex_linux_sandbox_exe).await?;
             handle_app_exit(exit_info)?;
         }
@@ -1354,6 +1518,22 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                 all,
                 config_overrides,
             );
+
+            let cli_kv_overrides = interactive
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?;
+            let overrides = codex_core::config::ConfigOverrides {
+                config_profile: interactive.config_profile.clone(),
+                ..Default::default()
+            };
+            let config = codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
+                cli_kv_overrides,
+                overrides,
+            )
+            .await?;
+            ensure_es_daemon_running_if_configured(&config);
+
             let exit_info = run_interactive_tui(interactive, codex_linux_sandbox_exe).await?;
             handle_app_exit(exit_info)?;
         }
@@ -1403,23 +1583,12 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             }
             #[cfg(not(target_os = "macos"))]
             {
-                anyhow::bail!("Endpoint Security daemon is only supported on macOS with 'macos-endpoint-security' feature enabled.");
-            }
-        }
-
-        Some(Subcommand::EsDaemon) => {
-            #[cfg(target_os = "macos")]
-            {
-                codex_core::es_daemon::run_daemon()?;
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                anyhow::bail!("Endpoint Security daemon is only supported on macOS with 'macos-endpoint-security' feature enabled.");
+                anyhow::bail!(
+                    "Endpoint Security daemon is only supported on macOS with 'macos-endpoint-security' feature enabled."
+                );
             }
         }
         Some(Subcommand::Completion(completion_cli)) => {
-
-
             print_completion(completion_cli);
         }
         Some(Subcommand::Cloud(mut cloud_cli)) => {
@@ -1521,7 +1690,7 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                     overrides,
                 )
                 .await?;
-                
+
                 ensure_es_daemon_running_if_configured(&config);
 
                 let mut rows = Vec::with_capacity(codex_core::features::FEATURES.len());

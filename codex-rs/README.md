@@ -286,6 +286,27 @@ codex --sandbox danger-full-access
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 
+### macOS Endpoint Security Daemon（可选）
+
+如果你希望在 macOS 上启用内核级删除/移动拦截，可以在 `~/.codex/config.toml` 里打开：
+
+```toml
+endpoint_security = true
+```
+
+启用后：
+- CLI 会在启动时确保 Endpoint Security daemon 已运行（若未签名 entitlement，会警告并跳过）。
+- 仅在 `endpoint_security = true` 时向模型暴露 `request_security_override` 工具。
+- policy 文件位于 `<codex_home>/es_policy.json`，包含：
+  - `protected_zones`
+  - `temporary_overrides`
+  - `temporary_override_expirations`
+- `request_security_override` 获批后会写入临时放行，默认 TTL 为 900 秒（15 分钟）。
+
+要求：
+- macOS + `macos-endpoint-security` feature 构建。
+- 可执行文件带 `com.apple.developer.endpoint-security.client` entitlement。
+
 ### `~/.codex/config.toml` 的 `[features]` 配置说明
 
 > 如果你说的 `~/.config.toml` 指的是 Codex 用户配置，实际文件路径是 `~/.codex/config.toml`。

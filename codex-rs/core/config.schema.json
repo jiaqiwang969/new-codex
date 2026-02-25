@@ -255,6 +255,9 @@
             "experimental_windows_sandbox": {
               "type": "boolean"
             },
+            "freeze_sandbox_debug": {
+              "type": "boolean"
+            },
             "include_apply_patch_tool": {
               "type": "boolean"
             },
@@ -486,6 +489,14 @@
       "additionalProperties": false,
       "description": "Memories settings loaded from config.toml.",
       "properties": {
+        "entire_summary_enabled": {
+          "description": "Enable AI-generated WHY-focused summaries for Entire checkpoints.",
+          "type": "boolean"
+        },
+        "entire_summary_model": {
+          "description": "Model used for Entire checkpoint summarization (defaults to model_sub).",
+          "type": "string"
+        },
         "max_raw_memories_for_global": {
           "description": "Maximum number of recent raw memories retained for global consolidation.",
           "format": "uint",
@@ -1385,6 +1396,9 @@
       "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts.",
       "type": "boolean"
     },
+    "endpoint_security": {
+      "type": "boolean"
+    },
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"
     },
@@ -1442,6 +1456,9 @@
           "type": "boolean"
         },
         "experimental_windows_sandbox": {
+          "type": "boolean"
+        },
+        "freeze_sandbox_debug": {
           "type": "boolean"
         },
         "include_apply_patch_tool": {
