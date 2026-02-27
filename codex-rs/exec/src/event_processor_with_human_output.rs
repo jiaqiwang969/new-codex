@@ -13,10 +13,10 @@ use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabCloseBeginEvent;
 use codex_protocol::protocol::CollabCloseEndEvent;
-use codex_protocol::protocol::CollabWaitingBeginEvent;
-use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::CollabResumeBeginEvent;
 use codex_protocol::protocol::CollabResumeEndEvent;
+use codex_protocol::protocol::CollabWaitingBeginEvent;
+use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -161,7 +161,7 @@ impl EventProcessorWithHumanOutput {
                 red: Style::new(),
                 green: Style::new(),
                 cyan: Style::new(),
-                yellow: Style::new(), progress_active: false, progress_last_len: 0, use_ansi_cursor: true, progress_anchor: false, progress_done: false,
+                yellow: Style::new(),
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
@@ -1429,13 +1429,18 @@ mod tests {
             red: Style::new(),
             green: Style::new(),
             cyan: Style::new(),
-            yellow: Style::new(), progress_active: false, progress_last_len: 0, use_ansi_cursor: true, progress_anchor: false, progress_done: false,
+            yellow: Style::new(),
             show_agent_reasoning: false,
             show_raw_agent_reasoning: false,
             last_message_path: None,
             last_total_token_usage: None,
             final_message: None,
             last_proposed_plan: None,
+            progress_active: false,
+            progress_last_len: 0,
+            use_ansi_cursor: false,
+            progress_anchor: false,
+            progress_done: false,
         }
     }
 

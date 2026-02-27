@@ -48,7 +48,6 @@ use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -64,6 +63,7 @@ use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
@@ -127,8 +127,7 @@ fn task_started_produces_turn_started_event() {
         }),
     ));
 
-    assert_eq!(out, vec![ThreadEvent::TurnStarted(TurnStartedEvent {memory: None,
-        })]);
+    assert_eq!(out, vec![ThreadEvent::TurnStarted(TurnStartedEvent {})]);
 }
 
 #[test]
@@ -653,6 +652,8 @@ fn collab_wait_end_reuses_spawned_agent_metadata() {
             new_thread_id: Some(new_thread_id),
             prompt,
             status: AgentStatus::Running,
+            new_agent_nickname: None,
+            new_agent_role: None,
         }),
     );
     let _ = ep.collect_thread_events(&end);
@@ -666,6 +667,7 @@ fn collab_wait_end_reuses_spawned_agent_metadata() {
             memory: None,
             call_id: "call-11".to_string(),
             statuses,
+            agent_statuses: vec![],
         }),
     );
 
@@ -732,6 +734,8 @@ fn collab_wait_end_after_rollback_clears_agent_metadata_cache() {
             new_thread_id: Some(new_thread_id),
             prompt,
             status: AgentStatus::Running,
+            new_agent_nickname: None,
+            new_agent_role: None,
         }),
     );
     let _ = ep.collect_thread_events(&spawn_end);
@@ -750,6 +754,7 @@ fn collab_wait_end_after_rollback_clears_agent_metadata_cache() {
             memory: None,
             call_id: "call-11".to_string(),
             statuses,
+            agent_statuses: vec![],
         }),
     );
 
@@ -823,6 +828,8 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
             new_thread_id: Some(first_thread_id),
             prompt: "inspect crate a".to_string(),
             status: AgentStatus::Running,
+            new_agent_nickname: None,
+            new_agent_role: None,
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -867,6 +874,8 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
             new_thread_id: Some(second_thread_id),
             prompt: "inspect crate b".to_string(),
             status: AgentStatus::Running,
+            new_agent_nickname: None,
+            new_agent_role: None,
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -883,6 +892,7 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
             memory: None,
             call_id: "call-wait".to_string(),
             statuses,
+            agent_statuses: vec![],
         }),
     );
 
@@ -955,6 +965,8 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
             new_thread_id: Some(thread_id),
             prompt: "inspect old".to_string(),
             status: AgentStatus::Running,
+            new_agent_nickname: None,
+            new_agent_role: None,
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -999,6 +1011,8 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
             new_thread_id: Some(thread_id),
             prompt: "inspect new".to_string(),
             status: AgentStatus::Running,
+            new_agent_nickname: None,
+            new_agent_role: None,
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -1015,6 +1029,7 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
             memory: None,
             call_id: "call-wait".to_string(),
             statuses,
+            agent_statuses: vec![],
         }),
     );
 

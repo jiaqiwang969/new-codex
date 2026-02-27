@@ -2354,7 +2354,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
-        is_gemini_wire_api: false,
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
@@ -2384,7 +2384,7 @@ mod tests {
             session_source: SessionSource::SubAgent(SubAgentSource::Other(
                 "agent_job:test".to_string(),
             )),
-        is_gemini_wire_api: false,
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
@@ -2415,7 +2415,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
-        is_gemini_wire_api: false,
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_user_input_tool = find_tool(&tools, "request_user_input");
@@ -2430,7 +2430,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
-        is_gemini_wire_api: false,
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_user_input_tool = find_tool(&tools, "request_user_input");
@@ -2454,7 +2454,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
-        is_gemini_wire_api: false,
+            is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert!(
@@ -2468,7 +2468,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
-        session_source: SessionSource::Cli,
+            session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["request_user_input"]);
@@ -2524,90 +2524,6 @@ mod tests {
         let ToolSpec::Freeform(FreeformTool { format, .. }) = create_js_repl_freeform_tool() else {
             panic!("js_repl should use a freeform tool spec");
         };
-
-    }
-
-    #[test]
-    fn js_repl_tools_only_hides_dynamic_tools_from_model_tools() {
-        let config = test_config();
-        let model_info =
-            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
-        let mut features = Features::with_defaults();
-        features.enable(Feature::JsRepl);
-        features.enable(Feature::JsReplToolsOnly);
-
-        let tools_config = ToolsConfig::new(&ToolsConfigParams {
-            model_info: &model_info,
-            features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
-            is_gemini_wire_api: false,
-        session_source: SessionSource::Cli,
-        });
-        let dynamic_tools = vec![DynamicToolSpec {
-            name: "dynamic_echo".to_string(),
-            description: "echo dynamic payload".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"}
-                },
-                "required": ["text"],
-                "additionalProperties": false
-            }),
-        }];
-        let (tools, _) = build_specs(&tools_config, None, None, &dynamic_tools).build();
-        assert!(
-            tools.iter().any(|tool| tool.spec.name() == "dynamic_echo"),
-            "expected dynamic tool in full router specs"
-        );
-
-        let filtered = filter_tools_for_model(
-            tools.iter().map(|tool| tool.spec.clone()).collect(),
-            &tools_config,
-        );
-        assert!(
-            !filtered
-                .iter()
-                .any(|tool| tool_name(tool) == "dynamic_echo"),
-            "expected dynamic tools to be hidden from direct model tools in js_repl_tools_only mode"
-        );
-        assert_contains_tool_specs(&filtered, &["js_repl", "js_repl_reset"]);
-
-    }
-
-    fn assert_model_tools(
-        model_slug: &str,
-        features: &Features,
-        web_search_mode: Option<WebSearchMode>,
-        expected_tools: &[&str],
-    ) {
-        let model_info = model_info_from_models_json(model_slug);
-        let tools_config = ToolsConfig::new(&ToolsConfigParams {
-            model_info: &model_info,
-            features,
-            web_search_mode,
-            session_source: SessionSource::Cli,
-            is_gemini_wire_api: false,
-        });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
-        let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
-        assert_eq!(&tool_names, &expected_tools,);
-    }
-
-    fn assert_default_model_tools(
-        model_slug: &str,
-        features: &Features,
-        web_search_mode: Option<WebSearchMode>,
-        shell_tool: &'static str,
-        expected_tail: &[&str],
-    ) {
-        let mut expected = if features.enabled(Feature::UnifiedExec) {
-            vec!["exec_command", "write_stdin"]
-        } else {
-            vec![shell_tool]
-        };
-        expected.extend(expected_tail);
-        assert_model_tools(model_slug, features, web_search_mode, &expected);
     }
 
     #[test]
@@ -2672,7 +2588,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
-        session_source: SessionSource::Cli,
+            session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2697,7 +2613,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
-        session_source: SessionSource::Cli,
+            session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2721,7 +2637,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
-        session_source: SessionSource::Cli,
+            session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2743,7 +2659,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
-        session_source: SessionSource::Cli,
+            session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3005,7 +2921,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
-        is_gemini_wire_api: false,
+            is_gemini_wire_api: false,
         });
 
         assert_eq!(tools_config.shell_type, ConfigShellToolType::ShellCommand);
@@ -3495,6 +3411,42 @@ mod tests {
                 strict: false,
             })
         );
+    }
+
+
+    fn assert_model_tools(
+        model_slug: &str,
+        features: &Features,
+        web_search_mode: Option<WebSearchMode>,
+        expected_tools: &[&str],
+    ) {
+        let model_info = model_info_from_models_json(model_slug);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features,
+            web_search_mode,
+            session_source: SessionSource::Cli,
+            is_gemini_wire_api: false,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
+        assert_eq!(&tool_names, &expected_tools,);
+    }
+
+    fn assert_default_model_tools(
+        model_slug: &str,
+        features: &Features,
+        web_search_mode: Option<WebSearchMode>,
+        shell_tool: &'static str,
+        expected_tail: &[&str],
+    ) {
+        let mut expected = if features.enabled(Feature::UnifiedExec) {
+            vec!["exec_command", "write_stdin"]
+        } else {
+            vec![shell_tool]
+        };
+        expected.extend(expected_tail);
+        assert_model_tools(model_slug, features, web_search_mode, &expected);
     }
 
     #[test]

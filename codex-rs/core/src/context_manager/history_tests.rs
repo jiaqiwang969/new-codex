@@ -1265,6 +1265,7 @@ fn image_data_url_payload_does_not_dominate_message_estimate() {
     let image_item = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
+        thought_signature: None,
         content: vec![
             ContentItem::InputText {
                 text: "Here is the screenshot".to_string(),
@@ -1277,6 +1278,7 @@ fn image_data_url_payload_does_not_dominate_message_estimate() {
     let text_only_item = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
+        thought_signature: None,
         content: vec![ContentItem::InputText {
             text: "Here is the screenshot".to_string(),
         }],
@@ -1321,6 +1323,7 @@ fn non_base64_image_urls_are_unchanged() {
     let message_item = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
+        thought_signature: None,
         content: vec![ContentItem::InputImage {
             image_url: "https://example.com/foo.png".to_string(),
         }],
@@ -1351,6 +1354,7 @@ fn data_url_without_base64_marker_is_unchanged() {
     let item = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
+        thought_signature: None,
         content: vec![ContentItem::InputImage {
             image_url: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>".to_string(),
         }],
@@ -1388,6 +1392,7 @@ fn mixed_case_data_url_markers_are_adjusted() {
     let item = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
+        thought_signature: None,
         content: vec![ContentItem::InputImage { image_url }],
         end_turn: None,
         phase: None,
@@ -1409,6 +1414,7 @@ fn multiple_inline_images_apply_multiple_fixed_costs() {
     let item = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
+        thought_signature: None,
         content: vec![
             ContentItem::InputText {
                 text: "images".to_string(),
@@ -1437,6 +1443,7 @@ fn text_only_items_unchanged() {
     let item = ResponseItem::Message {
         id: None,
         role: "assistant".to_string(),
+        thought_signature: None,
         content: vec![ContentItem::OutputText {
             text: "Hello world, this is a response.".to_string(),
         }],

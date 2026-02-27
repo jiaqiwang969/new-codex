@@ -345,6 +345,7 @@ mod tests {
             ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
+            thought_signature: None,
                 content: vec![
                     ContentItem::InputText {
                         text: "<environment_context>ctx</environment_context>".to_string(),

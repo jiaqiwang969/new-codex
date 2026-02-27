@@ -2326,7 +2326,8 @@ mod tests {
                 ),
                 prompt: "analyze repository".into(),
                 status: AgentStatus::Running,
-            new_agent_nickname: None, new_agent_role: None,
+                new_agent_nickname: None,
+                new_agent_role: None,
             }),
         ];
 
@@ -2388,7 +2389,8 @@ mod tests {
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
-            new_agent_nickname: None, new_agent_role: None,
+                new_agent_nickname: None,
+                new_agent_role: None,
             }),
             EventMsg::CollabCloseEnd(codex_protocol::protocol::CollabCloseEndEvent {
                 call_id: "close-1".into(),
@@ -2396,7 +2398,8 @@ mod tests {
                 receiver_thread_id,
                 status: AgentStatus::Shutdown,
                 memory: None,
-            receiver_agent_nickname: None, receiver_agent_role: None,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
             }),
         ];
 
@@ -2464,7 +2467,8 @@ mod tests {
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
-            new_agent_nickname: None, new_agent_role: None,
+                new_agent_nickname: None,
+                new_agent_role: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -2490,7 +2494,8 @@ mod tests {
                 receiver_thread_id,
                 status: AgentStatus::Shutdown,
                 memory: None,
-            receiver_agent_nickname: None, receiver_agent_role: None,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),

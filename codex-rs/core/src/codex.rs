@@ -3604,7 +3604,7 @@ impl Session {
         }
         // Add developer instructions for memories.
         if let Some(memory_prompt) =
-            build_memories_developer_instructions(&turn_context.config.codex_home).await
+            build_memory_tool_developer_instructions(&turn_context.config.codex_home).await
             && turn_context.features.enabled(Feature::MemoryTool)
         {
             developer_sections.push(memory_prompt);
@@ -7868,7 +7868,7 @@ fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
     Vec::new()
 }
 
-use crate::memories::prompts::build_memories_developer_instructions;
+use crate::memories::prompts::build_memory_tool_developer_instructions;
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
 #[cfg(test)]
@@ -8180,34 +8180,37 @@ mod tests {
     async fn provider_switch_history_sanitizer_drops_encrypted_reasoning_items() {
         let session_configuration = make_session_configuration_for_tests().await;
         let mut state = SessionState::new(session_configuration);
-        state.replace_history(vec![
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "existing assistant output".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Reasoning {
-                id: "r-1".to_string(),
-                summary: Vec::new(),
-                content: None,
-                encrypted_content: Some("enc-blob-1".to_string()),
-            },
-            ResponseItem::Compaction {
-                encrypted_content: "enc-blob-2".to_string(),
-            },
-            ResponseItem::Reasoning {
-                id: "r-2".to_string(),
-                summary: Vec::new(),
-                content: None,
-                encrypted_content: None,
-            },
-            user_message("user turn"),
-        ]);
+        state.replace_history(
+            vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "existing assistant output".to_string(),
+                    }],
+                    end_turn: None,
+                    phase: None,
+                    thought_signature: None,
+                },
+                ResponseItem::Reasoning {
+                    id: "r-1".to_string(),
+                    summary: Vec::new(),
+                    content: None,
+                    encrypted_content: Some("enc-blob-1".to_string()),
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: "enc-blob-2".to_string(),
+                },
+                ResponseItem::Reasoning {
+                    id: "r-2".to_string(),
+                    summary: Vec::new(),
+                    content: None,
+                    encrypted_content: None,
+                },
+                user_message("user turn"),
+            ],
+            None,
+        );
 
         let removed = drop_provider_specific_encrypted_history_items(&mut state);
         assert_eq!(removed, 2);
@@ -9431,6 +9434,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                     turn_id: turn_id.clone(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -9446,6 +9450,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id,
                     last_agent_message: None,
+                memory: None,
                 },
             )),
         ];
@@ -9479,6 +9484,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                     turn_id: user_turn_id.clone(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -9494,6 +9500,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id: user_turn_id,
                     last_agent_message: None,
+                    memory: None,
                 },
             )),
             // Standalone task turn (no UserMessage) should not consume rollback skips.
@@ -9502,12 +9509,14 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                     turn_id: standalone_turn_id.clone(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::TurnComplete(
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id: standalone_turn_id,
                     last_agent_message: None,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
@@ -10425,6 +10434,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
             },
         };
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -10983,6 +10993,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
             }],
             end_turn: None,
             phase: None,
+            thought_signature: None,
         };
         session
             .record_into_history(std::slice::from_ref(&compacted_summary), &turn_context)
@@ -11307,8 +11318,8 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                     text_elements: Vec::new(),
                 }],
                 cwd: tc.cwd.clone(),
-                approval_policy: tc.approval_policy,
-                sandbox_policy: tc.sandbox_policy.clone(),
+                approval_policy: tc.approval_policy.value(),
+                sandbox_policy: tc.sandbox_policy.get().clone(),
                 model: "gemma-3n".to_string(),
                 effort: tc.reasoning_effort,
                 summary: tc.reasoning_summary,
@@ -11316,7 +11327,6 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 collaboration_mode: None,
                 personality: tc.personality,
             },
-            &mut previous_context,
         )
         .await;
 

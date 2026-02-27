@@ -4,9 +4,9 @@ use crate::text_formatting::truncate_text;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
-use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentModelSource;
 use codex_protocol::protocol::CollabAgentModelSourceDetail;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::CollabCloseEndEvent;
@@ -222,7 +222,6 @@ pub(crate) fn waiting_end(
         append_agent_metadata_details(&entry.thread_id.to_string(), known_agents, &mut details);
     }
     collab_event(title_text("Finished waiting"), details)
-
 }
 
 pub(crate) fn close_end(
@@ -646,28 +645,34 @@ mod tests {
         });
 
         let known_agents = HashMap::new();
-        let send = interaction_end(CollabAgentInteractionEndEvent {
-            call_id: "call-send".to_string(),
-            sender_thread_id,
-            memory: None,
-            receiver_thread_id: robie_id,
-            receiver_agent_nickname: Some("Robie".to_string()),
-            receiver_agent_role: Some("explorer".to_string()),
-            prompt: "Please continue and return the answer only.".to_string(),
-            status: AgentStatus::Running,
-        }, &known_agents);
+        let send = interaction_end(
+            CollabAgentInteractionEndEvent {
+                call_id: "call-send".to_string(),
+                sender_thread_id,
+                memory: None,
+                receiver_thread_id: robie_id,
+                receiver_agent_nickname: Some("Robie".to_string()),
+                receiver_agent_role: Some("explorer".to_string()),
+                prompt: "Please continue and return the answer only.".to_string(),
+                status: AgentStatus::Running,
+            },
+            &known_agents,
+        );
 
-        let waiting = waiting_begin(CollabWaitingBeginEvent {
-            sender_thread_id,
-            memory: None,
-            receiver_thread_ids: vec![robie_id],
-            receiver_agents: vec![CollabAgentRef {
-                thread_id: robie_id,
-                agent_nickname: Some("Robie".to_string()),
-                agent_role: Some("explorer".to_string()),
-            }],
-            call_id: "call-wait".to_string(),
-        }, &known_agents);
+        let waiting = waiting_begin(
+            CollabWaitingBeginEvent {
+                sender_thread_id,
+                memory: None,
+                receiver_thread_ids: vec![robie_id],
+                receiver_agents: vec![CollabAgentRef {
+                    thread_id: robie_id,
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                }],
+                call_id: "call-wait".to_string(),
+            },
+            &known_agents,
+        );
 
         let mut statuses = HashMap::new();
         statuses.insert(
@@ -675,36 +680,42 @@ mod tests {
             AgentStatus::Completed(Some("39916800".to_string())),
         );
         statuses.insert(bob_id, AgentStatus::Errored("tool timeout".to_string()));
-        let finished = waiting_end(CollabWaitingEndEvent {
-            sender_thread_id,
-            memory: None,
-            call_id: "call-wait".to_string(),
-            agent_statuses: vec![
-                CollabAgentStatusEntry {
-                    thread_id: robie_id,
-                    agent_nickname: Some("Robie".to_string()),
-                    agent_role: Some("explorer".to_string()),
-                    status: AgentStatus::Completed(Some("39916800".to_string())),
-                },
-                CollabAgentStatusEntry {
-                    thread_id: bob_id,
-                    agent_nickname: Some("Bob".to_string()),
-                    agent_role: Some("worker".to_string()),
-                    status: AgentStatus::Errored("tool timeout".to_string()),
-                },
-            ],
-            statuses,
-        }, &known_agents);
+        let finished = waiting_end(
+            CollabWaitingEndEvent {
+                sender_thread_id,
+                memory: None,
+                call_id: "call-wait".to_string(),
+                agent_statuses: vec![
+                    CollabAgentStatusEntry {
+                        thread_id: robie_id,
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        status: AgentStatus::Completed(Some("39916800".to_string())),
+                    },
+                    CollabAgentStatusEntry {
+                        thread_id: bob_id,
+                        agent_nickname: Some("Bob".to_string()),
+                        agent_role: Some("worker".to_string()),
+                        status: AgentStatus::Errored("tool timeout".to_string()),
+                    },
+                ],
+                statuses,
+            },
+            &known_agents,
+        );
 
-        let close = close_end(CollabCloseEndEvent {
-            call_id: "call-close".to_string(),
-            sender_thread_id,
-            memory: None,
-            receiver_thread_id: robie_id,
-            receiver_agent_nickname: Some("Robie".to_string()),
-            receiver_agent_role: Some("explorer".to_string()),
-            status: AgentStatus::Completed(Some("39916800".to_string())),
-        }, &known_agents);
+        let close = close_end(
+            CollabCloseEndEvent {
+                call_id: "call-close".to_string(),
+                sender_thread_id,
+                memory: None,
+                receiver_thread_id: robie_id,
+                receiver_agent_nickname: Some("Robie".to_string()),
+                receiver_agent_role: Some("explorer".to_string()),
+                status: AgentStatus::Completed(Some("39916800".to_string())),
+            },
+            &known_agents,
+        );
 
         let snapshot = [spawn, send, waiting, finished, close]
             .iter()

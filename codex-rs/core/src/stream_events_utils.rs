@@ -306,6 +306,7 @@ mod tests {
         ResponseItem::Message {
             id: Some("msg-1".to_string()),
             role: "assistant".to_string(),
+            thought_signature: None,
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
             }],

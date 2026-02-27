@@ -64,8 +64,6 @@ use codex_core::git_info::get_git_repo_root;
 use codex_core::git_info::local_git_branches;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
-use codex_protocol::protocol::CollabAgentModelSource;
-use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_core::skills::model::SkillMetadata;
 use codex_core::terminal::TerminalName;
 use codex_core::terminal::terminal_info;
@@ -96,6 +94,8 @@ use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::BackgroundEventEvent;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::CollabAgentModelSource;
+use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::ErrorEvent;
@@ -249,10 +249,10 @@ use crate::render::renderable::RenderableExt;
 use crate::render::renderable::RenderableItem;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
-use crate::team_profile;
-use crate::team_profile_vouch;
 use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
 use crate::status_indicator_widget::StatusDetailsCapitalization;
+use crate::team_profile;
+use crate::team_profile_vouch;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
@@ -2085,7 +2085,9 @@ impl ChatWidget {
             }
             // Unified exec may be parsed as Unknown; keep the working indicator visible regardless.
             self.bottom_pane.ensure_status_indicator();
-            if !is_standard_tool_call(&ev.parsed_cmd) && ev.source != ExecCommandSource::UnifiedExecStartup {
+            if !is_standard_tool_call(&ev.parsed_cmd)
+                && ev.source != ExecCommandSource::UnifiedExecStartup
+            {
                 return;
             }
         }
@@ -4390,7 +4392,7 @@ impl ChatWidget {
                 }
                 self.bottom_pane.drain_pending_submission_state();
             }
-                        SlashCommand::Freeze if !trimmed.is_empty() => {
+            SlashCommand::Freeze if !trimmed.is_empty() => {
                 self.handle_freeze_command(Some(trimmed.to_string()));
                 self.bottom_pane.drain_pending_submission_state();
             }
@@ -4415,13 +4417,23 @@ impl ChatWidget {
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::Freeze if !trimmed.is_empty() => {
-                if !self.config.features.enabled(codex_core::features::Feature::FreezeSandboxDebug) {
+                if !self
+                    .config
+                    .features
+                    .enabled(codex_core::features::Feature::FreezeSandboxDebug)
+                {
                     self.add_error_message("❌ The /freeze command is an experimental sandbox feature that requires NixOS/OrbStack support. To use it, you must explicitly set `freeze_sandbox_debug = true` in the [features] table of your ~/.codex/config.toml.".to_string());
                     return;
                 }
-                let target_turn = self.active_turn_id.as_ref().or(self.last_completed_turn_id.as_ref());
+                let target_turn = self
+                    .active_turn_id
+                    .as_ref()
+                    .or(self.last_completed_turn_id.as_ref());
                 let base_reason = if let Some(turn_id) = target_turn {
-                    format!("User detected a logic bug or strange behavior during active turn: {}.", turn_id)
+                    format!(
+                        "User detected a logic bug or strange behavior during active turn: {}.",
+                        turn_id
+                    )
                 } else {
                     "User detected a logic bug or strange behavior.".to_string()
                 };
@@ -4438,45 +4450,67 @@ impl ChatWidget {
                     });
                     if let Some(ref root) = repo_root {
                         cmd.arg(root.to_string_lossy().as_ref());
-                        let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
+                        let _ = std::fs::write(
+                            root.join("last_panic.log"),
+                            format!("Behavioral Bug Snapshot: {}", reason),
+                        );
                     }
                     match cmd.status() {
                         Ok(status) if status.success() => {
                             let mut details = String::new();
-                            details.push_str("✅ **[Background] Time-Freeze Sandbox Cloned Successfully!**\n\n");
+                            details.push_str(
+                                "✅ **[Background] Time-Freeze Sandbox Cloned Successfully!**\n\n",
+                            );
                             details.push_str("Your dirty workspace, `~/.codex` runtime state, and the active `turn_id` have been successfully synchronized into an isolated NixOS VM.\n\n");
-                            
+
                             if let Some(ref root) = repo_root {
-                                details.push_str(&format!("**Crime Scene Log:** `{}`\n", root.join("last_panic.log").display()));
+                                details.push_str(&format!(
+                                    "**Crime Scene Log:** `{}`\n",
+                                    root.join("last_panic.log").display()
+                                ));
                             }
-                            
+
                             details.push_str("\n**How to start the investigation:**\n");
                             details.push_str("1. List VMs: `orb list` (look for the newest `nixos-agent-debug-xxx`)\n");
-                            details.push_str("2. Enter Sandbox: `orb -m <VM_NAME> -u jqwang bash`\n");
+                            details
+                                .push_str("2. Enter Sandbox: `orb -m <VM_NAME> -u jqwang bash`\n");
                             details.push_str("3. Wake Clone: `~/start-debug.sh`\n\n");
                             details.push_str("The clone will automatically compile a local binary and begin investigating the bug.\n");
 
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
-                                Box::new(crate::history_cell::new_info_event(details, None))
-                            ));
-                        },
+                            let _ =
+                                app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
+                                    Box::new(crate::history_cell::new_info_event(details, None)),
+                                ));
+                        }
                         Ok(status) => {
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_protocol::protocol::Event {
-                                id: "".to_string(),
-                                msg: codex_protocol::protocol::EventMsg::Error(codex_protocol::protocol::ErrorEvent {
-                                    message: format!("⚠️ Sandbox script exited with {status}."),
-                                    codex_error_info: None,
-                                }),
-                            }));
-                        },
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                                codex_protocol::protocol::Event {
+                                    id: "".to_string(),
+                                    msg: codex_protocol::protocol::EventMsg::Error(
+                                        codex_protocol::protocol::ErrorEvent {
+                                            message: format!(
+                                                "⚠️ Sandbox script exited with {status}."
+                                            ),
+                                            codex_error_info: None,
+                                        },
+                                    ),
+                                },
+                            ));
+                        }
                         Err(e) => {
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_protocol::protocol::Event {
-                                id: "".to_string(),
-                                msg: codex_protocol::protocol::EventMsg::Error(codex_protocol::protocol::ErrorEvent {
-                                    message: format!("❌ Failed to execute freeze-debug-vm.sh: {e}"),
-                                    codex_error_info: None,
-                                }),
-                            }));
+                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                                codex_protocol::protocol::Event {
+                                    id: "".to_string(),
+                                    msg: codex_protocol::protocol::EventMsg::Error(
+                                        codex_protocol::protocol::ErrorEvent {
+                                            message: format!(
+                                                "❌ Failed to execute freeze-debug-vm.sh: {e}"
+                                            ),
+                                            codex_error_info: None,
+                                        },
+                                    ),
+                                },
+                            ));
                         }
                     }
                 });
@@ -4672,16 +4706,25 @@ impl ChatWidget {
 
     // ── Reference Image / Batch / PDF / Image Quality handlers ──────────
 
-
     fn handle_freeze_command(&mut self, args: Option<String>) {
-        if !self.config.features.enabled(codex_core::features::Feature::FreezeSandboxDebug) {
+        if !self
+            .config
+            .features
+            .enabled(codex_core::features::Feature::FreezeSandboxDebug)
+        {
             self.add_error_message("❌ The /freeze command is an experimental sandbox feature that requires NixOS/OrbStack support. To use it, you must explicitly set `freeze_sandbox_debug = true` in the [features] table of your ~/.codex/config.toml.".to_string());
             return;
         }
 
-        let target_turn = self.active_turn_id.as_ref().or(self.last_completed_turn_id.as_ref());
+        let target_turn = self
+            .active_turn_id
+            .as_ref()
+            .or(self.last_completed_turn_id.as_ref());
         let base_reason = if let Some(turn_id) = target_turn {
-            format!("User detected a logic bug or strange behavior during active turn: {}.", turn_id)
+            format!(
+                "User detected a logic bug or strange behavior during active turn: {}.",
+                turn_id
+            )
         } else {
             "User detected a logic bug or strange behavior.".to_string()
         };
@@ -4692,9 +4735,14 @@ impl ChatWidget {
             base_reason
         };
 
-        self.add_info_message(format!("🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."), None);
+        self.add_info_message(
+            format!(
+                "🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."
+            ),
+            None,
+        );
         let app_event_tx = self.app_event_tx.clone();
-        
+
         std::thread::spawn(move || {
             let mut cmd = std::process::Command::new("bash");
             cmd.stdout(std::process::Stdio::piped());
@@ -4702,16 +4750,19 @@ impl ChatWidget {
             let script_path = std::env::temp_dir().join("codex-freeze-debug-vm.sh");
             let _ = std::fs::write(&script_path, codex_core::freeze_debug::FREEZE_SCRIPT);
             cmd.arg(&script_path);
-            
-            let repo_root = std::env::current_dir().ok().and_then(|cwd| {
-                codex_core::git_info::resolve_root_git_project_for_trust(&cwd)
-            });
-            
+
+            let repo_root = std::env::current_dir()
+                .ok()
+                .and_then(|cwd| codex_core::git_info::resolve_root_git_project_for_trust(&cwd));
+
             if let Some(ref root) = repo_root {
                 cmd.arg(root.to_string_lossy().as_ref());
-                let _ = std::fs::write(root.join("last_panic.log"), format!("Behavioral Bug Snapshot: {}", reason));
+                let _ = std::fs::write(
+                    root.join("last_panic.log"),
+                    format!("Behavioral Bug Snapshot: {}", reason),
+                );
             }
-            
+
             match cmd.output() {
                 Ok(output) if output.status.success() => {
                     let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_protocol::protocol::Event {
@@ -4723,23 +4774,32 @@ impl ChatWidget {
                             text_elements: vec![],
                         }),
                     }));
-                },
+                }
                 Ok(output) => {
                     let err_msg = String::from_utf8_lossy(&output.stderr);
                     let out_msg = String::from_utf8_lossy(&output.stdout);
-                    let full_err = format!("⚠️ Sandbox script exited with {}.\nStderr: {}\nStdout: {}", output.status, err_msg, out_msg);
+                    let full_err = format!(
+                        "⚠️ Sandbox script exited with {}.\nStderr: {}\nStdout: {}",
+                        output.status, err_msg, out_msg
+                    );
                     let _ = app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
-                        Box::new(crate::history_cell::new_error_event(full_err))
+                        Box::new(crate::history_cell::new_error_event(full_err)),
                     ));
-                },
+                }
                 Err(e) => {
-                    let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_protocol::protocol::Event {
-                        id: "".to_string(),
-                        msg: codex_protocol::protocol::EventMsg::Error(codex_protocol::protocol::ErrorEvent {
-                            message: format!("❌ Failed to execute freeze-debug-vm.sh: {e}"),
-                            codex_error_info: None,
-                        }),
-                    }));
+                    let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                        codex_protocol::protocol::Event {
+                            id: "".to_string(),
+                            msg: codex_protocol::protocol::EventMsg::Error(
+                                codex_protocol::protocol::ErrorEvent {
+                                    message: format!(
+                                        "❌ Failed to execute freeze-debug-vm.sh: {e}"
+                                    ),
+                                    codex_error_info: None,
+                                },
+                            ),
+                        },
+                    ));
                 }
             }
         });

@@ -30,6 +30,26 @@ use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::RequirementSource;
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
+use codex_core::skills::model::SkillMetadata;
+use codex_otel::OtelManager;
+use codex_otel::RuntimeMetricsSummary;
+use codex_protocol::ThreadId;
+use codex_protocol::account::PlanType;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::Settings;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::MessagePhase;
+use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::parse_command::ParsedCommand;
+use codex_protocol::plan_tool::PlanItemArg;
+use codex_protocol::plan_tool::StepStatus;
+use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::AgentMessageDeltaEvent;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
@@ -37,6 +57,7 @@ use codex_protocol::protocol::AgentReasoningEvent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::BackgroundEventEvent;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::CreditsSnapshot;
@@ -62,6 +83,7 @@ use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SkillScope;
 use codex_protocol::protocol::StreamErrorEvent;
 use codex_protocol::protocol::TerminalInteractionEvent;
 use codex_protocol::protocol::ThreadRolledBackEvent;
@@ -74,28 +96,6 @@ use codex_protocol::protocol::UndoCompletedEvent;
 use codex_protocol::protocol::UndoStartedEvent;
 use codex_protocol::protocol::ViewImageToolCallEvent;
 use codex_protocol::protocol::WarningEvent;
-use codex_core::skills::model::SkillMetadata;
-use codex_otel::OtelManager;
-use codex_otel::RuntimeMetricsSummary;
-use codex_protocol::ThreadId;
-use codex_protocol::account::PlanType;
-use codex_protocol::config_types::CollaborationMode;
-use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::Settings;
-use codex_protocol::items::AgentMessageContent;
-use codex_protocol::items::AgentMessageItem;
-use codex_protocol::items::TurnItem;
-use codex_protocol::models::MessagePhase;
-use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::openai_models::default_input_modalities;
-use codex_protocol::parse_command::ParsedCommand;
-use codex_protocol::plan_tool::PlanItemArg;
-use codex_protocol::plan_tool::StepStatus;
-use codex_protocol::plan_tool::UpdatePlanArgs;
-use codex_protocol::protocol::CodexErrorInfo;
-use codex_protocol::protocol::SkillScope;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -886,7 +886,8 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             dependencies: None,
             policy: None,
             permissions: None,
-            path_to_skills_md: repo_skill_path, permission_profile: None,
+            path_to_skills_md: repo_skill_path,
+            permission_profile: None,
             scope: SkillScope::Repo,
         },
         SkillMetadata {
@@ -897,7 +898,8 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             dependencies: None,
             policy: None,
             permissions: None,
-            path_to_skills_md: user_skill_path.clone(), permission_profile: None,
+            path_to_skills_md: user_skill_path.clone(),
+            permission_profile: None,
             scope: SkillScope::User,
         },
     ]));
@@ -1614,7 +1616,12 @@ async fn make_chatwidget_manual(
     let auth_manager =
         codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test"));
     let codex_home = cfg.codex_home.clone();
-    let models_manager = Arc::new(ModelsManager::new(codex_home, auth_manager.clone(), None, codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default()));
+    let models_manager = Arc::new(ModelsManager::new(
+        codex_home,
+        auth_manager.clone(),
+        None,
+        codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default(),
+    ));
     let reasoning_effort = None;
     let base_mode = CollaborationMode {
         mode: ModeKind::Default,
@@ -1653,7 +1660,10 @@ async fn make_chatwidget_manual(
         connectors_force_refetch_pending: false,
         last_copyable_output: None,
         last_rendered_user_message_event: None,
-        queued_message_edit_binding: crate::chatwidget::KeyBinding::new(crossterm::event::KeyCode::Up, crossterm::event::KeyModifiers::ALT),
+        queued_message_edit_binding: crate::chatwidget::KeyBinding::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::ALT,
+        ),
         realtime_conversation: crate::chatwidget::RealtimeConversationUiState::default(),
         known_collab_agent_changes_by_turn: Vec::new(),
         current_turn_known_collab_agent_changes: Vec::new(),
@@ -1748,7 +1758,12 @@ fn set_chatgpt_auth(chat: &mut ChatWidget) {
     chat.auth_manager = codex_core::test_support::auth_manager_from_auth(
         CodexAuth::create_dummy_chatgpt_auth_for_testing(),
     );
-    chat.models_manager = Arc::new(ModelsManager::new(chat.config.codex_home.clone(), chat.auth_manager.clone(), None, codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default()));
+    chat.models_manager = Arc::new(ModelsManager::new(
+        chat.config.codex_home.clone(),
+        chat.auth_manager.clone(),
+        None,
+        codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default(),
+    ));
 }
 
 #[tokio::test]
@@ -2445,8 +2460,9 @@ async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_i
             new_thread_id: Some(receiver_thread_id),
             prompt: "inspect old".to_string(),
             status: AgentStatus::Running,
-        new_agent_nickname: None, new_agent_role: None,
-            }),
+            new_agent_nickname: None,
+            new_agent_role: None,
+        }),
     });
     chat.handle_codex_event(Event {
         id: "turn-a-complete".to_string(),
@@ -2480,8 +2496,9 @@ async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_i
             new_thread_id: Some(receiver_thread_id),
             prompt: "inspect new".to_string(),
             status: AgentStatus::Running,
-        new_agent_nickname: None, new_agent_role: None,
-            }),
+            new_agent_nickname: None,
+            new_agent_role: None,
+        }),
     });
     chat.handle_codex_event(Event {
         id: "rollback".to_string(),
@@ -2500,19 +2517,23 @@ async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_i
             sender_thread_id,
             memory: None,
             statuses,
-        agent_statuses: vec![codex_protocol::protocol::CollabAgentStatusEntry {
+            agent_statuses: vec![codex_protocol::protocol::CollabAgentStatusEntry {
                 thread_id: receiver_thread_id,
                 status: AgentStatus::Completed(None),
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
             }],
-            }),
+        }),
     });
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1, "expected one wait-complete history cell");
     let rendered = lines_to_single_string(&cells[0]);
-    assert!(rendered.contains("role: explorer"), "rendered: {}", rendered);
+    assert!(
+        rendered.contains("role: explorer"),
+        "rendered: {}",
+        rendered
+    );
     assert!(rendered.contains("model: claude-sonnet-4-6"));
     assert!(rendered.contains("provider: anthropic"));
     assert!(!rendered.contains("role: worker"));
@@ -2639,8 +2660,10 @@ async fn exec_approval_emits_proposed_command_and_decision_history() {
         network_approval_context: None,
         proposed_execpolicy_amendment: None,
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-short".into(),
         msg: EventMsg::ExecApprovalRequest(ev),
@@ -2686,8 +2709,10 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         network_approval_context: None,
         proposed_execpolicy_amendment: None,
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-multi".into(),
         msg: EventMsg::ExecApprovalRequest(ev_multi),
@@ -2739,8 +2764,10 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         network_approval_context: None,
         proposed_execpolicy_amendment: None,
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-long".into(),
         msg: EventMsg::ExecApprovalRequest(ev_long),
@@ -2770,7 +2797,8 @@ fn begin_exec_with_source(
     // Build the full command vec and parse it using core's parser,
     // then convert to protocol variants for the event payload.
     let command = vec!["bash".to_string(), "-lc".to_string(), raw_cmd.to_string()];
-    let parsed_cmd: Vec<ParsedCommand> = codex_shell_command::parse_command::parse_command(&command);
+    let parsed_cmd: Vec<ParsedCommand> =
+        codex_shell_command::parse_command::parse_command(&command);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let interaction_input = None;
     let event = ExecCommandBeginEvent {
@@ -3482,7 +3510,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent {
-                phase: None,
+            phase: None,
             message: "Final response.".into(),
         }),
     });
@@ -3927,10 +3955,6 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
     assert_eq!(chat.current_model(), resolved_model);
 }
 
-
-
-
-
 #[tokio::test]
 async fn set_model_updates_active_collaboration_mask() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1")).await;
@@ -3958,14 +3982,31 @@ async fn set_reasoning_effort_updates_active_collaboration_mask() {
     chat.set_reasoning_effort(None);
 
     assert_eq!(chat.current_reasoning_effort(), None);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Collaborative);
+    assert_eq!(
+        chat.active_collaboration_mode_kind(),
+        ModeKind::Collaborative
+    );
 }
 
 #[tokio::test]
 async fn collab_mode_is_sent_after_enabling() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.set_feature_enabled(Feature::CollaborationModes, true); chat.set_collaboration_mask(CollaborationModeMask { mode: Some(ModeKind::Default), reasoning_effort: None, developer_instructions: None, model: None, name: "Default".to_string() }); chat.set_collaboration_mask(CollaborationModeMask { mode: Some(ModeKind::Default), reasoning_effort: None, developer_instructions: None, model: None, name: "Default".to_string() });
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    chat.set_collaboration_mask(CollaborationModeMask {
+        mode: Some(ModeKind::Default),
+        reasoning_effort: None,
+        developer_instructions: None,
+        model: None,
+        name: "Default".to_string(),
+    });
+    chat.set_collaboration_mask(CollaborationModeMask {
+        mode: Some(ModeKind::Default),
+        reasoning_effort: None,
+        developer_instructions: None,
+        model: None,
+        name: "Default".to_string(),
+    });
 
     chat.bottom_pane
         .set_composer_text("hello".to_string(), Vec::new(), Vec::new());
@@ -4003,7 +4044,21 @@ async fn collab_mode_toggle_on_applies_default_preset() {
         other => panic!("expected Op::UserTurn without collaboration_mode, got {other:?}"),
     }
 
-    chat.set_feature_enabled(Feature::CollaborationModes, true); chat.set_collaboration_mask(CollaborationModeMask { mode: Some(ModeKind::Default), reasoning_effort: None, developer_instructions: None, model: None, name: "Default".to_string() }); chat.set_collaboration_mask(CollaborationModeMask { mode: Some(ModeKind::Default), reasoning_effort: None, developer_instructions: None, model: None, name: "Default".to_string() });
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    chat.set_collaboration_mask(CollaborationModeMask {
+        mode: Some(ModeKind::Default),
+        reasoning_effort: None,
+        developer_instructions: None,
+        model: None,
+        name: "Default".to_string(),
+    });
+    chat.set_collaboration_mask(CollaborationModeMask {
+        mode: Some(ModeKind::Default),
+        reasoning_effort: None,
+        developer_instructions: None,
+        model: None,
+        name: "Default".to_string(),
+    });
 
     chat.bottom_pane
         .set_composer_text("after toggle".to_string(), Vec::new(), Vec::new());
@@ -6435,8 +6490,10 @@ async fn approval_modal_exec_snapshot() -> anyhow::Result<()> {
             "world".into(),
         ])),
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-approve".into(),
         msg: EventMsg::ExecApprovalRequest(ev),
@@ -6494,8 +6551,10 @@ async fn approval_modal_exec_without_reason_snapshot() -> anyhow::Result<()> {
             "world".into(),
         ])),
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-approve-noreason".into(),
         msg: EventMsg::ExecApprovalRequest(ev),
@@ -6540,8 +6599,10 @@ async fn approval_modal_exec_multiline_prefix_hides_execpolicy_option_snapshot()
         network_approval_context: None,
         proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(command)),
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-approve-multiline-trunc".into(),
         msg: EventMsg::ExecApprovalRequest(ev),
@@ -6909,8 +6970,10 @@ async fn status_widget_and_approval_modal_snapshot() {
             "hello world".into(),
         ])),
         parsed_cmd: vec![],
-    additional_permissions: None, available_decisions: None, proposed_network_policy_amendments: None,
-            };
+        additional_permissions: None,
+        available_decisions: None,
+        proposed_network_policy_amendments: None,
+    };
     chat.handle_codex_event(Event {
         id: "sub-approve-exec".into(),
         msg: EventMsg::ExecApprovalRequest(ev),
@@ -7780,7 +7843,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent {
-                phase: None,
+            phase: None,
             message: "First message".into(),
         }),
     });
@@ -7789,7 +7852,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent {
-                phase: None,
+            phase: None,
             message: "Second message".into(),
         }),
     });
@@ -7836,7 +7899,7 @@ async fn final_reasoning_then_message_without_deltas_are_rendered() {
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent {
-                phase: None,
+            phase: None,
             message: "Here is the result.".into(),
         }),
     });
@@ -7897,7 +7960,7 @@ async fn deltas_then_same_final_message_are_rendered_snapshot() {
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent {
-                phase: None,
+            phase: None,
             message: "Here is the result.".into(),
         }),
     });

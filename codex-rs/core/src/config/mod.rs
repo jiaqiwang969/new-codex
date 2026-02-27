@@ -4751,6 +4751,7 @@ model = "gpt-5.1-codex"
                     AgentRoleToml {
                         description: Some("Research role".to_string()),
                         config_file: Some(AbsolutePathBuf::from_absolute_path(missing_path)?),
+                        tags: vec![],
                     },
                 )]),
             }),

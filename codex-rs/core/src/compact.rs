@@ -390,7 +390,7 @@ fn build_compacted_history_with_limit(
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         });
     }
 
@@ -406,7 +406,7 @@ fn build_compacted_history_with_limit(
         content: vec![ContentItem::InputText { text: summary_text }],
         end_turn: None,
         phase: None,
-                thought_signature: None,
+        thought_signature: None,
     });
 
     history
@@ -698,7 +698,7 @@ do things
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -713,7 +713,7 @@ do things
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         }];
         let (refreshed, mut expected) =
             process_compacted_history_with_test_session(compacted_history, None).await;
@@ -725,7 +725,7 @@ do things
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -807,7 +807,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -854,7 +854,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         }];
 
         let (refreshed, initial_context) =
@@ -890,7 +890,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -905,7 +905,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         }];
 
         let (refreshed, initial_context) = process_compacted_history_with_test_session(
@@ -932,7 +932,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -979,7 +979,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         }];
 
         let refreshed = insert_initial_context_before_last_real_user_or_summary(
@@ -1044,7 +1044,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-                thought_signature: None,
+            thought_signature: None,
         }];
 
         let refreshed = insert_initial_context_before_last_real_user_or_summary(

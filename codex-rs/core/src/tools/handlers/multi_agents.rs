@@ -907,6 +907,7 @@ mod spawn {
         #[test]
         fn spawn_agent_result_serialization_includes_memory_keys_when_available() {
             let result = SpawnAgentResult {
+                nickname: None,
                 agent_id: "agent-1".to_string(),
                 agent_type: "explorer".to_string(),
                 model: "gpt-5.3-codex".to_string(),
@@ -947,6 +948,7 @@ mod spawn {
         #[test]
         fn spawn_agent_result_serialization_omits_memory_keys_when_unavailable() {
             let result = SpawnAgentResult {
+                nickname: None,
                 agent_id: "agent-1".to_string(),
                 agent_type: "explorer".to_string(),
                 model: "gpt-5.3-codex".to_string(),

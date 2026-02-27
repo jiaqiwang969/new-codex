@@ -733,7 +733,12 @@ async fn run_thread_memory_backfill(
         false,
         config.cli_auth_credentials_store_mode,
     );
-    let models_manager = ModelsManager::new(config.codex_home.clone(), Arc::clone(&auth_manager), None, codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default());
+    let models_manager = ModelsManager::new(
+        config.codex_home.clone(),
+        Arc::clone(&auth_manager),
+        None,
+        codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default(),
+    );
     let model_slug = models_manager
         .get_default_model(&config.model, RefreshStrategy::Offline)
         .await;
