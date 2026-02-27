@@ -229,8 +229,8 @@ fn context_window_for_grok_slug(slug: &str) -> i64 {
     }
 }
 
-fn context_window_for_claude_slug(slug: &str) -> i64 {
-    if slug.contains("haiku") {
+fn context_window_for_claude_slug(normalized_slug: &str, original_slug: &str) -> i64 {
+    if normalized_slug.contains("haiku") || original_slug.starts_with("antigravity/") {
         CONTEXT_WINDOW_200K
     } else {
         CONTEXT_WINDOW_1M
@@ -517,7 +517,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: false,
             support_verbosity: false,
             truncation_policy: TruncationPolicyConfig::tokens(10_000),
-            context_window: Some(context_window_for_claude_slug(normalized_slug)),
+            context_window: Some(context_window_for_claude_slug(normalized_slug, slug)),
             default_reasoning_level: Some(ReasoningEffort::High),
             input_modalities: vec![InputModality::Text, InputModality::Image],
             experimental_supported_tools: vec![

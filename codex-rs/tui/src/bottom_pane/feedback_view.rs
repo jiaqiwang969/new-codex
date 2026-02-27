@@ -21,7 +21,7 @@ use crate::history_cell;
 use crate::render::renderable::Renderable;
 use crate::team_profile_vouch::TeamProfileTaskBucket;
 use crate::team_profile_vouch::TeamProfileVouchVerdict;
-use codex_core::protocol::SessionSource;
+use codex_protocol::protocol::SessionSource;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
@@ -95,6 +95,11 @@ impl FeedbackNoteView {
             Some(note.clone())
         };
         let rollout_path_ref = self.rollout_path.as_deref();
+        let log_file_paths = if self.include_logs {
+            self.rollout_path.iter().cloned().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let classification = feedback_classification(self.category);
 
         let mut thread_id = self.snapshot.thread_id.clone();
@@ -103,11 +108,7 @@ impl FeedbackNoteView {
             classification,
             reason_opt,
             self.include_logs,
-            if self.include_logs {
-                rollout_path_ref
-            } else {
-                None
-            },
+            &log_file_paths,
             Some(SessionSource::Cli),
         );
 

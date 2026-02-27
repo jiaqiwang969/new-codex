@@ -19,6 +19,14 @@ sender_thread_id: ThreadId, memory: MemoryLink | null,
  */
 receiver_thread_id: ThreadId, 
 /**
+ * Optional nickname assigned to the receiver agent.
+ */
+receiver_agent_nickname?: string | null, 
+/**
+ * Optional role assigned to the receiver agent.
+ */
+receiver_agent_role?: string | null, 
+/**
  * Prompt sent from the sender to the receiver. Can be empty to prevent CoT
  * leaking at the beginning.
  */

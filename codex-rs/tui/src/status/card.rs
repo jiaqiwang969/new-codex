@@ -8,14 +8,14 @@ use chrono::Local;
 use codex_core::ModelProviderInfo;
 use codex_core::WireApi;
 use codex_core::config::Config;
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::NetworkAccess;
-use codex_core::protocol::SandboxPolicy;
-use codex_core::protocol::TokenUsage;
-use codex_core::protocol::TokenUsageInfo;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::NetworkAccess;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TokenUsageInfo;
 use codex_utils_sandbox_summary::summarize_sandbox_policy;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
@@ -45,7 +45,7 @@ use crate::model_sub_vouch;
 use crate::team_profile;
 use crate::team_profile_vouch;
 use crate::wrapping::RtOptions;
-use crate::wrapping::word_wrap_lines;
+use crate::wrapping::adaptive_wrap_lines;
 use codex_core::AuthManager;
 
 #[derive(Debug, Clone)]
@@ -706,7 +706,7 @@ impl HistoryCell for StatusHistoryCell {
         let note_second_line = Line::from(vec![
             Span::from("information on rate limits and credits").cyan(),
         ]);
-        let note_lines = word_wrap_lines(
+        let note_lines = adaptive_wrap_lines(
             [note_first_line, note_second_line],
             RtOptions::new(available_inner_width),
         );

@@ -1,18 +1,19 @@
 {
-  stdenv,
   cmake,
   llvmPackages,
   openssl,
+  libcap ? null,
   rustPlatform,
   pkg-config,
-  libcap ? null,
   lib,
+  stdenv,
   version ? "0.0.0",
   ...
 }:
 rustPlatform.buildRustPackage (_: {
-  auditable = false;
-
+  env.PKG_CONFIG_PATH = lib.makeSearchPathOutput "dev" "lib/pkgconfig" (
+    [ openssl ] ++ lib.optionals stdenv.isLinux [ libcap ]
+  );
   pname = "codex-rs";
   inherit version;
   cargoLock.lockFile = ./Cargo.lock;
@@ -30,12 +31,11 @@ rustPlatform.buildRustPackage (_: {
     cmake
     llvmPackages.clang
     llvmPackages.libclang.lib
-    pkg-config
-  ];
-
-  buildInputs = [
     openssl
-  ] ++ lib.optional stdenv.isLinux libcap;
+    pkg-config
+  ] ++ lib.optionals stdenv.isLinux [
+    libcap
+  ];
 
   cargoLock.outputHashes = {
     "ratatui-0.29.0" = "sha256-HBvT5c8GsiCxMffNjJGLmHnvG77A6cqEL+1ARurBXho=";
@@ -51,5 +51,6 @@ rustPlatform.buildRustPackage (_: {
     description = "OpenAI Codex command‑line interface rust implementation";
     license = licenses.asl20;
     homepage = "https://github.com/openai/codex";
+    mainProgram = "codex";
   };
 })

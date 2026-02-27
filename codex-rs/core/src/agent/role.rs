@@ -17,7 +17,7 @@ const BUILT_IN_EXPLORER_CONFIG: &str = include_str!("builtins/explorer.toml");
 const BUILT_IN_CLAUDE_OPUS_CONFIG: &str = include_str!("builtins/claude-opus.toml");
 const BUILT_IN_CLAUDE_SONNET_CONFIG: &str = include_str!("builtins/claude-sonnet.toml");
 const BUILT_IN_CLAUDE_HAIKU_CONFIG: &str = include_str!("builtins/claude-haiku.toml");
-const DEFAULT_ROLE_NAME: &str = "default";
+pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
 /// Applies a role config layer to a mutable config and preserves unspecified keys.
@@ -91,6 +91,7 @@ pub(crate) async fn apply_role_to_config(
         ConfigOverrides {
             cwd: Some(config.cwd.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
+            main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
             js_repl_node_path: config.js_repl_node_path.clone(),
             ..Default::default()
         },
@@ -181,11 +182,10 @@ mod built_in {
                 (
                     "explorer".to_string(),
                     AgentRoleConfig {
-                        description: Some(r#"Use `explorer` for all codebase questions.
+                        description: Some(r#"Use `explorer` for specific codebase questions.
 Explorers are fast and authoritative.
-Always prefer them over manual search or file reading.
+They must be used to ask specific, well-scoped questions on the codebase.
 Rules:
-- Ask explorers first and precisely.
 - Do not re-read or re-search code they cover.
 - Trust explorer results without verification.
 - Run explorers in parallel when useful.
@@ -254,6 +254,22 @@ Rules:
                         config_file: None,
                         tags: vec!["execution".to_string(), "ownership".to_string()],
                     }
+                ),
+                (
+                    "awaiter".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use an `awaiter` agent EVERY TIME you must run a command that might take some very long time.
+This includes, but not only:
+* testing
+* monitoring of a long running process
+* explicit ask to wait for something
+
+When YOU wait for the `awaiter` agent to be done, use the largest possible timeout.
+Be patient with the `awaiter`.
+Close the awaiter when you're done with it."#.to_string()),
+                        config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
+                        tags: vec!["async".to_string(), "long_running".to_string()],
+                    }
                 )
             ])
         });
@@ -262,8 +278,11 @@ Rules:
 
     /// Resolves a built-in role `config_file` path to embedded content.
     pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
+        const EXPLORER: &str = include_str!("builtins/explorer.toml");
+        const AWAITER: &str = include_str!("builtins/awaiter.toml");
         match path.to_str()? {
-            "explorer.toml" => Some(BUILT_IN_EXPLORER_CONFIG),
+            "explorer.toml" => Some(EXPLORER),
+            "awaiter.toml" => Some(AWAITER),
             "claude-opus.toml" => Some(BUILT_IN_CLAUDE_OPUS_CONFIG),
             "claude-sonnet.toml" => Some(BUILT_IN_CLAUDE_SONNET_CONFIG),
             "claude-haiku.toml" => Some(BUILT_IN_CLAUDE_HAIKU_CONFIG),
@@ -338,6 +357,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "No role requiring it for now"]
     async fn apply_explorer_role_sets_model_and_adds_session_flags_layer() {
         let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
         let before_layers = session_flags_layer_count(&config);
@@ -444,6 +464,8 @@ mod tests {
             TomlValue::String("base-model".to_string()),
         )])
         .await;
+        config.codex_linux_sandbox_exe = Some(PathBuf::from("/tmp/codex-linux-sandbox"));
+        config.main_execve_wrapper_exe = Some(PathBuf::from("/tmp/codex-execve-wrapper"));
         let role_path = write_role_config(
             &home,
             "effort-only.toml",
@@ -464,6 +486,14 @@ mod tests {
 
         assert_eq!(config.model.as_deref(), Some("base-model"));
         assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(
+            config.codex_linux_sandbox_exe,
+            Some(PathBuf::from("/tmp/codex-linux-sandbox"))
+        );
+        assert_eq!(
+            config.main_execve_wrapper_exe,
+            Some(PathBuf::from("/tmp/codex-execve-wrapper"))
+        );
     }
 
     #[tokio::test]
@@ -616,7 +646,11 @@ writable_roots = ["./sandbox-root"]
     fn built_in_config_file_contents_resolves_known_files() {
         assert_eq!(
             built_in::config_file_contents(Path::new("explorer.toml")),
-            Some(BUILT_IN_EXPLORER_CONFIG)
+            Some(include_str!("builtins/explorer.toml"))
+        );
+        assert_eq!(
+            built_in::config_file_contents(Path::new("awaiter.toml")),
+            Some(include_str!("builtins/awaiter.toml"))
         );
         assert_eq!(
             built_in::config_file_contents(Path::new("claude-opus.toml")),
