@@ -3604,7 +3604,7 @@ impl Session {
         }
         // Add developer instructions for memories.
         if let Some(memory_prompt) =
-            build_memory_tool_developer_instructions(&turn_context.config.codex_home).await
+            build_memories_developer_instructions(&turn_context.config.codex_home).await
             && turn_context.features.enabled(Feature::MemoryTool)
         {
             developer_sections.push(memory_prompt);
@@ -7868,7 +7868,7 @@ fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
     Vec::new()
 }
 
-use crate::memories::prompts::build_memory_tool_developer_instructions;
+use crate::memories::prompts::build_memories_developer_instructions;
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
 #[cfg(test)]
@@ -8603,6 +8603,7 @@ mod tests {
         };
 
         let session_configuration = SessionConfiguration {
+            metrics_service_name: None,
             provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,

@@ -1308,6 +1308,7 @@ mod tests {
         let thread_id = ThreadId::new();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -1327,6 +1328,7 @@ mod tests {
                 }),
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
+                memory: None,
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
             }),
@@ -1683,6 +1685,7 @@ mod tests {
     fn reconstructs_tool_items_from_persisted_completion_events() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -1788,6 +1791,7 @@ mod tests {
     fn reconstructs_dynamic_tool_items_from_request_and_response_events() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -1847,6 +1851,7 @@ mod tests {
     fn reconstructs_declined_exec_and_patch_items() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -2019,6 +2024,7 @@ mod tests {
     fn drops_late_turn_scoped_item_for_unknown_turn_id() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -2030,10 +2036,12 @@ mod tests {
                 local_images: Vec::new(),
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
+                memory: None,
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
@@ -2064,6 +2072,7 @@ mod tests {
                 status: CoreExecCommandStatus::Completed,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
+                memory: None,
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
             }),
@@ -2317,6 +2326,7 @@ mod tests {
                 ),
                 prompt: "analyze repository".into(),
                 status: AgentStatus::Running,
+            new_agent_nickname: None, new_agent_role: None,
             }),
         ];
 
@@ -2378,6 +2388,7 @@ mod tests {
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
+            new_agent_nickname: None, new_agent_role: None,
             }),
             EventMsg::CollabCloseEnd(codex_protocol::protocol::CollabCloseEndEvent {
                 call_id: "close-1".into(),
@@ -2385,6 +2396,7 @@ mod tests {
                 receiver_thread_id,
                 status: AgentStatus::Shutdown,
                 memory: None,
+            receiver_agent_nickname: None, receiver_agent_role: None,
             }),
         ];
 
@@ -2452,6 +2464,7 @@ mod tests {
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
+            new_agent_nickname: None, new_agent_role: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -2477,6 +2490,7 @@ mod tests {
                 receiver_thread_id,
                 status: AgentStatus::Shutdown,
                 memory: None,
+            receiver_agent_nickname: None, receiver_agent_role: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),

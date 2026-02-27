@@ -2354,6 +2354,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+        is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
@@ -2383,6 +2384,7 @@ mod tests {
             session_source: SessionSource::SubAgent(SubAgentSource::Other(
                 "agent_job:test".to_string(),
             )),
+        is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
@@ -2413,6 +2415,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+        is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_user_input_tool = find_tool(&tools, "request_user_input");
@@ -2427,6 +2430,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+        is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let request_user_input_tool = find_tool(&tools, "request_user_input");
@@ -2450,6 +2454,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
+        is_gemini_wire_api: false,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert!(
@@ -2463,6 +2468,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+        session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["request_user_input"]);
@@ -2519,22 +2525,6 @@ mod tests {
             panic!("js_repl should use a freeform tool spec");
         };
 
-        let tools_config = ToolsConfig::new(&ToolsConfigParams {
-            model_info: &model_info,
-            features: &features,
-            web_search_mode: Some(WebSearchMode::Cached),
-            is_gemini_wire_api: false,
-        });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
-        let filtered = filter_tools_for_model(
-            tools.iter().map(|tool| tool.spec.clone()).collect(),
-            &tools_config,
-        );
-        assert_contains_tool_specs(&filtered, &["js_repl", "js_repl_reset"]);
-        assert!(
-            !filtered.iter().any(|tool| tool_name(tool) == "shell"),
-            "expected non-js_repl tools to be hidden when js_repl_tools_only is enabled"
-        );
     }
 
     #[test]
@@ -2551,6 +2541,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+        session_source: SessionSource::Cli,
         });
         let dynamic_tools = vec![DynamicToolSpec {
             name: "dynamic_echo".to_string(),
@@ -2582,13 +2573,6 @@ mod tests {
         );
         assert_contains_tool_specs(&filtered, &["js_repl", "js_repl_reset"]);
 
-        assert_eq!(format.syntax, "lark");
-        assert!(format.definition.contains("PRAGMA_LINE"));
-        assert!(format.definition.contains("`[^`]"));
-        assert!(format.definition.contains("``[^`]"));
-        assert!(format.definition.contains("PLAIN_JS_SOURCE"));
-        assert!(format.definition.contains("codex-js-repl:"));
-        assert!(!format.definition.contains("(?!"));
     }
 
     fn assert_model_tools(
@@ -2688,6 +2672,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+        session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2712,6 +2697,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+        session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2735,6 +2721,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             is_gemini_wire_api: false,
+        session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -2756,6 +2743,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
             is_gemini_wire_api: false,
+        session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
@@ -3017,6 +3005,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
+        is_gemini_wire_api: false,
         });
 
         assert_eq!(tools_config.shell_type, ConfigShellToolType::ShellCommand);

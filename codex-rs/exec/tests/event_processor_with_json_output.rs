@@ -48,6 +48,7 @@ use codex_protocol::protocol::CollabWaitingEndEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -126,7 +127,8 @@ fn task_started_produces_turn_started_event() {
         }),
     ));
 
-    assert_eq!(out, vec![ThreadEvent::TurnStarted(TurnStartedEvent {})]);
+    assert_eq!(out, vec![ThreadEvent::TurnStarted(TurnStartedEvent {memory: None,
+        })]);
 }
 
 #[test]
@@ -790,7 +792,7 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
 
     let _ = ep.collect_thread_events(&event(
         "t1",
-        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+        EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
             turn_id: "turn-a".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
@@ -825,7 +827,7 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
     ));
     let _ = ep.collect_thread_events(&event(
         "t2",
-        EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
+        EventMsg::TurnComplete(codex_protocol::protocol::TurnCompleteEvent {
             turn_id: "turn-a".to_string(),
             last_agent_message: None,
             memory: None,
@@ -834,7 +836,7 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
 
     let _ = ep.collect_thread_events(&event(
         "t3",
-        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+        EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
             turn_id: "turn-b".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
@@ -922,7 +924,7 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
 
     let _ = ep.collect_thread_events(&event(
         "t1",
-        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+        EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
             turn_id: "turn-a".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
@@ -957,7 +959,7 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
     ));
     let _ = ep.collect_thread_events(&event(
         "t2",
-        EventMsg::TurnComplete(codex_core::protocol::TurnCompleteEvent {
+        EventMsg::TurnComplete(codex_protocol::protocol::TurnCompleteEvent {
             turn_id: "turn-a".to_string(),
             last_agent_message: None,
             memory: None,
@@ -966,7 +968,7 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
 
     let _ = ep.collect_thread_events(&event(
         "t3",
-        EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+        EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
             turn_id: "turn-b".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,

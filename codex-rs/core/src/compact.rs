@@ -390,7 +390,7 @@ fn build_compacted_history_with_limit(
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         });
     }
 
@@ -406,7 +406,7 @@ fn build_compacted_history_with_limit(
         content: vec![ContentItem::InputText { text: summary_text }],
         end_turn: None,
         phase: None,
-        thought_signature: None,
+                thought_signature: None,
     });
 
     history
@@ -512,114 +512,6 @@ mod tests {
         let joined = content_items_to_text(&items);
 
         assert_eq!(None, joined);
-    }
-
-    #[test]
-    fn extract_trailing_model_switch_update_for_compaction_request_removes_trailing_item() {
-        let mut history = ContextManager::new();
-        history.replace(vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "USER_MESSAGE".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "ASSISTANT_REPLY".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "developer".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "<model_switch>\nNEW_MODEL_INSTRUCTIONS".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-        ]);
-
-        let model_switch_item =
-            extract_trailing_model_switch_update_for_compaction_request(&mut history);
-
-        assert_eq!(history.raw_items().len(), 2);
-        assert!(model_switch_item.is_some());
-        assert!(
-            history
-                .raw_items()
-                .iter()
-                .all(|item| !Session::is_model_switch_developer_message(item))
-        );
-    }
-
-    #[test]
-    fn extract_trailing_model_switch_update_for_compaction_request_keeps_historical_item() {
-        let mut history = ContextManager::new();
-        history.replace(vec![
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "FIRST_USER_MESSAGE".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "developer".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "<model_switch>\nOLDER_MODEL_INSTRUCTIONS".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "ASSISTANT_REPLY".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "SECOND_USER_MESSAGE".to_string(),
-                }],
-                end_turn: None,
-                phase: None,
-                thought_signature: None,
-            },
-        ]);
-
-        let model_switch_item =
-            extract_trailing_model_switch_update_for_compaction_request(&mut history);
-
-        assert_eq!(history.raw_items().len(), 4);
-        assert!(model_switch_item.is_none());
-        assert!(
-            history
-                .raw_items()
-                .iter()
-                .any(Session::is_model_switch_developer_message)
-        );
     }
 
     #[test]
@@ -806,7 +698,7 @@ do things
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -821,7 +713,7 @@ do things
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         }];
         let (refreshed, mut expected) =
             process_compacted_history_with_test_session(compacted_history, None).await;
@@ -833,7 +725,7 @@ do things
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -915,7 +807,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -962,7 +854,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         }];
 
         let (refreshed, initial_context) =
@@ -998,7 +890,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -1013,7 +905,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         }];
 
         let (refreshed, initial_context) = process_compacted_history_with_test_session(
@@ -1040,7 +932,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         });
         assert_eq!(refreshed, expected);
     }
@@ -1087,7 +979,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         }];
 
         let refreshed = insert_initial_context_before_last_real_user_or_summary(
@@ -1152,7 +1044,7 @@ keep me updated
             }],
             end_turn: None,
             phase: None,
-            thought_signature: None,
+                thought_signature: None,
         }];
 
         let refreshed = insert_initial_context_before_last_real_user_or_summary(

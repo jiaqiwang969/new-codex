@@ -721,7 +721,7 @@ async fn run_thread_memory_backfill(
         anyhow::bail!("SQLite state DB is disabled. Re-run with --enable sqlite.");
     }
     if !config.features.enabled(Feature::MemoryTool) {
-        anyhow::bail!("Thread memory tooling is disabled. Re-run with --enable memory_tool.");
+        anyhow::bail!("Thread memory tooling is disabled. Re-run with --enable memories.");
     }
 
     let Some(db) = state_db::init_state_db_if_enabled(&config, None).await else {
