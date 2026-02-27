@@ -1,0 +1,38 @@
+Read the file /Users/jqwang/01-agent/new-codex/codex-rs/core/src/agent/guards.rs and resolve the merge conflicts:
+
+CONFLICT 1 (around line 26): 
+- HEAD has: MAX_THREAD_SPAWN_DEPTH constant
+- upstream has: ActiveAgents struct definition
+- RESOLUTION: Keep BOTH. Put the MAX_THREAD_SPAWN_DEPTH constant AND then the ActiveAgents struct.
+
+CONFLICT 2 (in test function thread_spawn_depth_increments_and_enforces_limit):
+- HEAD has: `exceeds_thread_spawn_depth_limit(child_depth)` (1-param, no max_depth) plus a grandchild test
+- upstream has: `exceeds_thread_spawn_depth_limit(child_depth, 1)` (2-param)
+- RESOLUTION: Keep the upstream 2-param signature `exceeds_thread_spawn_depth_limit(child_depth, max_depth)` since the function already takes 2 params, BUT also keep our grandchild depth test adapted to use 2-param version with MAX_THREAD_SPAWN_DEPTH:
+
+The resolved test should be:
+```rust
+    fn thread_spawn_depth_increments_and_enforces_limit() {
+        let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+        });
+        let child_depth = next_thread_spawn_depth(&session_source);
+        assert_eq!(child_depth, 2);
+        assert!(!exceeds_thread_spawn_depth_limit(child_depth, MAX_THREAD_SPAWN_DEPTH));
+
+        let grandchild_depth =
+            next_thread_spawn_depth(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 2,
+                agent_nickname: None,
+                agent_role: None,
+            }));
+        assert_eq!(grandchild_depth, 3);
+        assert!(exceeds_thread_spawn_depth_limit(grandchild_depth, MAX_THREAD_SPAWN_DEPTH));
+    }
+```
+
+Make these edits to resolve all conflict markers. Remove ALL <<<<<<< HEAD, =======, and >>>>>>> upstream/main markers.
