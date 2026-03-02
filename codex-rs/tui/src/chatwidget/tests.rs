@@ -4209,6 +4209,42 @@ async fn slash_rollout_handles_missing_path() {
 }
 
 #[tokio::test]
+async fn slash_ralph_loop_help_displays_usage_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::RalphLoop, "--help".to_string(), Vec::new());
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected a single Ralph Loop help message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert_snapshot!("slash_ralph_loop_help", rendered);
+}
+
+#[tokio::test]
+async fn slash_ralph_loop_parse_error_shows_help_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command_with_args(
+        SlashCommand::RalphLoop,
+        "--max-iterations nope".to_string(),
+        Vec::new(),
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(
+        cells.len(),
+        2,
+        "expected parse error plus usage help messages"
+    );
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    assert_snapshot!("slash_ralph_loop_parse_error_shows_help", rendered);
+}
+
+#[tokio::test]
 async fn undo_success_events_render_info_messages() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 

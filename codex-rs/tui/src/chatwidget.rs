@@ -4379,15 +4379,20 @@ impl ChatWidget {
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::RalphLoop if !trimmed.is_empty() => {
-                match crate::ralph_loop::parse_ralph_loop_args(trimmed) {
-                    Ok(cmd) => {
-                        self.handle_ralph_loop_command(cmd);
-                    }
-                    Err(err) => {
-                        self.add_to_history(history_cell::new_error_event(format!(
-                            "Ralph Loop parse error: {err}"
-                        )));
-                        self.request_redraw();
+                if crate::ralph_loop::is_ralph_loop_help_request(trimmed) {
+                    self.add_info_message(crate::ralph_loop::ralph_loop_help_text(), None);
+                } else {
+                    match crate::ralph_loop::parse_ralph_loop_args(trimmed) {
+                        Ok(cmd) => {
+                            self.handle_ralph_loop_command(cmd);
+                        }
+                        Err(err) => {
+                            self.add_to_history(history_cell::new_error_event(format!(
+                                "Ralph Loop parse error: {err}"
+                            )));
+                            self.add_info_message(crate::ralph_loop::ralph_loop_help_text(), None);
+                            self.request_redraw();
+                        }
                     }
                 }
                 self.bottom_pane.drain_pending_submission_state();
@@ -4571,7 +4576,7 @@ impl ChatWidget {
                 cmd.completion_promise, cmd.delay_seconds
             ),
             Some(
-                "The prompt will be re-submitted after each turn until the promise is detected."
+                "The prompt will be re-submitted after each turn until the promise is detected. Use /ralph-loop -n <N> (or --max <N>) to set the max loop count."
                     .to_string(),
             ),
         );

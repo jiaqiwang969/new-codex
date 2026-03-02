@@ -38,6 +38,8 @@
   - Session Bar (Ctrl+P)：tmux 风格底部面板，会话导航/新建/删除/重命名
   - 后台预热：2s 空闲后自动加载 session 列表和 git graph，打开时即时显示
   - Ralph Loop (/ralph-loop)：迭代自纠正循环，支持 <promise> 完成检测
+    - 最大循环次数：`-n` / `--max-iterations` / `--max`（默认 50，`-n 0` 表示无限循环）
+    - 帮助信息：`/ralph-loop --help`
 
   6. 基础设施
 

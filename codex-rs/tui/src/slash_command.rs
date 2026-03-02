@@ -128,7 +128,9 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (Default / Collaborative / Plan)",
             SlashCommand::Agent => "switch the active agent thread",
-            SlashCommand::RalphLoop => "start a Ralph loop that repeats the same prompt until done",
+            SlashCommand::RalphLoop => {
+                "start a Ralph loop that repeats the same prompt until done (/ralph-loop --help)"
+            }
             SlashCommand::CancelRalph => "cancel the active Ralph loop",
             SlashCommand::RefImage => "set reference images for image models",
             SlashCommand::RefImageBatch => "batch process images in a folder with same prompt",

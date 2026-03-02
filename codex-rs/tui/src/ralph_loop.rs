@@ -4,6 +4,10 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+pub(crate) const RALPH_LOOP_DEFAULT_MAX_ITERATIONS: u32 = 50;
+pub(crate) const RALPH_LOOP_DEFAULT_COMPLETION_PROMISE: &str = "COMPLETE";
+pub(crate) const RALPH_LOOP_DEFAULT_DELAY_SECONDS: u64 = 300;
+
 /// State for an active Ralph Loop session.
 #[derive(Debug, Clone)]
 pub(crate) struct RalphLoopState {
@@ -57,12 +61,17 @@ pub(crate) struct RalphLoopCommand {
 impl Default for RalphLoopCommand {
     fn default() -> Self {
         Self {
-            max_iterations: 50,
-            completion_promise: "COMPLETE".to_string(),
+            max_iterations: RALPH_LOOP_DEFAULT_MAX_ITERATIONS,
+            completion_promise: RALPH_LOOP_DEFAULT_COMPLETION_PROMISE.to_string(),
             prompt: None,
-            delay_seconds: 300,
+            delay_seconds: RALPH_LOOP_DEFAULT_DELAY_SECONDS,
         }
     }
+}
+
+pub(crate) fn is_ralph_loop_help_request(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.eq_ignore_ascii_case("help") || matches!(trimmed, "-h" | "--help")
 }
 
 /// Parse ralph-loop arguments from the inline args string (everything after `/ralph-loop `).
@@ -70,16 +79,16 @@ pub(crate) fn parse_ralph_loop_args(input: &str) -> Result<RalphLoopCommand, Str
     let parts: Vec<String> = shlex::split(input.trim())
         .unwrap_or_else(|| input.split_whitespace().map(ToString::to_string).collect());
 
-    let mut max_iterations = 50u32;
-    let mut completion_promise = "COMPLETE".to_string();
+    let mut max_iterations = RALPH_LOOP_DEFAULT_MAX_ITERATIONS;
+    let mut completion_promise = RALPH_LOOP_DEFAULT_COMPLETION_PROMISE.to_string();
     let mut prompt: Option<String> = None;
-    let mut delay_seconds = 300u64;
+    let mut delay_seconds = RALPH_LOOP_DEFAULT_DELAY_SECONDS;
     let mut positional_prompt_parts: Vec<String> = Vec::new();
 
     let mut i = 0;
     while i < parts.len() {
         match parts[i].as_str() {
-            "--max-iterations" | "-n" => {
+            "--max-iterations" | "--max" | "-n" => {
                 i += 1;
                 if i < parts.len() {
                     max_iterations = parts[i]
@@ -167,6 +176,7 @@ fn is_ralph_loop_option(token: &str) -> bool {
     matches!(
         token,
         "--max-iterations"
+            | "--max"
             | "-n"
             | "--completion-promise"
             | "-c"
@@ -266,22 +276,25 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 }
 
 /// Help text for the ralph loop feature.
-#[allow(dead_code)]
 pub(crate) fn ralph_loop_help_text() -> String {
-    r#"Ralph Loop - Iterative Self-Correction Loop
+    format!(
+        r#"Ralph Loop - Iterative Self-Correction Loop
 
 Usage:
+  /ralph-loop
   /ralph-loop [prompt] [options]
+  /ralph-loop --help
   /cancel-ralph
 
 Options:
-  -n, --max-iterations <N>       Maximum iterations (default: 50, 0 = unlimited)
-  -c, --completion-promise <STR>  Completion promise text (default: "COMPLETE")
-  -p, --prompt <TEXT>             Prompt to repeat each iteration
-  -d, --delay <SECONDS>           Delay before retry on error (default: 300)
+  -n, --max-iterations, --max <N>  Maximum iterations (default: {RALPH_LOOP_DEFAULT_MAX_ITERATIONS}, 0 = unlimited)
+  -c, --completion-promise <STR>   Completion promise text (default: "{RALPH_LOOP_DEFAULT_COMPLETION_PROMISE}")
+  -p, --prompt <TEXT>              Prompt to repeat each iteration
+  -d, --delay <SECONDS>            Delay before retry on error (default: {RALPH_LOOP_DEFAULT_DELAY_SECONDS})
 
 Examples:
   /ralph-loop "Build the API. Output <promise>COMPLETE</promise> when done." -n 30
+  /ralph-loop --max 30 --completion-promise DONE --prompt "Fix all tests"
   /ralph-loop -p "Fix all tests" -c DONE -n 10
   /ralph-loop "Implement feature X" -n 20 -c FINISHED -d 60
 
@@ -292,20 +305,24 @@ How it works:
   4. The agent sees its previous work (files, git history) and continues
   5. On error, waits --delay seconds before retrying
   6. Use /cancel-ralph to stop the loop at any time"#
-        .to_string()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_parse_basic() {
         let cmd = parse_ralph_loop_args("").unwrap();
-        assert_eq!(cmd.max_iterations, 50);
-        assert_eq!(cmd.completion_promise, "COMPLETE");
+        assert_eq!(cmd.max_iterations, RALPH_LOOP_DEFAULT_MAX_ITERATIONS);
+        assert_eq!(
+            cmd.completion_promise,
+            RALPH_LOOP_DEFAULT_COMPLETION_PROMISE
+        );
         assert_eq!(cmd.prompt, None);
-        assert_eq!(cmd.delay_seconds, 300);
+        assert_eq!(cmd.delay_seconds, RALPH_LOOP_DEFAULT_DELAY_SECONDS);
     }
 
     #[test]
@@ -313,6 +330,12 @@ mod tests {
         let cmd = parse_ralph_loop_args("--max-iterations 30 --completion-promise DONE").unwrap();
         assert_eq!(cmd.max_iterations, 30);
         assert_eq!(cmd.completion_promise, "DONE");
+    }
+
+    #[test]
+    fn test_parse_with_max_alias() {
+        let cmd = parse_ralph_loop_args("--max 12").unwrap();
+        assert_eq!(cmd.max_iterations, 12);
     }
 
     #[test]
@@ -334,6 +357,15 @@ mod tests {
         let cmd = parse_ralph_loop_args("-d 60 -n 20").unwrap();
         assert_eq!(cmd.delay_seconds, 60);
         assert_eq!(cmd.max_iterations, 20);
+    }
+
+    #[test]
+    fn test_is_help_request() {
+        assert!(is_ralph_loop_help_request("help"));
+        assert!(is_ralph_loop_help_request("HELP"));
+        assert!(is_ralph_loop_help_request("-h"));
+        assert!(is_ralph_loop_help_request("--help"));
+        assert!(!is_ralph_loop_help_request("implement feature"));
     }
 
     #[test]
