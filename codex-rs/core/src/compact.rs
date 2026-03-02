@@ -118,7 +118,10 @@ async fn run_compact_task_inner(
 
     let max_retries = turn_context.provider.stream_max_retries();
     let mut retries = 0;
-    let mut client_session = sess.services.model_client.new_session();
+    let mut client_session = sess
+        .services
+        .model_client
+        .new_session_for_provider(&turn_context.provider);
     // Reuse one client session so turn-scoped state (sticky routing, websocket append tracking)
     // survives retries within this compact turn.
 
@@ -846,17 +849,6 @@ keep me updated
                 thought_signature: None,
             },
         ];
-        let initial_context = vec![ResponseItem::Message {
-            id: None,
-            role: "developer".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "fresh permissions".to_string(),
-            }],
-            end_turn: None,
-            phase: None,
-            thought_signature: None,
-        }];
-
         let (refreshed, initial_context) =
             process_compacted_history_with_test_session(compacted_history, None).await;
         let mut expected = vec![

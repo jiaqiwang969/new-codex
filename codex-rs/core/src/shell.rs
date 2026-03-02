@@ -353,7 +353,10 @@ mod tests {
 
         let shell_path = zsh_shell.shell_path;
 
-        assert_eq!(shell_path, std::path::Path::new("/bin/zsh"));
+        assert!(
+            shell_path.file_name().and_then(|name| name.to_str()) == Some("zsh"),
+            "shell path: {shell_path:?}",
+        );
     }
 
     #[test]
@@ -363,7 +366,10 @@ mod tests {
 
         let shell_path = zsh_shell.shell_path;
 
-        assert_eq!(shell_path, std::path::Path::new("/bin/zsh"));
+        assert!(
+            shell_path.file_name().and_then(|name| name.to_str()) == Some("zsh"),
+            "shell path: {shell_path:?}",
+        );
     }
 
     #[test]

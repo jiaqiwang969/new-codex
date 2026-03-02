@@ -561,6 +561,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
     find_model_info_for_slug(slug)
 }

@@ -926,7 +926,7 @@ fn gpt_52_codex_upgrade() -> ModelUpgrade {
     }
 }
 
-pub(super) fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+pub fn builtin_model_presets(_auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
     PRESETS.iter().cloned().collect()
 }
 

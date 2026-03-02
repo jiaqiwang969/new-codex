@@ -1043,8 +1043,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::UndoCompleted(_)
             | EventMsg::UndoStarted(_)
             | EventMsg::RequestUserInput(_)
-            | EventMsg::CollabResumeBegin(_)
-            | EventMsg::CollabResumeEnd(_)
             | EventMsg::RealtimeConversationStarted(_)
             | EventMsg::RealtimeConversationRealtime(_)
             | EventMsg::RealtimeConversationClosed(_)

@@ -112,7 +112,6 @@ mod pending_interactive_replay;
 
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 
-const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 const SESSION_BAR_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_BAR_PREFETCH_DELAY: Duration = Duration::from_millis(150);
@@ -5108,7 +5107,7 @@ mod tests {
         app.persist_collaboration_mode_selection(Some(ModeKind::Collaborative))
             .await;
 
-        let refreshed = ConfigBuilder::default()
+        ConfigBuilder::default()
             .codex_home(codex_home.path().to_path_buf())
             .build()
             .await?;

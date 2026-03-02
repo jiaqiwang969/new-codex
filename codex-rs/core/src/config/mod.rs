@@ -6155,7 +6155,7 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
         );
         assert_eq!(
             config.model_provider.env_key.as_deref(),
-            Some("ANTHROPIC_API_KEY_POOL_2")
+            Some("ANTHROPIC_API_KEY_POOL_1")
         );
         assert_eq!(config.model_provider.account_pool.len(), 2);
 

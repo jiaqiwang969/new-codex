@@ -277,6 +277,7 @@ mod spawn {
         if let Err(err) = apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)
+            .and_then(|_| apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref()))
         {
             session
                 .send_event(
@@ -930,6 +931,7 @@ mod spawn {
                 serde_json::to_value(result).expect("spawn agent result to serialize to value");
             let expected = json!({
                 "agent_id": "agent-1",
+                "nickname": null,
                 "agent_type": "explorer",
                 "model": "gpt-5.3-codex",
                 "model_provider_id": "openai",
@@ -968,6 +970,7 @@ mod spawn {
                 serde_json::to_value(result).expect("spawn agent result to serialize to value");
             let expected = json!({
                 "agent_id": "agent-1",
+                "nickname": null,
                 "agent_type": "explorer",
                 "model": "gpt-5.3-codex",
                 "model_provider_id": "openai",
@@ -3263,6 +3266,7 @@ mod tests {
         let (mut session, mut turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
+        session.set_auto_model_sub_calibration_attempted(true).await;
         let mut config = (*turn.config).clone();
         config
             .permissions
@@ -3310,7 +3314,7 @@ mod tests {
             .config_snapshot()
             .await;
         assert_eq!(snapshot.model, "gpt-5.2");
-        assert_eq!(snapshot.approval_policy, AskForApproval::Never);
+        assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     }
 
     #[tokio::test]
@@ -4460,14 +4464,6 @@ mod tests {
                 "Agent depth limit reached. Solve the task yourself.".to_string()
             )
         );
-    }
-
-    #[derive(Debug, Deserialize, PartialEq, Eq)]
-    struct WaitResult {
-        status: HashMap<ThreadId, AgentStatus>,
-        timed_out: bool,
-        memory_scope_version: Option<String>,
-        memory_binding_key: Option<String>,
     }
 
     #[tokio::test]

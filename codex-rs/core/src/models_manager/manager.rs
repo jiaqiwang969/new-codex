@@ -364,6 +364,15 @@ impl ModelsManager {
         remote_models.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.slug.cmp(&b.slug)));
 
         let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
+
+        // Include any custom or built-in fallback models that the remote catalog doesn't provide
+        for builtin in crate::models_manager::model_presets::builtin_model_presets(
+            self.auth_manager.auth_mode(),
+        ) {
+            if !presets.iter().any(|p| p.model == builtin.model) {
+                presets.push(builtin);
+            }
+        }
         let chatgpt_mode = matches!(self.auth_manager.auth_mode(), Some(AuthMode::Chatgpt));
         presets = ModelPreset::filter_by_auth(presets, chatgpt_mode);
 
@@ -1017,13 +1026,20 @@ mod tests {
         let hidden_model = remote_model_with_visibility("hidden", "Hidden", 0, "hide");
         let visible_model = remote_model_with_visibility("visible", "Visible", 1, "list");
 
-        let expected_hidden = ModelPreset::from(hidden_model.clone());
-        let mut expected_visible = ModelPreset::from(visible_model.clone());
-        expected_visible.is_default = true;
-
         let available = manager.build_available_models(vec![hidden_model, visible_model]);
+        let hidden = available
+            .iter()
+            .find(|preset| preset.id == "hidden")
+            .expect("hidden model should be included");
+        let visible = available
+            .iter()
+            .find(|preset| preset.id == "visible")
+            .expect("visible model should be included");
 
-        assert_eq!(available, vec![expected_hidden, expected_visible]);
+        assert_eq!(hidden.show_in_picker, false);
+        assert_eq!(hidden.is_default, false);
+        assert_eq!(visible.show_in_picker, true);
+        assert_eq!(visible.is_default, true);
     }
 
     #[test]

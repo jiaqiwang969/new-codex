@@ -80,10 +80,28 @@ use codex_core::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 use tokio::process::Command;
 
 static MCP_PROCESS_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+const MCP_PROCESS_MIN_CONCURRENCY: usize = 32;
 
 fn mcp_process_semaphore() -> Arc<Semaphore> {
     MCP_PROCESS_SEMAPHORE
-        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .get_or_init(|| {
+            let default_test_threads = std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1);
+            let test_threads = std::env::var("RUST_TEST_THREADS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(default_test_threads);
+            // Some tests open a primary + secondary MCP client concurrently.
+            // Keeping the cap above test-thread fanout avoids circular waits
+            // when all workers hold one permit and block waiting for a second
+            // process.
+            let max_concurrency = test_threads
+                .saturating_add(1)
+                .max(MCP_PROCESS_MIN_CONCURRENCY);
+            Arc::new(Semaphore::new(max_concurrency))
+        })
         .clone()
 }
 
@@ -99,6 +117,7 @@ pub struct McpProcess {
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     pending_messages: VecDeque<JSONRPCMessage>,
+    log_protocol_io: bool,
 }
 
 pub const DEFAULT_CLIENT_NAME: &str = "codex-app-server-tests";
@@ -126,7 +145,11 @@ impl McpProcess {
         cmd.stderr(Stdio::piped());
         cmd.current_dir(codex_home);
         cmd.env("CODEX_HOME", codex_home);
-        cmd.env("RUST_LOG", "debug");
+        // Default to less chatty logs in high-parallel test runs to reduce
+        // stderr forwarding overhead; callers can still override via env.
+        if std::env::var_os("RUST_LOG").is_none() {
+            cmd.env("RUST_LOG", "info");
+        }
         cmd.env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
         // Tests spin up mock servers on localhost; bypass any user/system proxy
         // configuration to keep requests hermetic and avoid flakiness.
@@ -156,7 +179,10 @@ impl McpProcess {
 
         // Starting a full app-server process per test is expensive. Limit the number
         // of concurrently running processes to reduce flakiness from resource
-        // contention when the test runner executes many tests in parallel.
+        // contention when the test runner executes many tests in parallel. The limit
+        // needs to stay comfortably above test-thread fanout because several tests
+        // intentionally use a primary + secondary client and can deadlock if the
+        // process cap is too low.
         let permit = mcp_process_semaphore()
             .acquire_owned()
             .await
@@ -176,13 +202,18 @@ impl McpProcess {
             .ok_or_else(|| anyhow::format_err!("mcp should have stdout fd"))?;
         let stdout = BufReader::new(stdout);
 
-        // Forward child's stderr to our stderr so failures are visible even
-        // when stdout/stderr are captured by the test harness.
+        let log_protocol_io = std::env::var_os("CODEX_APP_SERVER_TEST_LOG_PROTOCOL_IO").is_some();
+        // Always drain child stderr so the pipe cannot fill and block the
+        // process. Only mirror lines to our stderr when explicitly requested.
         if let Some(stderr) = process.stderr.take() {
+            let log_child_stderr =
+                std::env::var_os("CODEX_APP_SERVER_TEST_LOG_CHILD_STDERR").is_some();
             let mut stderr_reader = BufReader::new(stderr).lines();
             tokio::spawn(async move {
                 while let Ok(Some(line)) = stderr_reader.next_line().await {
-                    eprintln!("[mcp stderr] {line}");
+                    if log_child_stderr {
+                        eprintln!("[mcp stderr] {line}");
+                    }
                 }
             });
         }
@@ -193,6 +224,7 @@ impl McpProcess {
             stdin: Some(stdin),
             stdout,
             pending_messages: VecDeque::new(),
+            log_protocol_io,
         })
     }
 
@@ -968,7 +1000,9 @@ impl McpProcess {
     }
 
     async fn send_jsonrpc_message(&mut self, message: JSONRPCMessage) -> anyhow::Result<()> {
-        eprintln!("writing message to stdin: {message:?}");
+        if self.log_protocol_io {
+            eprintln!("writing message to stdin: {message:?}");
+        }
         let Some(stdin) = self.stdin.as_mut() else {
             anyhow::bail!("mcp stdin closed");
         };
@@ -983,12 +1017,16 @@ impl McpProcess {
         let mut line = String::new();
         self.stdout.read_line(&mut line).await?;
         let message = serde_json::from_str::<JSONRPCMessage>(&line)?;
-        eprintln!("read message from stdout: {message:?}");
+        if self.log_protocol_io {
+            eprintln!("read message from stdout: {message:?}");
+        }
         Ok(message)
     }
 
     pub async fn read_stream_until_request_message(&mut self) -> anyhow::Result<ServerRequest> {
-        eprintln!("in read_stream_until_request_message()");
+        if self.log_protocol_io {
+            eprintln!("in read_stream_until_request_message()");
+        }
 
         let message = self
             .read_stream_until_message(|message| matches!(message, JSONRPCMessage::Request(_)))
@@ -1006,7 +1044,9 @@ impl McpProcess {
         &mut self,
         request_id: RequestId,
     ) -> anyhow::Result<JSONRPCResponse> {
-        eprintln!("in read_stream_until_response_message({request_id:?})");
+        if self.log_protocol_io {
+            eprintln!("in read_stream_until_response_message({request_id:?})");
+        }
 
         let message = self
             .read_stream_until_message(|message| {
@@ -1040,7 +1080,9 @@ impl McpProcess {
         &mut self,
         method: &str,
     ) -> anyhow::Result<JSONRPCNotification> {
-        eprintln!("in read_stream_until_notification_message({method})");
+        if self.log_protocol_io {
+            eprintln!("in read_stream_until_notification_message({method})");
+        }
 
         let message = self
             .read_stream_until_message(|message| {

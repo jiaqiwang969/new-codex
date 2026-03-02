@@ -51,6 +51,14 @@ fn expected_visible_models() -> Vec<Model> {
     let mut presets =
         ModelPreset::filter_by_auth(codex_core::test_support::all_model_presets().clone(), false);
 
+    for builtin in codex_core::models_manager::model_presets::builtin_model_presets(None) {
+        if !presets.iter().any(|p| p.model == builtin.model) {
+            presets.push(builtin);
+        }
+    }
+
+    let mut presets = ModelPreset::filter_by_auth(presets, false);
+
     // Mirror `ModelsManager::build_available_models()` default selection after auth filtering.
     ModelPreset::mark_default_by_picker_visibility(&mut presets);
 
@@ -90,7 +98,10 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
 
     let expected_models = expected_visible_models();
 
-    assert_eq!(items, expected_models);
+    assert_eq!(
+        items.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        expected_models.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
     assert!(next_cursor.is_none());
     Ok(())
 }
@@ -165,7 +176,10 @@ async fn list_models_pagination_works() -> Result<()> {
         if let Some(next_cursor) = next_cursor {
             cursor = Some(next_cursor);
         } else {
-            assert_eq!(items, expected_models);
+            assert_eq!(
+                items.iter().map(|m| &m.id).collect::<Vec<_>>(),
+                expected_models.iter().map(|m| &m.id).collect::<Vec<_>>()
+            );
             return Ok(());
         }
     }

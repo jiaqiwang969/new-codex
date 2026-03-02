@@ -618,7 +618,7 @@ impl TurnSkillsContext {
 
 /// The context needed for a single turn of the thread.
 #[derive(Debug)]
-pub(crate) struct TurnContext {
+pub struct TurnContext {
     pub(crate) sub_id: String,
     pub(crate) config: Arc<Config>,
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
@@ -969,8 +969,10 @@ impl SessionConfiguration {
         let new_model = next_configuration.collaboration_mode.model();
         let target_provider_id = provider_id_for_model_family(new_model);
         let original_config = &next_configuration.original_config_do_not_use;
-        let provider_is_auto_switched =
-            next_configuration.provider != original_config.user_configured_provider;
+        let provider_is_auto_switched = !providers_match_ignoring_active_account(
+            &next_configuration.provider,
+            &original_config.user_configured_provider,
+        );
 
         tracing::info!(
             new_model = %new_model,
@@ -1153,58 +1155,82 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
     }
 }
 
+fn providers_match_ignoring_active_account(
+    left: &ModelProviderInfo,
+    right: &ModelProviderInfo,
+) -> bool {
+    if left == right {
+        return true;
+    }
+
+    let mut normalized_left = left.clone();
+    crate::config::apply_primary_account_pool_selection(&mut normalized_left);
+    let mut normalized_right = right.clone();
+    crate::config::apply_primary_account_pool_selection(&mut normalized_right);
+    normalized_left == normalized_right
+}
+
+fn pick_preferred_provider_id(mut ids: Vec<String>) -> String {
+    if ids.len() == 1 {
+        return ids.remove(0);
+    }
+
+    ids.sort();
+    if let Some(openai_id) = ids.iter().find(|id| id.as_str() == "openai") {
+        return openai_id.clone();
+    }
+    ids.remove(0)
+}
+
 fn resolve_provider_id_for_provider(
     providers: &HashMap<String, ModelProviderInfo>,
     provider: &ModelProviderInfo,
     fallback_provider_id: &str,
 ) -> String {
-    // Exact match (handles unmodified providers perfectly).
+    // Exact match by provider identity (including account-pool normalized state).
     if let Some(candidate) = providers.get(fallback_provider_id)
-        && candidate == provider
+        && providers_match_ignoring_active_account(candidate, provider)
     {
         return fallback_provider_id.to_string();
     }
 
-    let mut exact_matches = providers
+    let identity_matches = providers
         .iter()
-        .filter_map(|(id, candidate)| (candidate == provider).then_some(id.clone()))
+        .filter_map(|(id, candidate)| {
+            providers_match_ignoring_active_account(candidate, provider).then_some(id.clone())
+        })
         .collect::<Vec<_>>();
-
-    if !exact_matches.is_empty() {
-        if exact_matches.len() == 1 {
-            return exact_matches.remove(0);
-        }
-        exact_matches.sort();
-        if let Some(openai_id) = exact_matches.iter().find(|id| id.as_str() == "openai") {
-            return openai_id.clone();
-        }
-        return exact_matches.remove(0);
+    if !identity_matches.is_empty() {
+        return pick_preferred_provider_id(identity_matches);
     }
 
-    // Fallback: match by invariant `name`.
+    // Fallback: match by stable identity markers.
     // This is required because `apply_primary_account_pool_selection` mutates `base_url`
     // and `env_key` in the current provider, causing exact equality to fail against the
     // raw configuration map `providers`.
     if let Some(candidate) = providers.get(fallback_provider_id)
         && candidate.name == provider.name
+        && candidate.wire_api == provider.wire_api
     {
         return fallback_provider_id.to_string();
     }
 
-    let mut name_matches = providers
+    let name_matches = providers
         .iter()
-        .filter_map(|(id, candidate)| (candidate.name == provider.name).then_some(id.clone()))
+        .filter_map(|(id, candidate)| {
+            (candidate.name == provider.name && candidate.wire_api == provider.wire_api)
+                .then_some(id.clone())
+        })
         .collect::<Vec<_>>();
-
     if !name_matches.is_empty() {
-        if name_matches.len() == 1 {
-            return name_matches.remove(0);
-        }
-        name_matches.sort();
-        if let Some(openai_id) = name_matches.iter().find(|id| id.as_str() == "openai") {
-            return openai_id.clone();
-        }
-        return name_matches.remove(0);
+        return pick_preferred_provider_id(name_matches);
+    }
+
+    if provider.wire_api == crate::model_provider_info::WireApi::Responses
+        && let Some(openai_provider) = providers.get("openai")
+        && openai_provider.wire_api == crate::model_provider_info::WireApi::Responses
+    {
+        return "openai".to_string();
     }
 
     fallback_provider_id.to_string()
@@ -4597,23 +4623,6 @@ mod handlers {
         };
 
         if let Some(items) = items_for_new_turn {
-            let previous_model = sess.previous_model().await;
-            let reference_context_item = sess.reference_context_item().await;
-            let update_items = if reference_context_item.is_none() {
-                sess.build_initial_context(&current_context, previous_model.as_deref())
-                    .await
-            } else {
-                sess.build_settings_update_items(
-                    reference_context_item.as_ref(),
-                    previous_model.as_deref(),
-                    &current_context,
-                )
-            };
-            if !update_items.is_empty() {
-                sess.record_conversation_items(&current_context, &update_items)
-                    .await;
-            }
-
             sess.refresh_mcp_servers_if_requested(&current_context)
                 .await;
             let regular_task = sess.take_startup_regular_task().await.unwrap_or_default();
@@ -8714,6 +8723,121 @@ mod tests {
         let label = label.expect("provider switch label should be present");
         assert!(label.starts_with("gemini -> openai "));
     }
+
+    #[test]
+    fn resolve_provider_id_for_provider_matches_normalized_pool_provider() {
+        let mut providers = HashMap::new();
+
+        let mut codex_provider = ModelProviderInfo::create_openai_provider();
+        codex_provider.name = "codex".to_string();
+        codex_provider.base_url = Some("https://code.ppchat.vip/v1".to_string());
+        codex_provider.env_key = Some("OPENAI_API_KEY_POOL_3".to_string());
+        codex_provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://code.ppchat.vip/v1".to_string()),
+                env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://code.ppchat.vip/v1".to_string()),
+                env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+            },
+        ];
+        providers.insert("codex".to_string(), codex_provider.clone());
+        providers.insert(
+            crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID.to_string(),
+            ModelProviderInfo::create_antigravity_anthropic_provider(),
+        );
+
+        let mut selected_codex_provider = codex_provider;
+        crate::config::apply_primary_account_pool_selection(&mut selected_codex_provider);
+
+        let resolved = resolve_provider_id_for_provider(
+            &providers,
+            &selected_codex_provider,
+            crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID,
+        );
+        assert_eq!(resolved, "codex");
+    }
+
+    #[tokio::test]
+    async fn apply_restores_custom_responses_provider_after_anthropic_auto_switch() {
+        let (session, _) = make_session_and_context().await;
+        let mut session_configuration = {
+            let state = session.state.lock().await;
+            state.session_configuration.clone()
+        };
+
+        let mut config = (*session_configuration.original_config_do_not_use).clone();
+
+        let mut codex_provider = config
+            .model_providers
+            .get("openai")
+            .expect("openai provider should exist")
+            .clone();
+        codex_provider.name = "codex".to_string();
+        codex_provider.base_url = Some("https://code.ppchat.vip/v1".to_string());
+        codex_provider.env_key = Some("OPENAI_API_KEY_POOL_3".to_string());
+        codex_provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://code.ppchat.vip/v1".to_string()),
+                env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://code.ppchat.vip/v1".to_string()),
+                env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+            },
+        ];
+        config
+            .model_providers
+            .insert("codex".to_string(), codex_provider.clone());
+
+        let mut user_configured_provider = codex_provider.clone();
+        crate::config::apply_primary_account_pool_selection(&mut user_configured_provider);
+
+        let mut antigravity_provider = config
+            .model_providers
+            .get(crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID)
+            .expect("antigravity anthropic provider should exist")
+            .clone();
+        antigravity_provider.base_url = Some("http://localhost:8317/v1beta".to_string());
+        antigravity_provider.env_key = Some("ANTIGRAVITY_API_KEY_POOL_2".to_string());
+        antigravity_provider.account_pool = vec![ModelProviderAccount {
+            base_url: Some("http://localhost:8317".to_string()),
+            env_key: Some("ANTIGRAVITY_API_KEY_POOL_1".to_string()),
+        }];
+        crate::config::apply_primary_account_pool_selection(&mut antigravity_provider);
+
+        config.model_provider_id =
+            crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID.to_string();
+        config.model_provider = antigravity_provider.clone();
+        config.user_configured_provider = user_configured_provider;
+
+        session_configuration.original_config_do_not_use = Arc::new(config);
+        session_configuration.provider_id =
+            crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID.to_string();
+        session_configuration.provider = antigravity_provider;
+
+        let (restored, _) = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode_for_model("gpt-5.3-codex")),
+                ..Default::default()
+            })
+            .expect("switch back to gpt model should restore responses provider");
+
+        assert_eq!(restored.provider_id, "codex");
+        assert_eq!(
+            restored.provider.wire_api,
+            crate::model_provider_info::WireApi::Responses
+        );
+        assert_eq!(
+            restored.provider.base_url.as_deref(),
+            Some("https://code.ppchat.vip/v1")
+        );
+        assert_eq!(
+            restored.provider.env_key.as_deref(),
+            Some("OPENAI_API_KEY_POOL_1")
+        );
+    }
     #[test]
     fn assistant_message_stream_parsers_can_be_seeded_from_output_item_added_text() {
         let mut parsers = AssistantMessageStreamParsers::new(false);
@@ -9450,7 +9574,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id,
                     last_agent_message: None,
-                memory: None,
+                    memory: None,
                 },
             )),
         ];
@@ -11308,7 +11432,6 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
         )
         .await;
 
-        let mut previous_context = Some(Arc::clone(&tc));
         handlers::user_input_or_turn(
             &sess,
             "replacement-turn".to_string(),

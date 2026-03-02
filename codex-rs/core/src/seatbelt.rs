@@ -496,9 +496,25 @@ mod tests {
 
     fn assert_seatbelt_denied(stderr: &[u8], path: &Path) {
         let stderr = String::from_utf8_lossy(stderr);
-        let expected = format!("bash: {}: Operation not permitted\n", path.display());
+        let expected_path = path.display().to_string();
+        let expected_without_private = expected_path
+            .strip_prefix("/private")
+            .unwrap_or(expected_path.as_str())
+            .to_string();
+        let expected_with_private = if expected_path.starts_with("/private/") {
+            expected_path.clone()
+        } else {
+            format!("/private{expected_path}")
+        };
+        let denied_matches_expected_path = [
+            expected_path,
+            expected_without_private,
+            expected_with_private,
+        ]
+        .into_iter()
+        .any(|candidate| stderr.contains(&format!("{candidate}: Operation not permitted")));
         assert!(
-            stderr == expected
+            denied_matches_expected_path
                 || stderr.contains("sandbox-exec: sandbox_apply: Operation not permitted"),
             "unexpected stderr: {stderr}"
         );

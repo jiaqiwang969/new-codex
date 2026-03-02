@@ -64,7 +64,7 @@ members = [
     "state",
     "codex-experimental-api-macros",
     "git-graph",
-    "test-macros",
+    "test-macros", "toml_test",
 ]
 resolver = "2"
 

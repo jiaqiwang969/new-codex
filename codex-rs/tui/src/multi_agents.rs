@@ -176,7 +176,7 @@ pub(crate) fn interaction_end(
 
 pub(crate) fn waiting_begin(
     ev: CollabWaitingBeginEvent,
-    known_agents: &HashMap<String, AgentMetadata>,
+    _known_agents: &HashMap<String, AgentMetadata>,
 ) -> PlainHistoryCell {
     let CollabWaitingBeginEvent {
         sender_thread_id: _,
@@ -226,7 +226,7 @@ pub(crate) fn waiting_end(
 
 pub(crate) fn close_end(
     ev: CollabCloseEndEvent,
-    known_agents: &HashMap<String, AgentMetadata>,
+    _known_agents: &HashMap<String, AgentMetadata>,
 ) -> PlainHistoryCell {
     let CollabCloseEndEvent {
         call_id: _,
@@ -253,7 +253,7 @@ pub(crate) fn close_end(
 
 pub(crate) fn resume_begin(
     ev: CollabResumeBeginEvent,
-    known_agents: &HashMap<String, AgentMetadata>,
+    _known_agents: &HashMap<String, AgentMetadata>,
 ) -> PlainHistoryCell {
     let CollabResumeBeginEvent {
         call_id: _,
@@ -279,7 +279,7 @@ pub(crate) fn resume_begin(
 
 pub(crate) fn resume_end(
     ev: CollabResumeEndEvent,
-    known_agents: &HashMap<String, AgentMetadata>,
+    _known_agents: &HashMap<String, AgentMetadata>,
 ) -> PlainHistoryCell {
     let CollabResumeEndEvent {
         call_id: _,
@@ -514,13 +514,6 @@ fn detail_line(label: &str, value: impl Into<String>) -> Line<'static> {
     vec![Span::from(format!("{label}: ")).dim(), Span::from(value)].into()
 }
 
-fn detail_line_spans(label: &str, mut value: Vec<Span<'static>>) -> Line<'static> {
-    let mut spans = Vec::with_capacity(value.len() + 1);
-    spans.push(Span::from(format!("{label}: ")).dim());
-    spans.append(&mut value);
-    spans.into()
-}
-
 fn append_agent_metadata_details(
     thread_id: &str,
     known_agents: &HashMap<String, AgentMetadata>,
@@ -550,41 +543,6 @@ fn append_agent_metadata_details(
         };
         details.push(detail_line("route", route));
     }
-}
-
-fn metadata_summary_inline(metadata: &AgentMetadata) -> Option<String> {
-    let mut pieces = Vec::new();
-    if let Some(agent_type) = metadata.agent_type.as_deref() {
-        pieces.push(format!("role={agent_type}"));
-    }
-    if let Some(model) = metadata.model.as_deref() {
-        pieces.push(format!("model={model}"));
-    }
-    if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
-        pieces.push(format!("provider={model_provider_id}"));
-    }
-    if let Some(model_source) = metadata.model_source {
-        pieces.push(format!("route={}", model_source_label(model_source)));
-    }
-    if pieces.is_empty() {
-        None
-    } else {
-        Some(format!("[{}]", pieces.join(", ")))
-    }
-}
-
-fn push_status_count(
-    spans: &mut Vec<Span<'static>>,
-    count: usize,
-    label: &'static str,
-    style: impl FnOnce(Span<'static>) -> Span<'static>,
-) {
-    if count == 0 {
-        return;
-    }
-
-    spans.push(Span::from(" · ").dim());
-    spans.push(style(Span::from(format!("{count} {label}"))));
 }
 
 pub(crate) fn model_source_detail_label(detail: CollabAgentModelSourceDetail) -> &'static str {

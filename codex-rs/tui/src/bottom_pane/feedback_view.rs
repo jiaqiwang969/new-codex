@@ -94,7 +94,6 @@ impl FeedbackNoteView {
         } else {
             Some(note.clone())
         };
-        let rollout_path_ref = self.rollout_path.as_deref();
         let log_file_paths = if self.include_logs {
             self.rollout_path.iter().cloned().collect::<Vec<_>>()
         } else {

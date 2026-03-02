@@ -2521,7 +2521,8 @@ mod tests {
 
     #[test]
     fn js_repl_freeform_grammar_blocks_common_non_js_prefixes() {
-        let ToolSpec::Freeform(FreeformTool { format, .. }) = create_js_repl_freeform_tool() else {
+        let ToolSpec::Freeform(FreeformTool { format: _, .. }) = create_js_repl_freeform_tool()
+        else {
             panic!("js_repl should use a freeform tool spec");
         };
     }
@@ -3412,7 +3413,6 @@ mod tests {
             })
         );
     }
-
 
     fn assert_model_tools(
         model_slug: &str,

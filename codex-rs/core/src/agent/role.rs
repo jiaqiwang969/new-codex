@@ -13,7 +13,6 @@ use std::path::Path;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
 
-const BUILT_IN_EXPLORER_CONFIG: &str = include_str!("builtins/explorer.toml");
 const BUILT_IN_CLAUDE_OPUS_CONFIG: &str = include_str!("builtins/claude-opus.toml");
 const BUILT_IN_CLAUDE_SONNET_CONFIG: &str = include_str!("builtins/claude-sonnet.toml");
 const BUILT_IN_CLAUDE_HAIKU_CONFIG: &str = include_str!("builtins/claude-haiku.toml");
