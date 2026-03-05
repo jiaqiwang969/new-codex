@@ -70,6 +70,7 @@ mod model_provider_info;
 mod model_sub_vouch;
 pub mod path_utils;
 pub mod personality_migration;
+pub mod plugins;
 mod sandbox_tags;
 pub mod sandboxing;
 mod session_prefix;

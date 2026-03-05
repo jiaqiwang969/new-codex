@@ -21,6 +21,8 @@ use crate::config_loader::default_project_root_markers;
 use crate::config_loader::merge_toml_values;
 use crate::config_loader::project_root_markers_from_config;
 use crate::features::Feature;
+use crate::plugins::PluginCapabilitySummary;
+use crate::plugins::render_plugins_section;
 use crate::skills::SkillMetadata;
 use crate::skills::render_skills_section;
 use codex_app_server_protocol::ConfigLayerSource;
@@ -74,6 +76,7 @@ fn render_js_repl_instructions(config: &Config) -> Option<String> {
 pub(crate) async fn get_user_instructions(
     config: &Config,
     skills: Option<&[SkillMetadata]>,
+    plugins: Option<&[PluginCapabilitySummary]>,
 ) -> Option<String> {
     let project_docs = read_project_docs(config).await;
 
@@ -101,6 +104,13 @@ pub(crate) async fn get_user_instructions(
             output.push_str("\n\n");
         }
         output.push_str(&js_repl_section);
+    }
+
+    if let Some(plugin_section) = plugins.and_then(render_plugins_section) {
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        output.push_str(&plugin_section);
     }
 
     let skills_section = skills.and_then(render_skills_section);
@@ -380,7 +390,7 @@ mod tests {
     async fn no_doc_file_returns_none() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, None).await, None).await;
+        let res = get_user_instructions(&make_config(&tmp, 4096, None).await, None, None).await;
         assert!(
             res.is_none(),
             "Expected None when AGENTS.md is absent and no system instructions provided"
@@ -394,7 +404,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "hello world").unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, None).await, None)
+        let res = get_user_instructions(&make_config(&tmp, 4096, None).await, None, None)
             .await
             .expect("doc expected");
 
@@ -413,7 +423,7 @@ mod tests {
         let huge = "A".repeat(LIMIT * 2); // 2 KiB
         fs::write(tmp.path().join("AGENTS.md"), &huge).unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, LIMIT, None).await, None)
+        let res = get_user_instructions(&make_config(&tmp, LIMIT, None).await, None, None)
             .await
             .expect("doc expected");
 
@@ -445,7 +455,7 @@ mod tests {
         let mut cfg = make_config(&repo, 4096, None).await;
         cfg.cwd = nested;
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("doc expected");
         assert_eq!(res, "root level doc");
@@ -457,7 +467,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         fs::write(tmp.path().join("AGENTS.md"), "something").unwrap();
 
-        let res = get_user_instructions(&make_config(&tmp, 0, None).await, None).await;
+        let res = get_user_instructions(&make_config(&tmp, 0, None).await, None, None).await;
         assert!(
             res.is_none(),
             "With limit 0 the function should return None"
@@ -470,7 +480,7 @@ mod tests {
         let mut cfg = make_config(&tmp, 4096, None).await;
         cfg.features.enable(Feature::JsRepl);
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("js_repl instructions expected");
         let expected = "## JavaScript REPL (Node)\n- Use `js_repl` for Node-backed JavaScript with top-level await in a persistent kernel.\n- `js_repl` is a freeform/custom tool. Direct `js_repl` calls must send raw JavaScript tool input (optionally with first-line `// codex-js-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n- Helpers: `codex.tmpDir` and `codex.tool(name, args?)`.\n- `codex.tool` executes a normal tool call and resolves to the raw tool output object. Use it for shell and non-shell tools alike.\n- To share generated images with the model, write a file under `codex.tmpDir`, call `await codex.tool(\"view_image\", { path: \"/absolute/path\" })`, then delete the file.\n- Top-level bindings persist across cells. If you hit `SyntaxError: Identifier 'x' has already been declared`, reuse the binding, pick a new name, wrap in `{ ... }` for block scope, or reset the kernel with `js_repl_reset`.\n- Top-level static import declarations (for example `import x from \"pkg\"`) are currently unsupported in `js_repl`; use dynamic imports with `await import(\"pkg\")` instead.\n- Avoid direct access to `process.stdout` / `process.stderr` / `process.stdin`; it can corrupt the JSON line protocol. Use `console.log` and `codex.tool(...)`.";
@@ -485,7 +495,7 @@ mod tests {
             .enable(Feature::JsRepl)
             .enable(Feature::JsReplToolsOnly);
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("js_repl instructions expected");
         let expected = "## JavaScript REPL (Node)\n- Use `js_repl` for Node-backed JavaScript with top-level await in a persistent kernel.\n- `js_repl` is a freeform/custom tool. Direct `js_repl` calls must send raw JavaScript tool input (optionally with first-line `// codex-js-repl: timeout_ms=15000`). Do not wrap code in JSON (for example `{\"code\":\"...\"}`), quotes, or markdown code fences.\n- Helpers: `codex.tmpDir` and `codex.tool(name, args?)`.\n- `codex.tool` executes a normal tool call and resolves to the raw tool output object. Use it for shell and non-shell tools alike.\n- To share generated images with the model, write a file under `codex.tmpDir`, call `await codex.tool(\"view_image\", { path: \"/absolute/path\" })`, then delete the file.\n- Top-level bindings persist across cells. If you hit `SyntaxError: Identifier 'x' has already been declared`, reuse the binding, pick a new name, wrap in `{ ... }` for block scope, or reset the kernel with `js_repl_reset`.\n- Top-level static import declarations (for example `import x from \"pkg\"`) are currently unsupported in `js_repl`; use dynamic imports with `await import(\"pkg\")` instead.\n- Do not call tools directly; use `js_repl` + `codex.tool(...)` for all tool calls, including shell commands.\n- MCP tools (if any) can also be called by name via `codex.tool(...)`.\n- Avoid direct access to `process.stdout` / `process.stderr` / `process.stdin`; it can corrupt the JSON line protocol. Use `console.log` and `codex.tool(...)`.";
@@ -501,9 +511,13 @@ mod tests {
 
         const INSTRUCTIONS: &str = "base instructions";
 
-        let res = get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS)).await, None)
-            .await
-            .expect("should produce a combined instruction string");
+        let res = get_user_instructions(
+            &make_config(&tmp, 4096, Some(INSTRUCTIONS)).await,
+            None,
+            None,
+        )
+        .await
+        .expect("should produce a combined instruction string");
 
         let expected = format!("{INSTRUCTIONS}{PROJECT_DOC_SEPARATOR}{}", "proj doc");
 
@@ -518,8 +532,12 @@ mod tests {
 
         const INSTRUCTIONS: &str = "some instructions";
 
-        let res =
-            get_user_instructions(&make_config(&tmp, 4096, Some(INSTRUCTIONS)).await, None).await;
+        let res = get_user_instructions(
+            &make_config(&tmp, 4096, Some(INSTRUCTIONS)).await,
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(res, Some(INSTRUCTIONS.to_string()));
     }
@@ -548,7 +566,7 @@ mod tests {
         let mut cfg = make_config(&repo, 4096, None).await;
         cfg.cwd = nested;
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("doc expected");
         assert_eq!(res, "root doc\n\ncrate doc");
@@ -577,7 +595,7 @@ mod tests {
         assert_eq!(discovery[0], expected_parent);
         assert_eq!(discovery[1], expected_child);
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("doc expected");
         assert_eq!(res, "parent doc\n\nchild doc");
@@ -592,7 +610,7 @@ mod tests {
 
         let cfg = make_config(&tmp, 4096, None).await;
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("local doc expected");
 
@@ -614,7 +632,7 @@ mod tests {
 
         let cfg = make_config_with_fallback(&tmp, 4096, None, &["EXAMPLE.md"]).await;
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("fallback doc expected");
 
@@ -630,7 +648,7 @@ mod tests {
 
         let cfg = make_config_with_fallback(&tmp, 4096, None, &["EXAMPLE.md", ".example.md"]).await;
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("AGENTS.md should win");
 
@@ -663,6 +681,7 @@ mod tests {
         let res = get_user_instructions(
             &cfg,
             skills.errors.is_empty().then_some(skills.skills.as_slice()),
+            None,
         )
         .await
         .expect("instructions expected");
@@ -690,6 +709,7 @@ mod tests {
         let res = get_user_instructions(
             &cfg,
             skills.errors.is_empty().then_some(skills.skills.as_slice()),
+            None,
         )
         .await
         .expect("instructions expected");
@@ -710,7 +730,7 @@ mod tests {
         let mut cfg = make_config(&tmp, 4096, None).await;
         cfg.features.enable(Feature::Apps);
 
-        let res = get_user_instructions(&cfg, None).await;
+        let res = get_user_instructions(&cfg, None, None).await;
         assert_eq!(res, None);
     }
 
@@ -722,7 +742,7 @@ mod tests {
         let mut cfg = make_config(&tmp, 4096, None).await;
         cfg.features.enable(Feature::Apps);
 
-        let res = get_user_instructions(&cfg, None)
+        let res = get_user_instructions(&cfg, None, None)
             .await
             .expect("instructions expected");
         assert_eq!(res, "base doc");
