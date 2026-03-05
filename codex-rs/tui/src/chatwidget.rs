@@ -2772,7 +2772,7 @@ impl ChatWidget {
         let request = ApprovalRequest::McpElicitation {
             server_name: ev.server_name,
             request_id: ev.id,
-            message: ev.message,
+            message: ev.request.message().to_string(),
         };
         self.bottom_pane
             .push_approval_request(request, &self.config.features);

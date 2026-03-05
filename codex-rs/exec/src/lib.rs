@@ -607,6 +607,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
                     server_name: ev.server_name.clone(),
                     request_id: ev.id.clone(),
                     decision: ElicitationAction::Cancel,
+                    content: None,
                 })
                 .await?;
         }

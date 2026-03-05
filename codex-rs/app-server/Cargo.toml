@@ -70,6 +70,7 @@ codex-utils-cargo-bin = { workspace = true }
 os_info = { workspace = true }
 pretty_assertions = { workspace = true }
 rmcp = { workspace = true, default-features = false, features = [
+    "elicitation",
     "server",
     "transport-streamable-http-server",
 ] }
