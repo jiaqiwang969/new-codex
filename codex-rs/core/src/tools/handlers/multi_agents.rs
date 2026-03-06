@@ -126,6 +126,54 @@ mod spawn {
         fork_context: bool,
     }
 
+    const AUTO_CALIBRATION_PREVIEW_CHARS: usize = 240;
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct AutoCalibrationRawResult {
+        task_bucket: Option<String>,
+        #[serde(default)]
+        runs: Vec<AutoCalibrationRawRun>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_vouch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_latency: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_session: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct AutoCalibrationRawRun {
+        model: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        status: AgentStatus,
+        elapsed_ms: u64,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct AutoCalibrationResult {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        task_bucket: Option<String>,
+        runs: Vec<AutoCalibrationRunSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_vouch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_latency: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_session: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct AutoCalibrationRunSummary {
+        model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        status: String,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_preview: Option<String>,
+    }
+
     #[derive(Debug, Serialize)]
     struct SpawnAgentResult {
         agent_id: String,
@@ -142,6 +190,8 @@ mod spawn {
         memory_scope_version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_binding_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auto_calibration: Option<AutoCalibrationResult>,
     }
 
     pub async fn handle(
@@ -194,12 +244,90 @@ mod spawn {
         let agent_type = role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string();
         let uses_role_config =
             role_name.is_some_and(|role| !role.eq_ignore_ascii_case(DEFAULT_ROLE_NAME));
+        let uses_default_role =
+            role_name.is_none_or(|role| role.eq_ignore_ascii_case(DEFAULT_ROLE_NAME));
+        let uses_explorer_role =
+            role_name.is_some_and(|role| role.eq_ignore_ascii_case("explorer"));
         let mut model_source = if uses_role_config { "role" } else { "parent" }.to_string();
         let mut model_source_detail = uses_role_config.then(|| "role_config".to_string());
+        let mut auto_calibration = None;
         if let Some(requested_model) = requested_model {
             config.model = Some(requested_model);
             model_source = "explicit".to_string();
             model_source_detail = Some("tool_model_override".to_string());
+        } else if !matches!(turn.session_source, SessionSource::SubAgent(_))
+            && (uses_default_role || uses_explorer_role)
+        {
+            if let Some(auto_model_sub) = session.get_auto_model_sub_selection().await {
+                config.model = Some(auto_model_sub);
+                model_source = "model_sub_auto".to_string();
+                model_source_detail = Some("session_cache".to_string());
+            } else if let Some(candidate) =
+                crate::model_sub_vouch::ranked_model_sub_candidates(&turn.config.codex_home)
+                    .into_iter()
+                    .next()
+            {
+                session
+                    .set_auto_model_sub_selection(Some(candidate.clone()))
+                    .await;
+                config.model = Some(candidate);
+                model_source = "model_sub_auto".to_string();
+                model_source_detail = Some("vouch_rank".to_string());
+            } else if !session.get_auto_model_sub_calibration_attempted().await {
+                session.set_auto_model_sub_calibration_attempted(true).await;
+                let calibration_args = serde_json::json!({
+                    "items": input_items.clone(),
+                    "wait_timeout_ms": 100,
+                });
+                if let Ok(ToolOutput::Function {
+                    body: FunctionCallOutputBody::Text(content),
+                    ..
+                }) = Box::pin(super::calibrate_model_sub::handle(
+                    session.clone(),
+                    turn.clone(),
+                    format!("{call_id}-auto-calibration"),
+                    calibration_args.to_string(),
+                ))
+                .await
+                    && let Ok(raw_result) =
+                        serde_json::from_str::<AutoCalibrationRawResult>(&content)
+                {
+                    let recommended_model_sub = raw_result.recommended_for_session.clone();
+                    auto_calibration = Some(AutoCalibrationResult {
+                        task_bucket: raw_result.task_bucket,
+                        runs: raw_result
+                            .runs
+                            .into_iter()
+                            .map(|run| {
+                                let status = auto_calibration_status_label(&run.status);
+                                let output_preview = Some(status.clone())
+                                    .filter(|value| !value.is_empty())
+                                    .map(|value| {
+                                        value.chars().take(AUTO_CALIBRATION_PREVIEW_CHARS).collect()
+                                    });
+                                AutoCalibrationRunSummary {
+                                    model: run.model,
+                                    agent_id: run.agent_id,
+                                    status,
+                                    elapsed_ms: run.elapsed_ms,
+                                    output_preview,
+                                }
+                            })
+                            .collect(),
+                        recommended_for_vouch: raw_result.recommended_for_vouch,
+                        recommended_for_latency: raw_result.recommended_for_latency,
+                        recommended_for_session: raw_result.recommended_for_session.clone(),
+                    });
+                    if let Some(model_sub) = recommended_model_sub {
+                        session
+                            .set_auto_model_sub_selection(Some(model_sub.clone()))
+                            .await;
+                        config.model = Some(model_sub);
+                        model_source = "model_sub_auto".to_string();
+                        model_source_detail = Some("auto_calibration".to_string());
+                    }
+                }
+            }
         }
         let model = config
             .model
@@ -278,6 +406,7 @@ mod spawn {
             spawn_depth: child_depth,
             memory_scope_version,
             memory_binding_key,
+            auto_calibration,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -287,6 +416,17 @@ mod spawn {
             body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
+    }
+}
+
+fn auto_calibration_status_label(status: &AgentStatus) -> String {
+    match status {
+        AgentStatus::PendingInit => "pending_init".to_string(),
+        AgentStatus::Running => "running".to_string(),
+        AgentStatus::Completed(_) => "completed".to_string(),
+        AgentStatus::Shutdown => "shutdown".to_string(),
+        AgentStatus::Errored(_) => "errored".to_string(),
+        AgentStatus::NotFound => "not_found".to_string(),
     }
 }
 
@@ -2109,6 +2249,244 @@ mod tests {
         if let Some(cached_recommended) = cached_recommended {
             assert_eq!(Some(cached_recommended), result.recommended_for_session);
         }
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_marks_auto_calibration_attempted_when_no_signal() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model_source: String,
+            auto_calibration: Option<AutoCalibrationResult>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct AutoCalibrationResult {
+            runs: Vec<AutoCalibrationRunSummary>,
+            recommended_for_latency: Option<String>,
+            recommended_for_session: Option<String>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct AutoCalibrationRunSummary {
+            model: String,
+            status: String,
+            output_preview: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let output = MultiAgentHandler
+            .handle(invocation(
+                session.clone(),
+                turn,
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo"
+                })),
+            ))
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert!(!result.model_source.is_empty());
+        let auto_calibration = result
+            .auto_calibration
+            .expect("auto_calibration should be present");
+        assert!(!auto_calibration.runs.is_empty());
+        assert!(
+            auto_calibration
+                .runs
+                .iter()
+                .all(|run| !run.model.is_empty())
+        );
+        assert!(
+            auto_calibration
+                .runs
+                .iter()
+                .all(|run| !run.status.is_empty())
+        );
+        assert!(
+            auto_calibration
+                .runs
+                .iter()
+                .filter_map(|run| run.output_preview.as_ref())
+                .all(|preview| !preview.trim().is_empty())
+        );
+        let _ = (
+            auto_calibration.recommended_for_session,
+            auto_calibration.recommended_for_latency,
+        );
+        assert_eq!(
+            session.get_auto_model_sub_calibration_attempted().await,
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_default_role_uses_auto_model_sub_from_vouch_when_unset() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }, { "verdict": "Win" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    }
+  }
+}"#,
+        );
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.model, "gpt-5.2");
+        assert_eq!(result.model_provider_id, "openai");
+        assert_eq!(result.model_source, "model_sub_auto");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_auto_model_sub_uses_session_cache_after_first_selection() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            model: String,
+            model_source: String,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    }
+  }
+}"#,
+        );
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let first = MultiAgentHandler
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo"
+                })),
+            ))
+            .await
+            .expect("first spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = first
+        else {
+            panic!("expected function output");
+        };
+        let first_result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(first_result.model, "gpt-5.2");
+        assert_eq!(first_result.model_source, "model_sub_auto");
+        assert_eq!(
+            session.get_auto_model_sub_selection().await,
+            Some("gpt-5.2".to_string())
+        );
+
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 3,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }]
+    }
+  }
+}"#,
+        );
+
+        let second = MultiAgentHandler
+            .handle(invocation(
+                session,
+                turn,
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo again"
+                })),
+            ))
+            .await
+            .expect("second spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = second
+        else {
+            panic!("expected function output");
+        };
+        let second_result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(second_result.model, "gpt-5.2");
+        assert_eq!(second_result.model_source, "model_sub_auto");
     }
 
     #[tokio::test]
