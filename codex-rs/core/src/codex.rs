@@ -1788,6 +1788,51 @@ impl Session {
         state.clear_mcp_tool_selection();
     }
 
+    pub(crate) async fn set_auto_model_sub_selection(&self, model_sub: Option<String>) {
+        let mut state = self.state.lock().await;
+        state.set_auto_model_sub_selection(model_sub);
+    }
+
+    pub(crate) async fn get_auto_model_sub_selection(&self) -> Option<String> {
+        let state = self.state.lock().await;
+        state.get_auto_model_sub_selection()
+    }
+
+    pub(crate) async fn set_auto_model_sub_calibration_attempted(&self, attempted: bool) {
+        let mut state = self.state.lock().await;
+        state.set_auto_model_sub_calibration_attempted(attempted);
+    }
+
+    pub(crate) async fn get_auto_model_sub_calibration_attempted(&self) -> bool {
+        let state = self.state.lock().await;
+        state.get_auto_model_sub_calibration_attempted()
+    }
+
+    pub(crate) async fn set_last_model_sub_calibration_models(&self, models: Vec<String>) {
+        let mut state = self.state.lock().await;
+        state.set_last_model_sub_calibration_models(models);
+    }
+
+    pub(crate) async fn get_last_model_sub_calibration_models(&self) -> Vec<String> {
+        let state = self.state.lock().await;
+        state.get_last_model_sub_calibration_models()
+    }
+
+    pub(crate) async fn set_last_model_sub_calibration_recommended_for_session(
+        &self,
+        model: Option<String>,
+    ) {
+        let mut state = self.state.lock().await;
+        state.set_last_model_sub_calibration_recommended_for_session(model);
+    }
+
+    pub(crate) async fn get_last_model_sub_calibration_recommended_for_session(
+        &self,
+    ) -> Option<String> {
+        let state = self.state.lock().await;
+        state.get_last_model_sub_calibration_recommended_for_session()
+    }
+
     // Merges connector IDs into the session-level explicit connector selection.
     pub(crate) async fn merge_connector_selection(
         &self,

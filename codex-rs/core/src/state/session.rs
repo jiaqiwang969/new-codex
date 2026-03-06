@@ -31,6 +31,10 @@ pub(crate) struct SessionState {
     /// Startup regular task pre-created during session initialization.
     pub(crate) startup_regular_task: Option<JoinHandle<CodexResult<RegularTask>>>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
+    auto_model_sub_selection: Option<String>,
+    auto_model_sub_calibration_attempted: bool,
+    last_model_sub_calibration_models: Vec<String>,
+    last_model_sub_calibration_recommended_for_session: Option<String>,
     pub(crate) active_connector_selection: HashSet<String>,
 }
 
@@ -48,6 +52,10 @@ impl SessionState {
             previous_turn_settings: None,
             startup_regular_task: None,
             active_mcp_tool_selection: None,
+            auto_model_sub_selection: None,
+            auto_model_sub_calibration_attempted: false,
+            last_model_sub_calibration_models: Vec::new(),
+            last_model_sub_calibration_recommended_for_session: None,
             active_connector_selection: HashSet::new(),
         }
     }
@@ -218,6 +226,45 @@ impl SessionState {
         self.active_mcp_tool_selection = None;
     }
 
+    pub(crate) fn set_auto_model_sub_selection(&mut self, model_sub: Option<String>) {
+        self.auto_model_sub_selection = model_sub;
+        if self.auto_model_sub_selection.is_none() {
+            self.auto_model_sub_calibration_attempted = false;
+        }
+    }
+
+    pub(crate) fn get_auto_model_sub_selection(&self) -> Option<String> {
+        self.auto_model_sub_selection.clone()
+    }
+
+    pub(crate) fn set_auto_model_sub_calibration_attempted(&mut self, attempted: bool) {
+        self.auto_model_sub_calibration_attempted = attempted;
+    }
+
+    pub(crate) fn get_auto_model_sub_calibration_attempted(&self) -> bool {
+        self.auto_model_sub_calibration_attempted
+    }
+
+    pub(crate) fn set_last_model_sub_calibration_models(&mut self, models: Vec<String>) {
+        self.last_model_sub_calibration_models = models;
+    }
+
+    pub(crate) fn get_last_model_sub_calibration_models(&self) -> Vec<String> {
+        self.last_model_sub_calibration_models.clone()
+    }
+
+    pub(crate) fn set_last_model_sub_calibration_recommended_for_session(
+        &mut self,
+        model: Option<String>,
+    ) {
+        self.last_model_sub_calibration_recommended_for_session = model;
+    }
+
+    pub(crate) fn get_last_model_sub_calibration_recommended_for_session(&self) -> Option<String> {
+        self.last_model_sub_calibration_recommended_for_session
+            .clone()
+    }
+
     // Adds connector IDs to the active set and returns the merged selection.
     pub(crate) fn merge_connector_selection<I>(&mut self, connector_ids: I) -> HashSet<String>
     where
@@ -365,6 +412,50 @@ mod tests {
         state.set_mcp_tool_selection(Vec::new());
 
         assert_eq!(state.get_mcp_tool_selection(), None);
+    }
+
+    #[tokio::test]
+    async fn clearing_auto_model_sub_resets_auto_calibration_attempt_flag() {
+        let session_configuration = make_session_configuration_for_tests().await;
+        let mut state = SessionState::new(session_configuration);
+
+        state.set_auto_model_sub_calibration_attempted(true);
+        state.set_auto_model_sub_selection(Some("gpt-5.3-codex".to_string()));
+        assert_eq!(state.get_auto_model_sub_calibration_attempted(), true);
+
+        state.set_auto_model_sub_selection(None);
+        assert_eq!(state.get_auto_model_sub_calibration_attempted(), false);
+    }
+
+    #[tokio::test]
+    async fn stores_last_model_sub_calibration_models() {
+        let session_configuration = make_session_configuration_for_tests().await;
+        let mut state = SessionState::new(session_configuration);
+
+        state.set_last_model_sub_calibration_models(vec![
+            "gpt-5.3-codex".to_string(),
+            "claude-sonnet-4-6".to_string(),
+        ]);
+
+        assert_eq!(
+            state.get_last_model_sub_calibration_models(),
+            vec!["gpt-5.3-codex".to_string(), "claude-sonnet-4-6".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn stores_last_model_sub_calibration_recommended_for_session() {
+        let session_configuration = make_session_configuration_for_tests().await;
+        let mut state = SessionState::new(session_configuration);
+
+        state.set_last_model_sub_calibration_recommended_for_session(Some(
+            "gpt-5.3-codex".to_string(),
+        ));
+
+        assert_eq!(
+            state.get_last_model_sub_calibration_recommended_for_session(),
+            Some("gpt-5.3-codex".to_string())
+        );
     }
 
     #[tokio::test]

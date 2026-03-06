@@ -1123,6 +1123,108 @@ fn create_close_agent_tool() -> ToolSpec {
     })
 }
 
+fn create_record_model_sub_duel_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "winner_model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Winning utility/sub-agent model slug for this same-task comparison."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "loser_model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Losing utility/sub-agent model slug for this same-task comparison."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "task_bucket".to_string(),
+            JsonSchema::String {
+                description: Some("Optional task bucket: general, debug, or review.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional short leader note explaining why the winner beat the loser."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "record_model_sub_duel".to_string(),
+        description:
+            "Record a leader-judged duel between two utility/sub-agent models into the model-sub vouch ledger. Use after comparing same-task outputs from multiple child models."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["winner_model".to_string(), "loser_model".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_record_model_sub_winner_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "winner_model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional winner model slug selected by the leader. If omitted, falls back to the latest calibrate_model_sub recommended_for_session model cached in this session."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "compared_models".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    "Optional model slugs compared in this round (winner included is fine). If omitted, falls back to the latest calibrate_model_sub candidates from this session."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "task_bucket".to_string(),
+            JsonSchema::String {
+                description: Some("Optional task bucket: general, debug, or review.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional short leader note explaining why this winner was chosen."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "record_model_sub_winner".to_string(),
+        description: "Record the chosen winner against all compared models in one call and pin this session's auto model_sub selection to the winner. If winner_model and/or compared_models are omitted, uses the latest calibrate_model_sub recommendation/candidate set cached in this session."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_test_sync_tool() -> ToolSpec {
     let barrier_properties = BTreeMap::from([
         (
@@ -2013,11 +2115,15 @@ pub(crate) fn build_specs(
         builder.push_spec(create_resume_agent_tool());
         builder.push_spec(create_wait_tool());
         builder.push_spec(create_close_agent_tool());
+        builder.push_spec(create_record_model_sub_duel_tool());
+        builder.push_spec(create_record_model_sub_winner_tool());
         builder.register_handler("spawn_agent", multi_agent_handler.clone());
         builder.register_handler("send_input", multi_agent_handler.clone());
         builder.register_handler("resume_agent", multi_agent_handler.clone());
         builder.register_handler("wait", multi_agent_handler.clone());
-        builder.register_handler("close_agent", multi_agent_handler);
+        builder.register_handler("close_agent", multi_agent_handler.clone());
+        builder.register_handler("record_model_sub_duel", multi_agent_handler.clone());
+        builder.register_handler("record_model_sub_winner", multi_agent_handler);
     }
 
     if config.agent_jobs_tools {
@@ -2318,6 +2424,8 @@ mod tests {
                 "send_input",
                 "wait",
                 "close_agent",
+                "record_model_sub_duel",
+                "record_model_sub_winner",
                 "spawn_agents_on_csv",
             ],
         );

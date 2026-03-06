@@ -90,6 +90,12 @@ impl ToolHandler for MultiAgentHandler {
             "resume_agent" => resume_agent::handle(session, turn, call_id, arguments).await,
             "wait" => wait::handle(session, turn, call_id, arguments).await,
             "close_agent" => close_agent::handle(session, turn, call_id, arguments).await,
+            "record_model_sub_duel" => {
+                record_model_sub_duel::handle(session, turn, call_id, arguments).await
+            }
+            "record_model_sub_winner" => {
+                record_model_sub_winner::handle(session, turn, call_id, arguments).await
+            }
             other => Err(FunctionCallError::RespondToModel(format!(
                 "unsupported collab tool {other}"
             ))),
@@ -862,6 +868,245 @@ pub mod close_agent {
     }
 }
 
+fn normalize_model_sub_task_bucket(
+    task_bucket: Option<String>,
+) -> Result<Option<String>, FunctionCallError> {
+    let Some(task_bucket) = task_bucket else {
+        return Ok(None);
+    };
+    let normalized = task_bucket.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    if normalized == "general" || normalized == "debug" || normalized == "review" {
+        Ok(Some(normalized))
+    } else {
+        Err(FunctionCallError::RespondToModel(
+            "task_bucket must be one of: general, debug, review".to_string(),
+        ))
+    }
+}
+
+mod record_model_sub_duel {
+    use super::*;
+    use crate::model_sub_vouch::ModelSubVouchVerdict;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize)]
+    struct RecordModelSubDuelArgs {
+        winner_model: String,
+        loser_model: String,
+        task_bucket: Option<String>,
+        note: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RecordModelSubDuelResult {
+        winner_model: String,
+        loser_model: String,
+        task_bucket: Option<String>,
+        winner_wins: u32,
+        winner_losses: u32,
+        loser_wins: u32,
+        loser_losses: u32,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        _call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: RecordModelSubDuelArgs = parse_arguments(&arguments)?;
+        let winner_model = args.winner_model.trim();
+        let loser_model = args.loser_model.trim();
+        if winner_model.is_empty() || loser_model.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "winner_model and loser_model must be non-empty".to_string(),
+            ));
+        }
+        if winner_model.eq_ignore_ascii_case(loser_model) {
+            return Err(FunctionCallError::RespondToModel(
+                "winner_model and loser_model must be different".to_string(),
+            ));
+        }
+
+        let task_bucket = super::normalize_model_sub_task_bucket(args.task_bucket)?;
+        let winner_stats = crate::model_sub_vouch::record_model_sub_vouch(
+            &turn.config.codex_home,
+            winner_model,
+            ModelSubVouchVerdict::Win,
+            task_bucket.as_deref(),
+            args.note.as_deref(),
+        )
+        .map_err(FunctionCallError::RespondToModel)?;
+        let loser_stats = crate::model_sub_vouch::record_model_sub_vouch(
+            &turn.config.codex_home,
+            loser_model,
+            ModelSubVouchVerdict::Loss,
+            task_bucket.as_deref(),
+            args.note.as_deref(),
+        )
+        .map_err(FunctionCallError::RespondToModel)?;
+        session
+            .set_auto_model_sub_selection(Some(winner_model.to_string()))
+            .await;
+
+        let content = serde_json::to_string(&RecordModelSubDuelResult {
+            winner_model: winner_model.to_string(),
+            loser_model: loser_model.to_string(),
+            task_bucket,
+            winner_wins: winner_stats.wins,
+            winner_losses: winner_stats.losses,
+            loser_wins: loser_stats.wins,
+            loser_losses: loser_stats.losses,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize record_model_sub_duel result: {err}"
+            ))
+        })?;
+
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+}
+
+mod record_model_sub_winner {
+    use super::*;
+    use crate::model_sub_vouch::ModelSubVouchStats;
+    use crate::model_sub_vouch::ModelSubVouchVerdict;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize)]
+    struct RecordModelSubWinnerArgs {
+        winner_model: Option<String>,
+        compared_models: Option<Vec<String>>,
+        task_bucket: Option<String>,
+        note: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RecordModelSubWinnerResult {
+        winner_model: String,
+        winner_model_source: String,
+        compared_models_source: String,
+        losers_recorded: Vec<String>,
+        task_bucket: Option<String>,
+        winner_wins: u32,
+        winner_losses: u32,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        _call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: RecordModelSubWinnerArgs = parse_arguments(&arguments)?;
+        let (winner_model, winner_model_source) = match args.winner_model {
+            Some(winner_model) => {
+                let winner_model = winner_model.trim();
+                if winner_model.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "winner_model must be non-empty when provided".to_string(),
+                    ));
+                }
+                (winner_model.to_string(), "provided".to_string())
+            }
+            None => {
+                let Some(winner_model) = session
+                    .get_last_model_sub_calibration_recommended_for_session()
+                    .await
+                else {
+                    return Err(FunctionCallError::RespondToModel(
+                        "winner_model is required unless calibrate_model_sub has already run in this session.".to_string(),
+                    ));
+                };
+                (winner_model, "session_last_calibration".to_string())
+            }
+        };
+
+        let task_bucket = super::normalize_model_sub_task_bucket(args.task_bucket)?;
+        let (compared_models, compared_models_source) =
+            if let Some(compared_models) = args.compared_models {
+                (compared_models, "provided".to_string())
+            } else {
+                (
+                    session.get_last_model_sub_calibration_models().await,
+                    "session_last_calibration".to_string(),
+                )
+            };
+
+        let winner_key = winner_model.to_ascii_lowercase();
+        let mut seen = BTreeSet::new();
+        let mut losers = Vec::new();
+        for compared_model in compared_models {
+            let model = compared_model.trim();
+            if model.is_empty() {
+                continue;
+            }
+            let key = model.to_ascii_lowercase();
+            if key == winner_key || !seen.insert(key) {
+                continue;
+            }
+            losers.push(model.to_string());
+        }
+        if losers.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "compared_models must include at least one model different from winner_model; if omitted, run calibrate_model_sub first in this session."
+                    .to_string(),
+            ));
+        }
+
+        let mut winner_stats = ModelSubVouchStats { wins: 0, losses: 0 };
+        for loser in &losers {
+            winner_stats = crate::model_sub_vouch::record_model_sub_vouch(
+                &turn.config.codex_home,
+                winner_model.as_str(),
+                ModelSubVouchVerdict::Win,
+                task_bucket.as_deref(),
+                args.note.as_deref(),
+            )
+            .map_err(FunctionCallError::RespondToModel)?;
+            crate::model_sub_vouch::record_model_sub_vouch(
+                &turn.config.codex_home,
+                loser,
+                ModelSubVouchVerdict::Loss,
+                task_bucket.as_deref(),
+                args.note.as_deref(),
+            )
+            .map_err(FunctionCallError::RespondToModel)?;
+        }
+        session
+            .set_auto_model_sub_selection(Some(winner_model.clone()))
+            .await;
+
+        let content = serde_json::to_string(&RecordModelSubWinnerResult {
+            winner_model,
+            winner_model_source,
+            compared_models_source,
+            losers_recorded: losers,
+            task_bucket,
+            winner_wins: winner_stats.wins,
+            winner_losses: winner_stats.losses,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize record_model_sub_winner result: {err}"
+            ))
+        })?;
+
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+}
+
 fn agent_id(id: &str) -> Result<ThreadId, FunctionCallError> {
     ThreadId::from_string(id)
         .map_err(|e| FunctionCallError::RespondToModel(format!("invalid agent id {id}: {e:?}")))
@@ -1100,6 +1345,7 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1207,6 +1453,149 @@ mod tests {
             FunctionCallError::RespondToModel(
                 "collab handler received unsupported payload".to_string()
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_duel_writes_vouch_ledger() {
+        #[derive(Debug, Deserialize)]
+        struct DuelResult {
+            winner_model: String,
+            loser_model: String,
+            task_bucket: Option<String>,
+            winner_wins: u32,
+            winner_losses: u32,
+            loser_wins: u32,
+            loser_losses: u32,
+        }
+
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let codex_home = turn.config.codex_home.clone();
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "record_model_sub_duel",
+            function_payload(json!({
+                "winner_model": "gpt-5.3-codex",
+                "loser_model": "claude-sonnet-4-6",
+                "task_bucket": "debug",
+                "note": "better root cause"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("duel should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: DuelResult = serde_json::from_str(&content).expect("duel result should parse");
+        assert_eq!(result.winner_model, "gpt-5.3-codex");
+        assert_eq!(result.loser_model, "claude-sonnet-4-6");
+        assert_eq!(result.task_bucket, Some("debug".to_string()));
+        assert_eq!(result.winner_wins, 1);
+        assert_eq!(result.winner_losses, 0);
+        assert_eq!(result.loser_wins, 0);
+        assert_eq!(result.loser_losses, 1);
+
+        let ledger_raw = fs::read_to_string(codex_home.join("memories/model_sub_vouch.json"))
+            .expect("model-sub vouch file should exist");
+        let ledger: serde_json::Value =
+            serde_json::from_str(&ledger_raw).expect("ledger should parse");
+        assert_eq!(
+            ledger["models"]["gpt-5.3-codex"]["wins"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            ledger["models"]["claude-sonnet-4-6"]["losses"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            session.get_auto_model_sub_selection().await,
+            Some("gpt-5.3-codex".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn record_model_sub_winner_uses_session_calibration_cache() {
+        #[derive(Debug, Deserialize)]
+        struct WinnerResult {
+            winner_model: String,
+            winner_model_source: String,
+            compared_models_source: String,
+            losers_recorded: Vec<String>,
+            winner_wins: u32,
+            winner_losses: u32,
+        }
+
+        let (session, turn) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let codex_home = turn.config.codex_home.clone();
+        session
+            .set_last_model_sub_calibration_models(vec![
+                "gpt-5.3-codex".to_string(),
+                "claude-sonnet-4-6".to_string(),
+                "gpt-5.3-codex".to_string(),
+            ])
+            .await;
+        session
+            .set_last_model_sub_calibration_recommended_for_session(Some(
+                "gpt-5.3-codex".to_string(),
+            ))
+            .await;
+
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "record_model_sub_winner",
+            function_payload(json!({
+                "task_bucket": "review",
+                "note": "best review quality"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("winner record should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: WinnerResult =
+            serde_json::from_str(&content).expect("winner result should parse");
+        assert_eq!(result.winner_model, "gpt-5.3-codex");
+        assert_eq!(result.winner_model_source, "session_last_calibration");
+        assert_eq!(result.compared_models_source, "session_last_calibration");
+        assert_eq!(
+            result.losers_recorded,
+            vec!["claude-sonnet-4-6".to_string()]
+        );
+        assert_eq!(result.winner_wins, 1);
+        assert_eq!(result.winner_losses, 0);
+
+        let ledger_raw = fs::read_to_string(codex_home.join("memories/model_sub_vouch.json"))
+            .expect("model-sub vouch file should exist");
+        let ledger: serde_json::Value =
+            serde_json::from_str(&ledger_raw).expect("ledger should parse");
+        assert_eq!(
+            ledger["models"]["gpt-5.3-codex"]["wins"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            ledger["models"]["claude-sonnet-4-6"]["losses"],
+            serde_json::Value::from(1)
+        );
+        assert_eq!(
+            session.get_auto_model_sub_selection().await,
+            Some("gpt-5.3-codex".to_string())
         );
     }
 
