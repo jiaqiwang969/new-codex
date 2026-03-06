@@ -133,6 +133,24 @@ struct ModelClientState {
     cached_websocket_session: StdMutex<WebsocketSession>,
 }
 
+impl Clone for ModelClientState {
+    fn clone(&self) -> Self {
+        Self {
+            auth_manager: self.auth_manager.clone(),
+            conversation_id: self.conversation_id,
+            provider: self.provider.clone(),
+            session_source: self.session_source.clone(),
+            model_verbosity: self.model_verbosity,
+            responses_websockets_enabled_by_feature: self.responses_websockets_enabled_by_feature,
+            enable_request_compression: self.enable_request_compression,
+            include_timing_metrics: self.include_timing_metrics,
+            beta_features_header: self.beta_features_header.clone(),
+            disable_websockets: AtomicBool::new(self.disable_websockets.load(Ordering::Relaxed)),
+            cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+        }
+    }
+}
+
 /// Resolved API client setup for a single request attempt.
 ///
 /// Keeping this as a single bundle ensures prewarm and normal request paths
@@ -249,6 +267,27 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            turn_state: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Creates a fresh turn-scoped streaming session for the requested provider.
+    pub fn new_session_for_provider(&self, provider: &ModelProviderInfo) -> ModelClientSession {
+        if &self.state.provider == provider {
+            return self.new_session();
+        }
+
+        self.new_session_with_provider(provider.clone())
+    }
+
+    fn new_session_with_provider(&self, provider: ModelProviderInfo) -> ModelClientSession {
+        let mut state_copy = (*self.state).clone();
+        state_copy.provider = provider;
+        ModelClientSession {
+            client: ModelClient {
+                state: Arc::new(state_copy),
+            },
+            websocket_session: WebsocketSession::default(),
             turn_state: Arc::new(OnceLock::new()),
         }
     }

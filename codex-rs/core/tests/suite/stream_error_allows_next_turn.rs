@@ -1,3 +1,4 @@
+use codex_core::ModelProviderAccount;
 use codex_core::ModelProviderInfo;
 use codex_core::WireApi;
 use codex_protocol::protocol::EventMsg;
@@ -16,6 +17,109 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::body_string_contains;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rotates_to_next_pool_account_after_429() {
+    skip_if_no_network!();
+
+    let primary = MockServer::start().await;
+    let secondary = MockServer::start().await;
+
+    let fail = ResponseTemplate::new(429)
+        .insert_header("content-type", "application/json")
+        .set_body_string(
+            serde_json::json!({
+                "error": {"type": "rate_limit", "message": "synthetic rate limit"}
+            })
+            .to_string(),
+        );
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(body_string_contains("rotate me"))
+        .respond_with(fail)
+        .expect(1)
+        .mount(&primary)
+        .await;
+
+    let ok = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(
+            sse(vec![
+                ev_response_created("resp_rotated"),
+                ev_completed("resp_rotated"),
+            ]),
+            "text/event-stream",
+        );
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(body_string_contains("rotate me"))
+        .respond_with(ok)
+        .expect(1)
+        .mount(&secondary)
+        .await;
+
+    let provider = ModelProviderInfo {
+        name: "mock-openai".into(),
+        base_url: Some(format!("{}/v1", primary.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(2_000),
+        requires_openai_auth: false,
+        supports_websockets: false,
+        account_pool: vec![
+            ModelProviderAccount {
+                base_url: Some(format!("{}/v1", primary.uri())),
+                env_key: Some("PATH".into()),
+            },
+            ModelProviderAccount {
+                base_url: Some(format!("{}/v1", secondary.uri())),
+                env_key: Some("PATH".into()),
+            },
+        ],
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.base_instructions = Some("You are a helpful assistant".to_string());
+            config.model_provider = provider;
+        })
+        .build(&primary)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "rotate me".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await
+        .unwrap();
+
+    let EventMsg::BackgroundEvent(event) =
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::BackgroundEvent(_))).await
+    else {
+        panic!("expected background event after account rotation");
+    };
+    assert!(
+        event.message.contains("Switched provider account"),
+        "background event should mention account rotation: {}",
+        event.message
+    );
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_after_stream_error() {

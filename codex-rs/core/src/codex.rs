@@ -139,6 +139,7 @@ use tracing::trace_span;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::ModelProviderAccount;
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
 use crate::client::ModelClientSession;
@@ -2318,6 +2319,24 @@ impl Session {
     pub(crate) async fn provider(&self) -> ModelProviderInfo {
         let state = self.state.lock().await;
         state.session_configuration.provider.clone()
+    }
+
+    async fn switch_runtime_provider_account(
+        &self,
+        provider_id: &str,
+        provider: ModelProviderInfo,
+    ) -> SessionConfiguration {
+        let mut state = self.state.lock().await;
+        state.session_configuration.provider = provider.clone();
+
+        let mut updated_config = (*state.session_configuration.original_config_do_not_use).clone();
+        updated_config.model_provider = provider.clone();
+        updated_config
+            .model_providers
+            .insert(provider_id.to_string(), provider);
+        state.session_configuration.original_config_do_not_use = Arc::new(updated_config);
+
+        state.session_configuration.clone()
     }
 
     pub(crate) async fn reload_user_config_layer(&self) {
@@ -5286,8 +5305,11 @@ pub(crate) async fn run_turn(
 
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
-    let mut client_session =
-        prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    let mut client_session = prewarmed_client_session.unwrap_or_else(|| {
+        sess.services
+            .model_client
+            .new_session_for_provider(&turn_context.provider)
+    });
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -5766,6 +5788,7 @@ async fn run_sampling_request(
     server_model_warning_emitted_for_turn: &mut bool,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
+    let mut turn_context = turn_context;
     let router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -5785,6 +5808,21 @@ async fn run_sampling_request(
         base_instructions,
     );
     let mut retries = 0;
+    const MAX_POOL_ROUNDS: usize = 2;
+    let mut pool_switch_state = PoolSwitchState {
+        switch_count: 0,
+        pool_size: normalize_account_pool_in_config_order("", &turn_context.provider)
+            .len()
+            .max(1),
+        max_rounds: MAX_POOL_ROUNDS,
+    };
+    let mut attempted_accounts = {
+        let mut attempted = HashSet::new();
+        if let Some(account) = turn_context.provider.current_account() {
+            attempted.insert(account);
+        }
+        attempted
+    };
     loop {
         let err = match try_run_sampling_request(
             Arc::clone(&router),
@@ -5811,17 +5849,57 @@ async fn run_sampling_request(
                 if let Some(rate_limits) = rate_limits {
                     sess.update_rate_limits(&turn_context, *rate_limits).await;
                 }
-                return Err(CodexErr::UsageLimitReached(e));
+                let usage_err = CodexErr::UsageLimitReached(e);
+                let max_retries = turn_context.provider.stream_max_retries();
+                if let Some(updated_context) = try_switch_pool_account(
+                    &sess,
+                    &turn_context,
+                    &mut attempted_accounts,
+                    &mut pool_switch_state,
+                    &usage_err,
+                    0,
+                    max_retries,
+                )
+                .await
+                {
+                    turn_context = updated_context;
+                    *client_session = sess
+                        .services
+                        .model_client
+                        .new_session_for_provider(&turn_context.provider);
+                    retries = 0;
+                    continue;
+                }
+                return Err(usage_err);
             }
             Err(err) => err,
         };
+
+        let max_retries = turn_context.provider.stream_max_retries();
+        if let Some(updated_context) = try_switch_pool_account(
+            &sess,
+            &turn_context,
+            &mut attempted_accounts,
+            &mut pool_switch_state,
+            &err,
+            retries,
+            max_retries,
+        )
+        .await
+        {
+            turn_context = updated_context;
+            *client_session = sess
+                .services
+                .model_client
+                .new_session_for_provider(&turn_context.provider);
+            retries = 0;
+            continue;
+        }
 
         if !err.is_retryable() {
             return Err(err);
         }
 
-        // Use the configured provider-specific stream retry budget.
-        let max_retries = turn_context.provider.stream_max_retries();
         if retries >= max_retries
             && client_session
                 .try_switch_fallback_transport(&turn_context.otel_manager, &turn_context.model_info)
@@ -5848,8 +5926,6 @@ async fn run_sampling_request(
                 "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
             );
 
-            // In release builds, hide the first websocket retry notification to reduce noisy
-            // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
             let report_error = retries > 1
                 || cfg!(debug_assertions)
                 || !sess
@@ -5857,9 +5933,6 @@ async fn run_sampling_request(
                     .model_client
                     .responses_websocket_enabled(&turn_context.model_info);
             if report_error {
-                // Surface retry information to any UI/front‑end so the
-                // user understands what is happening instead of staring
-                // at a seemingly frozen screen.
                 sess.notify_stream_error(
                     &turn_context,
                     format!("Reconnecting... {retries}/{max_retries}"),
@@ -5872,6 +5945,227 @@ async fn run_sampling_request(
             return Err(err);
         }
     }
+}
+
+fn should_switch_provider_account(err: &CodexErr, retries: u64, max_retries: u64) -> bool {
+    if matches!(
+        err,
+        CodexErr::EnvVar(_)
+            | CodexErr::RetryLimit(_)
+            | CodexErr::UsageLimitReached(_)
+            | CodexErr::InvalidRequest(_)
+    ) {
+        return true;
+    }
+    if let Some(status) = err.http_status_code_value()
+        && matches!(status, 400 | 401 | 403 | 429)
+    {
+        return true;
+    }
+    err.is_retryable() && retries >= max_retries
+}
+
+fn normalize_account_pool(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> Vec<ModelProviderAccount> {
+    let mut pool = normalize_account_pool_in_config_order(provider_id, provider);
+    if let Some(current_account) = provider.current_account() {
+        if let Some(index) = pool.iter().position(|account| account == &current_account) {
+            let current = pool.remove(index);
+            pool.insert(0, current);
+        } else {
+            pool.insert(0, current_account);
+        }
+    }
+    pool
+}
+
+fn normalize_account_pool_in_config_order(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> Vec<ModelProviderAccount> {
+    if provider.account_pool.is_empty() {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    provider
+        .account_pool
+        .iter()
+        .cloned()
+        .filter_map(|account| {
+            let base_url = account
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let env_key = account
+                .env_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let normalized = ModelProviderAccount { base_url, env_key };
+            if normalized.base_url.is_none() || normalized.env_key.is_none() {
+                warn!(
+                    "Skipping account entry for provider {provider_id}: missing base_url or env_key"
+                );
+                None
+            } else if seen.insert(normalized.clone()) {
+                Some(normalized)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn next_account_from_pool(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+    attempted_accounts: &mut HashSet<ModelProviderAccount>,
+) -> Option<ModelProviderAccount> {
+    let pool = normalize_account_pool(provider_id, provider);
+    let pool_len = pool.len();
+    if pool_len == 0 {
+        return None;
+    }
+
+    let current_account = provider.current_account();
+    let start_index = current_account
+        .as_ref()
+        .and_then(|account| pool.iter().position(|item| item == account))
+        .map(|index| (index + 1) % pool_len)
+        .unwrap_or(0);
+
+    for offset in 0..pool_len {
+        let index = (start_index + offset) % pool_len;
+        let account = pool[index].clone();
+        if attempted_accounts.insert(account.clone()) {
+            return Some(account);
+        }
+    }
+
+    None
+}
+
+fn account_index_label(provider: &ModelProviderInfo) -> String {
+    if let Some(current) = provider.current_account() {
+        let pool = normalize_account_pool_in_config_order("", provider);
+        if pool.len() > 1
+            && let Some(idx) = pool.iter().position(|account| account == &current)
+        {
+            return format!("key {}/{}", idx + 1, pool.len());
+        }
+        current.env_key.unwrap_or_else(|| "<default>".to_string())
+    } else {
+        "<no account>".to_string()
+    }
+}
+
+struct PoolSwitchState {
+    switch_count: usize,
+    pool_size: usize,
+    max_rounds: usize,
+}
+
+async fn try_switch_pool_account(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    attempted_accounts: &mut HashSet<ModelProviderAccount>,
+    pool_switch_state: &mut PoolSwitchState,
+    err: &CodexErr,
+    retries: u64,
+    max_retries: u64,
+) -> Option<Arc<TurnContext>> {
+    if let Some(context) = maybe_switch_provider_account(
+        sess,
+        turn_context,
+        attempted_accounts,
+        err,
+        retries,
+        max_retries,
+    )
+    .await
+    {
+        pool_switch_state.switch_count += 1;
+        return Some(context);
+    }
+
+    if !should_switch_provider_account(err, retries, max_retries) {
+        return None;
+    }
+    let completed_rounds = if pool_switch_state.pool_size > 0 {
+        (pool_switch_state.switch_count + 1) / pool_switch_state.pool_size
+    } else {
+        pool_switch_state.max_rounds
+    };
+    if completed_rounds >= pool_switch_state.max_rounds {
+        return None;
+    }
+
+    attempted_accounts.clear();
+    if let Some(account) = turn_context.provider.current_account() {
+        attempted_accounts.insert(account);
+    }
+    let context = maybe_switch_provider_account(
+        sess,
+        turn_context,
+        attempted_accounts,
+        err,
+        retries,
+        max_retries,
+    )
+    .await?;
+    pool_switch_state.switch_count += 1;
+    Some(context)
+}
+
+async fn maybe_switch_provider_account(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    attempted_accounts: &mut HashSet<ModelProviderAccount>,
+    err: &CodexErr,
+    retries: u64,
+    max_retries: u64,
+) -> Option<Arc<TurnContext>> {
+    if !should_switch_provider_account(err, retries, max_retries) {
+        return None;
+    }
+
+    let (provider_id, provider) = {
+        let state = sess.state.lock().await;
+        (
+            state
+                .session_configuration
+                .original_config_do_not_use
+                .model_provider_id
+                .clone(),
+            state.session_configuration.provider.clone(),
+        )
+    };
+    let next_account = next_account_from_pool(provider_id.as_str(), &provider, attempted_accounts)?;
+    let next_provider = provider.with_account(&next_account);
+    let session_configuration = sess
+        .switch_runtime_provider_account(provider_id.as_str(), next_provider.clone())
+        .await;
+    let updated_context = sess
+        .new_turn_from_configuration(
+            turn_context.sub_id.clone(),
+            session_configuration,
+            Some(turn_context.final_output_json_schema.clone()),
+            false,
+        )
+        .await;
+    let key_label = account_index_label(&next_provider);
+    sess.notify_background_event(
+        updated_context.as_ref(),
+        format!("Switched provider account for {provider_id} to {key_label} after {err}"),
+    )
+    .await;
+
+    Some(updated_context)
 }
 
 async fn built_tools(
@@ -6868,6 +7162,7 @@ mod tests {
     use crate::exec::ExecToolCallOutput;
     use crate::function_tool::FunctionCallError;
     use crate::mcp_connection_manager::ToolInfo;
+    use crate::model_provider_info::ModelProviderAccount;
     use crate::models_manager::model_info;
     use crate::shell::default_user_shell;
     use crate::tools::format_exec_output_str;
@@ -10808,5 +11103,114 @@ mod tests {
         );
 
         pretty_assertions::assert_eq!(output, expected);
+    }
+    #[test]
+    fn normalize_account_pool_prefers_current_account_and_dedupes() {
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.base_url = Some("https://a.example/v1".to_string());
+        provider.env_key = Some("KEY_A".to_string());
+        provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://a.example/v1".to_string()),
+                env_key: Some("KEY_A".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://c.example/v1".to_string()),
+                env_key: Some("KEY_C".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("".to_string()),
+                env_key: Some("KEY_SKIP".to_string()),
+            },
+        ];
+
+        let normalized = normalize_account_pool("openai", &provider);
+        assert_eq!(
+            normalized,
+            vec![
+                ModelProviderAccount {
+                    base_url: Some("https://a.example/v1".to_string()),
+                    env_key: Some("KEY_A".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://b.example/v1".to_string()),
+                    env_key: Some("KEY_B".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://c.example/v1".to_string()),
+                    env_key: Some("KEY_C".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn account_index_label_uses_configured_account_order() {
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.base_url = Some("https://b.example/v1".to_string());
+        provider.env_key = Some("KEY_B".to_string());
+        provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://a.example/v1".to_string()),
+                env_key: Some("KEY_A".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://c.example/v1".to_string()),
+                env_key: Some("KEY_C".to_string()),
+            },
+        ];
+
+        assert_eq!(account_index_label(&provider), "key 2/3");
+    }
+
+    #[test]
+    fn next_account_from_pool_wraps_without_repeating_in_turn() {
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.base_url = Some("https://a.example/v1".to_string());
+        provider.env_key = Some("KEY_A".to_string());
+        provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://a.example/v1".to_string()),
+                env_key: Some("KEY_A".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://b.example/v1".to_string()),
+                env_key: Some("KEY_B".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://c.example/v1".to_string()),
+                env_key: Some("KEY_C".to_string()),
+            },
+        ];
+
+        let mut attempted = std::collections::HashSet::new();
+        attempted.insert(
+            provider
+                .current_account()
+                .expect("current account should be available"),
+        );
+
+        let first = next_account_from_pool("openai", &provider, &mut attempted)
+            .expect("second account should be selected first");
+        assert_eq!(first.env_key.as_deref(), Some("KEY_B"));
+
+        let second = next_account_from_pool("openai", &provider, &mut attempted)
+            .expect("third account should be selected next");
+        assert_eq!(second.env_key.as_deref(), Some("KEY_C"));
+
+        let third = next_account_from_pool("openai", &provider, &mut attempted);
+        assert_eq!(third, None);
     }
 }
