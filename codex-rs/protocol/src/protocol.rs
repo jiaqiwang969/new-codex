@@ -1536,6 +1536,8 @@ pub struct ContextCompactedEvent;
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryLink>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -2962,6 +2964,18 @@ pub enum TurnAbortReason {
     Interrupted,
     Replaced,
     ReviewEnded,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct MemoryLink {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

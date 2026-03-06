@@ -4177,6 +4177,7 @@ mod tests {
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
                         turn_id: "turn-1".to_string(),
                         last_agent_message: None,
+                        memory: None,
                     }),
                 }],
                 input_state: Some(input_state),
@@ -4259,6 +4260,7 @@ mod tests {
                     msg: EventMsg::TurnComplete(TurnCompleteEvent {
                         turn_id: "turn-1".to_string(),
                         last_agent_message: None,
+                        memory: None,
                     }),
                 }],
                 input_state: Some(input_state),
@@ -4414,6 +4416,7 @@ mod tests {
                         msg: EventMsg::TurnComplete(TurnCompleteEvent {
                             turn_id: "turn-0".to_string(),
                             last_agent_message: None,
+                            memory: None,
                         }),
                     },
                     Event {
@@ -4444,6 +4447,7 @@ mod tests {
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".to_string(),
                 last_agent_message: None,
+                memory: None,
             }),
         });
 

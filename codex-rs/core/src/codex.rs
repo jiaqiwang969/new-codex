@@ -8165,6 +8165,7 @@ mod tests {
                 codex_protocol::protocol::TurnCompleteEvent {
                     turn_id,
                     last_agent_message: None,
+                    memory: None,
                 },
             )),
         ];
@@ -8339,6 +8340,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: first_turn_id,
                 last_agent_message: None,
+                memory: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnStarted(
                 codex_protocol::protocol::TurnStartedEvent {
@@ -8361,6 +8363,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: rolled_back_turn_id,
                 last_agent_message: None,
+                memory: None,
             })),
         ])
         .await;
@@ -8424,6 +8427,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".to_string(),
                 last_agent_message: None,
+                memory: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnStarted(
                 codex_protocol::protocol::TurnStartedEvent {
@@ -8444,6 +8448,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-2".to_string(),
                 last_agent_message: None,
+                memory: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnStarted(
                 codex_protocol::protocol::TurnStartedEvent {
@@ -8464,6 +8469,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-3".to_string(),
                 last_agent_message: None,
+                memory: None,
             })),
         ])
         .await;
@@ -10528,6 +10534,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id,
                 last_agent_message: None,
+            memory: None,
             }) if turn_id == tc.sub_id
         ));
     }

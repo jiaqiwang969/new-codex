@@ -51,6 +51,7 @@ use codex_app_server_protocol::McpServerElicitationRequestResponse;
 use codex_app_server_protocol::McpToolCallError;
 use codex_app_server_protocol::McpToolCallResult;
 use codex_app_server_protocol::McpToolCallStatus;
+use codex_app_server_protocol::MemoryLink;
 use codex_app_server_protocol::ModelReroutedNotification;
 use codex_app_server_protocol::NetworkApprovalContext as V2NetworkApprovalContext;
 use codex_app_server_protocol::NetworkPolicyAmendment as V2NetworkPolicyAmendment;
@@ -201,6 +202,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     let state = thread_state.lock().await;
                     state.active_turn_snapshot().unwrap_or_else(|| Turn {
                         id: payload.turn_id.clone(),
+                        memory: None,
                         items: Vec::new(),
                         error: None,
                         status: TurnStatus::InProgress,
@@ -215,14 +217,21 @@ pub(crate) async fn apply_bespoke_event_handling(
                     .await;
             }
         }
-        EventMsg::TurnComplete(_ev) => {
+        EventMsg::TurnComplete(ev) => {
             // All per-thread requests are bound to a turn, so abort them.
             outgoing.abort_pending_server_requests().await;
             let turn_failed = thread_state.lock().await.turn_summary.last_error.is_some();
             thread_watch_manager
                 .note_turn_completed(&conversation_id.to_string(), turn_failed)
                 .await;
-            handle_turn_complete(conversation_id, event_turn_id, &outgoing, &thread_state).await;
+            handle_turn_complete(
+                conversation_id,
+                event_turn_id,
+                ev.memory.map(Into::into),
+                &outgoing,
+                &thread_state,
+            )
+            .await;
         }
         EventMsg::SkillsUpdateAvailable => {
             if let ApiVersion::V2 = api_version {
@@ -1671,6 +1680,7 @@ async fn handle_turn_plan_update(
 async fn emit_turn_completed_with_status(
     conversation_id: ThreadId,
     event_turn_id: String,
+    memory: Option<MemoryLink>,
     status: TurnStatus,
     error: Option<TurnError>,
     outgoing: &ThreadScopedOutgoingMessageSender,
@@ -1679,6 +1689,7 @@ async fn emit_turn_completed_with_status(
         thread_id: conversation_id.to_string(),
         turn: Turn {
             id: event_turn_id,
+            memory,
             items: vec![],
             error,
             status,
@@ -1782,6 +1793,7 @@ async fn find_and_remove_turn_summary(
 async fn handle_turn_complete(
     conversation_id: ThreadId,
     event_turn_id: String,
+    memory: Option<MemoryLink>,
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
@@ -1792,7 +1804,15 @@ async fn handle_turn_complete(
         None => (TurnStatus::Completed, None),
     };
 
-    emit_turn_completed_with_status(conversation_id, event_turn_id, status, error, outgoing).await;
+    emit_turn_completed_with_status(
+        conversation_id,
+        event_turn_id,
+        memory,
+        status,
+        error,
+        outgoing,
+    )
+    .await;
 }
 
 async fn handle_turn_interrupted(
@@ -1806,6 +1826,7 @@ async fn handle_turn_interrupted(
     emit_turn_completed_with_status(
         conversation_id,
         event_turn_id,
+        None,
         TurnStatus::Interrupted,
         None,
         outgoing,
@@ -2626,6 +2647,7 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
+            None,
             &outgoing,
             &thread_state,
         )
@@ -2637,6 +2659,49 @@ mod tests {
                 assert_eq!(n.turn.id, event_turn_id);
                 assert_eq!(n.turn.status, TurnStatus::Completed);
                 assert_eq!(n.turn.error, None);
+                assert_eq!(n.turn.memory, None);
+            }
+            other => bail!("unexpected message: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "no extra messages expected");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_turn_complete_emits_completed_with_memory() -> Result<()> {
+        let conversation_id = ThreadId::new();
+        let event_turn_id = "complete-with-memory".to_string();
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            ThreadId::new(),
+        );
+        let thread_state = new_thread_state();
+        let memory = codex_app_server_protocol::MemoryLink {
+            scope_version: Some("thread:aaaaaaaaaaaa".to_string()),
+            scope_kind: Some("thread".to_string()),
+            summary_sha256: Some("a".repeat(64)),
+            binding_key: Some(format!("thread:aaaaaaaaaaaa:{}", "a".repeat(64))),
+        };
+
+        handle_turn_complete(
+            conversation_id,
+            event_turn_id.clone(),
+            Some(memory.clone()),
+            &outgoing,
+            &thread_state,
+        )
+        .await;
+
+        let msg = recv_broadcast_message(&mut rx).await?;
+        match msg {
+            OutgoingMessage::AppServerNotification(ServerNotification::TurnCompleted(n)) => {
+                assert_eq!(n.turn.id, event_turn_id);
+                assert_eq!(n.turn.status, TurnStatus::Completed);
+                assert_eq!(n.turn.error, None);
+                assert_eq!(n.turn.memory, Some(memory));
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -2714,6 +2779,7 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
+            None,
             &outgoing,
             &thread_state,
         )
@@ -2974,7 +3040,14 @@ mod tests {
             &thread_state,
         )
         .await;
-        handle_turn_complete(conversation_a, a_turn1.clone(), &outgoing, &thread_state).await;
+        handle_turn_complete(
+            conversation_a,
+            a_turn1.clone(),
+            None,
+            &outgoing,
+            &thread_state,
+        )
+        .await;
 
         // Turn 1 on conversation B
         let b_turn1 = "b_turn1".to_string();
@@ -2988,11 +3061,25 @@ mod tests {
             &thread_state,
         )
         .await;
-        handle_turn_complete(conversation_b, b_turn1.clone(), &outgoing, &thread_state).await;
+        handle_turn_complete(
+            conversation_b,
+            b_turn1.clone(),
+            None,
+            &outgoing,
+            &thread_state,
+        )
+        .await;
 
         // Turn 2 on conversation A
         let a_turn2 = "a_turn2".to_string();
-        handle_turn_complete(conversation_a, a_turn2.clone(), &outgoing, &thread_state).await;
+        handle_turn_complete(
+            conversation_a,
+            a_turn2.clone(),
+            None,
+            &outgoing,
+            &thread_state,
+        )
+        .await;
 
         // Verify: A turn 1
         let msg = recv_broadcast_message(&mut rx).await?;

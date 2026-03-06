@@ -9,6 +9,7 @@ use crate::protocol::v2::FileUpdateChange;
 use crate::protocol::v2::McpToolCallError;
 use crate::protocol::v2::McpToolCallResult;
 use crate::protocol::v2::McpToolCallStatus;
+use crate::protocol::v2::MemoryLink;
 use crate::protocol::v2::PatchApplyStatus;
 use crate::protocol::v2::PatchChangeKind;
 use crate::protocol::v2::ThreadItem;
@@ -838,6 +839,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_turn_complete(&mut self, payload: &TurnCompleteEvent) {
+        let memory_value = payload.memory.clone().map(Into::into);
         let mark_completed = |status: &mut TurnStatus| {
             if matches!(*status, TurnStatus::Completed | TurnStatus::InProgress) {
                 *status = TurnStatus::Completed;
@@ -850,6 +852,9 @@ impl ThreadHistoryBuilder {
             .as_mut()
             .filter(|turn| turn.id == payload.turn_id)
         {
+            if let Some(memory) = memory_value.clone() {
+                current_turn.memory = Some(memory);
+            }
             mark_completed(&mut current_turn.status);
             self.finish_current_turn();
             return;
@@ -860,12 +865,18 @@ impl ThreadHistoryBuilder {
             .iter_mut()
             .find(|turn| turn.id == payload.turn_id)
         {
+            if let Some(memory) = memory_value.clone() {
+                turn.memory = Some(memory);
+            }
             mark_completed(&mut turn.status);
             return;
         }
 
         // If the completion event cannot be matched, apply it to the active turn.
         if let Some(current_turn) = self.current_turn.as_mut() {
+            if let Some(memory) = memory_value {
+                current_turn.memory = Some(memory);
+            }
             mark_completed(&mut current_turn.status);
             self.finish_current_turn();
         }
@@ -906,6 +917,7 @@ impl ThreadHistoryBuilder {
     fn new_turn(&mut self, id: Option<String>) -> PendingTurn {
         PendingTurn {
             id: id.unwrap_or_else(|| Uuid::now_v7().to_string()),
+            memory: None,
             items: Vec::new(),
             error: None,
             status: TurnStatus::Completed,
@@ -1065,6 +1077,7 @@ fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) {
 
 struct PendingTurn {
     id: String,
+    memory: Option<MemoryLink>,
     items: Vec<ThreadItem>,
     error: Option<TurnError>,
     status: TurnStatus,
@@ -1092,6 +1105,7 @@ impl From<PendingTurn> for Turn {
     fn from(value: PendingTurn) -> Self {
         Self {
             id: value.id,
+            memory: value.memory,
             items: value.items,
             error: value.error,
             status: value.status,
@@ -1103,6 +1117,7 @@ impl From<&PendingTurn> for Turn {
     fn from(value: &PendingTurn) -> Self {
         Self {
             id: value.id.clone(),
+            memory: value.memory.clone(),
             items: value.items.clone(),
             error: value.error.clone(),
             status: value.status.clone(),
@@ -1270,6 +1285,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -1587,6 +1603,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -1884,6 +1901,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
@@ -1918,6 +1936,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -1966,6 +1985,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
@@ -2000,6 +2020,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -2169,6 +2190,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
@@ -2184,6 +2206,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
@@ -2192,6 +2215,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
@@ -2223,6 +2247,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".into(),
@@ -2272,6 +2297,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),
                 last_agent_message: None,
+                memory: None,
             })),
         ];
 
@@ -2280,6 +2306,7 @@ mod tests {
             turns,
             vec![Turn {
                 id: "turn-compact".into(),
+                memory: None,
                 status: TurnStatus::Completed,
                 error: None,
                 items: Vec::new(),
@@ -2367,6 +2394,61 @@ mod tests {
     }
 
     #[test]
+    fn turn_complete_event_sets_memory_on_completed_turn() {
+        let memory = crate::protocol::v2::MemoryLink {
+            scope_version: Some("thread:aaaaaaaaaaaa".into()),
+            scope_kind: Some("thread".into()),
+            summary_sha256: Some("a".repeat(64)),
+            binding_key: Some(format!("thread:aaaaaaaaaaaa:{}", "a".repeat(64))),
+        };
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                last_agent_message: None,
+                memory: Some(codex_protocol::protocol::MemoryLink {
+                    scope_version: memory.scope_version.clone(),
+                    scope_kind: memory.scope_kind.clone(),
+                    summary_sha256: memory.summary_sha256.clone(),
+                    binding_key: memory.binding_key.clone(),
+                }),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(
+            turns,
+            vec![Turn {
+                id: "turn-a".into(),
+                memory: Some(memory),
+                status: TurnStatus::Completed,
+                error: None,
+                items: vec![ThreadItem::UserMessage {
+                    id: "item-1".into(),
+                    content: vec![UserInput::Text {
+                        text: "hello".into(),
+                        text_elements: Vec::new(),
+                    }],
+                }],
+            }]
+        );
+    }
+
+    #[test]
     fn out_of_turn_error_does_not_create_or_fail_a_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
@@ -2383,6 +2465,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
             EventMsg::Error(ErrorEvent {
                 message: "request-level failure".into(),
@@ -2400,6 +2483,7 @@ mod tests {
             turns[0],
             Turn {
                 id: "turn-a".into(),
+                memory: None,
                 status: TurnStatus::Completed,
                 error: None,
                 items: vec![ThreadItem::UserMessage {
@@ -2436,6 +2520,7 @@ mod tests {
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 last_agent_message: None,
+                memory: None,
             }),
         ];
 
