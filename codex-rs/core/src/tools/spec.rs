@@ -731,6 +731,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional model slug override for this child only. When set, overrides role/default model routing for this spawn."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "fork_context".to_string(),
             JsonSchema::Boolean {
                 description: Some(
@@ -3389,6 +3398,31 @@ mod tests {
                 strict: false,
             })
         );
+    }
+
+    #[test]
+    fn spawn_agent_tool_includes_model_override_param() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::Collab);
+
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let tool = find_tool(&tools, "spawn_agent");
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &tool.spec else {
+            panic!("expected function tool");
+        };
+        let JsonSchema::Object { properties, .. } = parameters else {
+            panic!("expected object parameters");
+        };
+        assert!(properties.contains_key("model"));
     }
 
     #[test]

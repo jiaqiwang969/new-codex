@@ -112,6 +112,7 @@ mod spawn {
         message: Option<String>,
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
+        model: Option<String>,
         #[serde(default)]
         fork_context: bool,
     }
@@ -146,6 +147,12 @@ mod spawn {
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
+        let requested_model = args
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned);
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
         let session_source = turn.session_source.clone();
@@ -176,15 +183,20 @@ mod spawn {
         apply_spawn_agent_overrides(&mut config, child_depth);
 
         let agent_type = role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string();
+        let uses_role_config =
+            role_name.is_some_and(|role| !role.eq_ignore_ascii_case(DEFAULT_ROLE_NAME));
+        let mut model_source = if uses_role_config { "role" } else { "parent" }.to_string();
+        let mut model_source_detail = uses_role_config.then(|| "role_config".to_string());
+        if let Some(requested_model) = requested_model {
+            config.model = Some(requested_model);
+            model_source = "explicit".to_string();
+            model_source_detail = Some("tool_model_override".to_string());
+        }
         let model = config
             .model
             .clone()
             .unwrap_or_else(|| turn.model_info.slug.clone());
         let model_provider_id = config.model_provider_id.clone();
-        let uses_role_config =
-            role_name.is_some_and(|role| !role.eq_ignore_ascii_case(DEFAULT_ROLE_NAME));
-        let model_source = if uses_role_config { "role" } else { "parent" }.to_string();
-        let model_source_detail = uses_role_config.then(|| "role_config".to_string());
         let parent_thread_id = session.conversation_id.to_string();
 
         let result = session
@@ -1348,6 +1360,63 @@ mod tests {
         assert_eq!(result.spawn_depth, 1);
         assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
         assert_eq!(snapshot.model_provider_id, "ollama");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_explicit_model_override_updates_child_config() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+            model_source_detail: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "explorer",
+                "model": "gpt-5.1-codex-mini"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        assert_eq!(result.model, "gpt-5.1-codex-mini");
+        assert_eq!(result.model_provider_id, "openai");
+        assert_eq!(result.model_source, "explicit");
+        assert_eq!(
+            result.model_source_detail,
+            Some("tool_model_override".to_string())
+        );
+
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "gpt-5.1-codex-mini");
+        assert_eq!(snapshot.model_provider_id, "openai");
     }
 
     #[tokio::test]
