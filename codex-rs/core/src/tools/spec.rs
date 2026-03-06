@@ -1123,6 +1123,60 @@ fn create_close_agent_tool() -> ToolSpec {
     })
 }
 
+fn create_calibrate_model_sub_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "message".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Task prompt to run against each candidate model. Use either message or items."
+                        .to_string(),
+                ),
+            },
+        ),
+        ("items".to_string(), create_collab_input_items_schema()),
+        (
+            "candidates".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    "Optional candidate utility/sub-agent model slugs to benchmark on the same task."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "task_bucket".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional task bucket label: general, debug, or review.".to_string(),
+                ),
+            },
+        ),
+        (
+            "wait_timeout_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Per-candidate wait timeout in milliseconds (clamped between 100 and 30000)."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "calibrate_model_sub".to_string(),
+        description: "Run one same-task calibration round across multiple candidate utility/sub-agent models, then return per-model status/output/latency plus recommended_for_vouch/recommended_for_latency/recommended_for_session hints for leader judgment."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_record_model_sub_duel_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
@@ -2115,6 +2169,7 @@ pub(crate) fn build_specs(
         builder.push_spec(create_resume_agent_tool());
         builder.push_spec(create_wait_tool());
         builder.push_spec(create_close_agent_tool());
+        builder.push_spec(create_calibrate_model_sub_tool());
         builder.push_spec(create_record_model_sub_duel_tool());
         builder.push_spec(create_record_model_sub_winner_tool());
         builder.register_handler("spawn_agent", multi_agent_handler.clone());
@@ -2122,6 +2177,7 @@ pub(crate) fn build_specs(
         builder.register_handler("resume_agent", multi_agent_handler.clone());
         builder.register_handler("wait", multi_agent_handler.clone());
         builder.register_handler("close_agent", multi_agent_handler.clone());
+        builder.register_handler("calibrate_model_sub", multi_agent_handler.clone());
         builder.register_handler("record_model_sub_duel", multi_agent_handler.clone());
         builder.register_handler("record_model_sub_winner", multi_agent_handler);
     }
@@ -2424,6 +2480,7 @@ mod tests {
                 "send_input",
                 "wait",
                 "close_agent",
+                "calibrate_model_sub",
                 "record_model_sub_duel",
                 "record_model_sub_winner",
                 "spawn_agents_on_csv",

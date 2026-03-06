@@ -90,6 +90,9 @@ impl ToolHandler for MultiAgentHandler {
             "resume_agent" => resume_agent::handle(session, turn, call_id, arguments).await,
             "wait" => wait::handle(session, turn, call_id, arguments).await,
             "close_agent" => close_agent::handle(session, turn, call_id, arguments).await,
+            "calibrate_model_sub" => {
+                calibrate_model_sub::handle(session, turn, call_id, arguments).await
+            }
             "record_model_sub_duel" => {
                 record_model_sub_duel::handle(session, turn, call_id, arguments).await
             }
@@ -887,6 +890,294 @@ fn normalize_model_sub_task_bucket(
     }
 }
 
+mod calibrate_model_sub {
+    use super::*;
+    use crate::agent::status::is_final;
+    use codex_protocol::ThreadId;
+    use futures::future;
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    const DEFAULT_CALIBRATION_CANDIDATES: [&str; 4] = [
+        "claude-sonnet-4-6",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "claude-opus-4-6",
+    ];
+    const DEFAULT_WAIT_TIMEOUT_MS: i64 = 1_500;
+    const MIN_WAIT_TIMEOUT_MS: i64 = 100;
+    const MAX_WAIT_TIMEOUT_MS: i64 = 30_000;
+
+    #[derive(Debug, Deserialize)]
+    struct CalibrateModelSubArgs {
+        message: Option<String>,
+        items: Option<Vec<UserInput>>,
+        candidates: Option<Vec<String>>,
+        task_bucket: Option<String>,
+        wait_timeout_ms: Option<i64>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CalibrationRun {
+        model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        status: AgentStatus,
+        elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CalibrateModelSubResult {
+        task_bucket: Option<String>,
+        runs: Vec<CalibrationRun>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_vouch: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_latency: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recommended_for_session: Option<String>,
+        next_step: String,
+    }
+
+    struct ActiveRun {
+        model: String,
+        agent_id: ThreadId,
+        agent_id_string: String,
+        started_at: Instant,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: CalibrateModelSubArgs = parse_arguments(&arguments)?;
+        let items = parse_collab_input(args.message, args.items)?;
+        let task_bucket = super::normalize_model_sub_task_bucket(args.task_bucket)?;
+        let wait_timeout_ms = args
+            .wait_timeout_ms
+            .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+            .clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS);
+        let filtered = normalized_candidates(args.candidates);
+        if filtered.len() < 2 {
+            return Err(FunctionCallError::RespondToModel(
+                "Need at least two available candidate models for calibration.".to_string(),
+            ));
+        }
+        session
+            .set_last_model_sub_calibration_models(filtered.clone())
+            .await;
+
+        let mut runs = Vec::new();
+        let mut active_runs = Vec::new();
+        for (index, candidate) in filtered.iter().enumerate() {
+            let spawn_call_id = format!("{call_id}-spawn-{index}");
+            let spawn_args = build_spawn_arguments(&items, candidate);
+            match super::spawn::handle(
+                session.clone(),
+                turn.clone(),
+                spawn_call_id,
+                spawn_args.to_string(),
+            )
+            .await
+            {
+                Ok(ToolOutput::Function {
+                    body: FunctionCallOutputBody::Text(content),
+                    ..
+                }) => match serde_json::from_str::<SpawnAgentResult>(&content) {
+                    Ok(parsed) => match ThreadId::from_string(&parsed.agent_id) {
+                        Ok(agent_id) => {
+                            active_runs.push(ActiveRun {
+                                model: candidate.clone(),
+                                agent_id,
+                                agent_id_string: parsed.agent_id,
+                                started_at: Instant::now(),
+                            });
+                        }
+                        Err(err) => runs.push(CalibrationRun {
+                            model: candidate.clone(),
+                            agent_id: None,
+                            status: AgentStatus::Errored(format!(
+                                "invalid spawned agent id: {err:?}"
+                            )),
+                            elapsed_ms: 0,
+                            error: Some("spawn returned invalid agent id".to_string()),
+                        }),
+                    },
+                    Err(err) => runs.push(CalibrationRun {
+                        model: candidate.clone(),
+                        agent_id: None,
+                        status: AgentStatus::Errored(format!(
+                            "failed to parse spawn output: {err}"
+                        )),
+                        elapsed_ms: 0,
+                        error: Some("spawn output parsing failed".to_string()),
+                    }),
+                },
+                Ok(_) => runs.push(CalibrationRun {
+                    model: candidate.clone(),
+                    agent_id: None,
+                    status: AgentStatus::Errored("spawn returned non-text tool output".to_string()),
+                    elapsed_ms: 0,
+                    error: Some("spawn returned non-text tool output".to_string()),
+                }),
+                Err(err) => runs.push(CalibrationRun {
+                    model: candidate.clone(),
+                    agent_id: None,
+                    status: AgentStatus::Errored(err.to_string()),
+                    elapsed_ms: 0,
+                    error: Some(err.to_string()),
+                }),
+            }
+        }
+
+        let waited = future::join_all(active_runs.into_iter().map(|run| {
+            let session = session.clone();
+            async move {
+                let status = wait_for_final_status(session, run.agent_id, wait_timeout_ms).await;
+                let elapsed_ms = run.started_at.elapsed().as_millis();
+                let elapsed_ms = elapsed_ms.min(u128::from(u64::MAX)) as u64;
+                CalibrationRun {
+                    model: run.model,
+                    agent_id: Some(run.agent_id_string),
+                    status,
+                    elapsed_ms,
+                    error: None,
+                }
+            }
+        }))
+        .await;
+        runs.extend(waited);
+
+        let available_models = runs
+            .iter()
+            .filter(|run| run.agent_id.is_some())
+            .map(|run| run.model.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let recommended_for_vouch =
+            crate::model_sub_vouch::ranked_model_sub_candidates(&turn.config.codex_home)
+                .into_iter()
+                .find(|candidate| available_models.contains(&candidate.to_ascii_lowercase()));
+        let recommended_for_latency = runs
+            .iter()
+            .filter(|run| matches!(run.status, AgentStatus::Completed(_)))
+            .min_by_key(|run| run.elapsed_ms)
+            .map(|run| run.model.clone());
+        let recommended_for_session = recommended_for_vouch
+            .clone()
+            .or_else(|| recommended_for_latency.clone());
+        let recommended_for_session_cache = recommended_for_session.clone().filter(|model| {
+            runs.iter().any(|run| {
+                run.model.eq_ignore_ascii_case(model)
+                    && matches!(run.status, AgentStatus::Completed(_))
+            })
+        });
+        session
+            .set_last_model_sub_calibration_recommended_for_session(recommended_for_session_cache)
+            .await;
+        let next_step =
+            "Compare completed outputs, then call `record_model_sub_winner` (or `record_model_sub_duel`) to persist the winner; `record_model_sub_winner` can omit winner/candidates to reuse this round's cached recommendation."
+                .to_string();
+
+        let content = serde_json::to_string(&CalibrateModelSubResult {
+            task_bucket,
+            runs,
+            recommended_for_vouch,
+            recommended_for_latency,
+            recommended_for_session,
+            next_step,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to serialize calibrate_model_sub result: {err}"
+            ))
+        })?;
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+
+    fn normalized_candidates(candidates: Option<Vec<String>>) -> Vec<String> {
+        let mut ordered = Vec::new();
+        if let Some(candidates) = candidates {
+            ordered.extend(candidates);
+        } else {
+            ordered.extend(
+                DEFAULT_CALIBRATION_CANDIDATES
+                    .into_iter()
+                    .map(ToOwned::to_owned),
+            );
+        }
+        let mut seen = BTreeSet::new();
+        let mut normalized = Vec::new();
+        for candidate in ordered {
+            let value = candidate.trim();
+            if value.is_empty() {
+                continue;
+            }
+            let key = value.to_ascii_lowercase();
+            if seen.insert(key) {
+                normalized.push(value.to_string());
+            }
+        }
+        normalized
+    }
+
+    fn build_spawn_arguments(items: &[UserInput], model: &str) -> Value {
+        serde_json::json!({
+            "items": items,
+            "model": model,
+        })
+    }
+
+    async fn wait_for_final_status(
+        session: Arc<Session>,
+        agent_id: ThreadId,
+        timeout_ms: i64,
+    ) -> AgentStatus {
+        let mut status_rx = match session
+            .services
+            .agent_control
+            .subscribe_status(agent_id)
+            .await
+        {
+            Ok(status_rx) => status_rx,
+            Err(_) => return AgentStatus::NotFound,
+        };
+        let current = status_rx.borrow().clone();
+        if is_final(&current) {
+            return current;
+        }
+        let wait_future = async {
+            loop {
+                if status_rx.changed().await.is_err() {
+                    return session.services.agent_control.get_status(agent_id).await;
+                }
+                let status = status_rx.borrow().clone();
+                if is_final(&status) {
+                    return status;
+                }
+            }
+        };
+        match tokio::time::timeout(Duration::from_millis(timeout_ms as u64), wait_future).await {
+            Ok(status) => status,
+            Err(_) => session.services.agent_control.get_status(agent_id).await,
+        }
+    }
+}
+
 mod record_model_sub_duel {
     use super::*;
     use crate::model_sub_vouch::ModelSubVouchVerdict;
@@ -1381,6 +1672,12 @@ mod tests {
         )
     }
 
+    fn write_model_sub_vouch(codex_home: &std::path::Path, content: &str) {
+        let memories_dir = codex_home.join("memories");
+        fs::create_dir_all(&memories_dir).expect("create memories dir");
+        fs::write(memories_dir.join("model_sub_vouch.json"), content).expect("write vouch file");
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct ExpectedMemoryFields {
         memory_scope_version: String,
@@ -1615,6 +1912,203 @@ mod tests {
             err,
             FunctionCallError::RespondToModel("unsupported collab tool unknown_tool".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_rejects_when_less_than_two_candidates() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "check",
+                "candidates": ["gpt-5.2-codex"]
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("calibration should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Need at least two available candidate models for calibration.".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_returns_runs_for_candidates() {
+        #[derive(Debug, Deserialize)]
+        struct CalibrateResult {
+            runs: Vec<CalibrateRun>,
+            recommended_for_vouch: Option<String>,
+            recommended_for_latency: Option<String>,
+            recommended_for_session: Option<String>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct CalibrateRun {
+            model: String,
+            agent_id: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "candidates": ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+                "wait_timeout_ms": 100
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("calibration should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: CalibrateResult =
+            serde_json::from_str(&content).expect("calibration result should parse");
+        assert_eq!(result.runs.len(), 2);
+        let mut models = result
+            .runs
+            .iter()
+            .map(|run| run.model.clone())
+            .collect::<Vec<_>>();
+        models.sort();
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5.1-codex-mini".to_string(),
+                "gpt-5.2-codex".to_string(),
+            ]
+        );
+        assert!(result.runs.iter().all(|run| run.agent_id.is_some()));
+        assert_eq!(result.recommended_for_vouch, None);
+        assert_eq!(
+            result.recommended_for_session,
+            result.recommended_for_latency
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_uses_vouch_hint_for_session_recommendation() {
+        #[derive(Debug, Deserialize)]
+        struct CalibrateResult {
+            recommended_for_vouch: Option<String>,
+            recommended_for_session: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        write_model_sub_vouch(
+            &turn.config.codex_home,
+            r#"{
+  "models": {
+    "gpt-5.2-codex": {
+      "wins": 4,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Win" }, { "verdict": "Win" }]
+    },
+    "gpt-5.1-codex-mini": {
+      "wins": 1,
+      "losses": 0,
+      "recent_events": [{ "verdict": "Loss" }]
+    }
+  }
+}"#,
+        );
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "candidates": ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+                "wait_timeout_ms": 100
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("calibration should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: CalibrateResult =
+            serde_json::from_str(&content).expect("calibration result should parse");
+        assert_eq!(
+            result.recommended_for_vouch.as_deref(),
+            Some("gpt-5.2-codex")
+        );
+        assert_eq!(
+            result.recommended_for_session.as_deref(),
+            Some("gpt-5.2-codex")
+        );
+    }
+
+    #[tokio::test]
+    async fn calibrate_model_sub_caches_candidate_models_for_follow_up_recording() {
+        #[derive(Debug, Deserialize)]
+        struct CalibrateResult {
+            recommended_for_session: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let session = Arc::new(session);
+        let invocation = invocation(
+            session.clone(),
+            Arc::new(turn),
+            "calibrate_model_sub",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "candidates": ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+                "wait_timeout_ms": 100
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("calibration should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: CalibrateResult =
+            serde_json::from_str(&content).expect("calibration result should parse");
+        assert_eq!(
+            session.get_last_model_sub_calibration_models().await,
+            vec![
+                "gpt-5.2-codex".to_string(),
+                "gpt-5.1-codex-mini".to_string(),
+            ]
+        );
+        let cached_recommended = session
+            .get_last_model_sub_calibration_recommended_for_session()
+            .await;
+        if let Some(cached_recommended) = cached_recommended {
+            assert_eq!(Some(cached_recommended), result.recommended_for_session);
+        }
     }
 
     #[tokio::test]
