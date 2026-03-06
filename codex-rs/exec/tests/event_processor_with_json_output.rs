@@ -123,6 +123,7 @@ fn task_started_produces_turn_started_event() {
             turn_id: "turn-1".to_string(),
             model_context_window: Some(32_000),
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     ));
 

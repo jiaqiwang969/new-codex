@@ -4808,6 +4808,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -4841,6 +4842,7 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -6121,6 +6123,7 @@ async fn interrupted_turn_error_message_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -8172,6 +8175,7 @@ async fn interrupt_clears_unified_exec_wait_streak_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -8266,6 +8270,7 @@ async fn ui_snapshots_small_heights_task_running() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     chat.handle_codex_event(Event {
@@ -8299,6 +8304,7 @@ async fn status_widget_and_approval_modal_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     // Provide a deterministic header for the status line.
@@ -8358,6 +8364,7 @@ async fn status_widget_active_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     // Provide a deterministic header via a bold reasoning chunk.
@@ -8409,6 +8416,7 @@ async fn mcp_startup_complete_does_not_clear_running_task() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -8959,6 +8967,7 @@ async fn replayed_turn_started_does_not_mark_task_running() {
         turn_id: "turn-1".to_string(),
         model_context_window: None,
         collaboration_mode_kind: ModeKind::Default,
+        memory: None,
     })]);
 
     assert!(!chat.bottom_pane.is_task_running());
@@ -8975,6 +8984,7 @@ async fn thread_snapshot_replayed_turn_started_marks_task_running() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -9018,6 +9028,7 @@ async fn thread_snapshot_replayed_stream_recovery_restores_previous_status_heade
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     drain_insert_history(&mut rx);
@@ -9058,6 +9069,7 @@ async fn resume_replay_interrupted_reconnect_does_not_leave_stale_working_state(
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
         EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 1/5".to_string(),
@@ -9089,6 +9101,7 @@ async fn replayed_interrupted_reconnect_footer_row_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
         EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 2/5".to_string(),
@@ -9241,6 +9254,7 @@ async fn stream_recovery_restores_previous_status_header() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     drain_insert_history(&mut rx);
@@ -9324,6 +9338,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
 
@@ -9449,6 +9464,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     chat.handle_codex_event(Event {
@@ -9498,6 +9514,7 @@ async fn chatwidget_markdown_code_blocks_vt100_snapshot() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     // Build a vt100 visual from the history insertions only (no UI overlay)
@@ -9591,6 +9608,7 @@ async fn chatwidget_tall() {
             turn_id: "turn-1".to_string(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
+            memory: None,
         }),
     });
     for i in 0..30 {

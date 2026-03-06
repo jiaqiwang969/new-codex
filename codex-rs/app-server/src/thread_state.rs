@@ -338,3 +338,38 @@ impl ThreadStateManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_app_server_protocol::MemoryLink;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::TurnStartedEvent;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn active_turn_snapshot_preserves_started_memory() {
+        let mut state = ThreadState::default();
+        let memory = MemoryLink {
+            scope_version: Some("thread:bbbbbbbbbbbb".into()),
+            scope_kind: Some("thread".into()),
+            summary_sha256: Some("b".repeat(64)),
+            binding_key: Some(format!("thread:bbbbbbbbbbbb:{}", "b".repeat(64))),
+        };
+
+        state.track_current_turn_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-start".into(),
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+            memory: Some(codex_protocol::protocol::MemoryLink {
+                scope_version: memory.scope_version.clone(),
+                scope_kind: memory.scope_kind.clone(),
+                summary_sha256: memory.summary_sha256.clone(),
+                binding_key: memory.binding_key.clone(),
+            }),
+        }));
+
+        let snapshot = state.active_turn_snapshot().expect("active turn snapshot");
+        assert_eq!(snapshot.memory, Some(memory));
+    }
+}

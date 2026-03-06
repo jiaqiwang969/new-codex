@@ -9,8 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sha2::Digest;
-use sha2::Sha256;
 use tokio::select;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -208,38 +206,11 @@ impl Session {
         last_agent_message: Option<String>,
     ) {
         let memory_summary_fallback = last_agent_message.clone();
-        let memory = if let Some(db) = self.state_db() {
-            let existing_summary = crate::state_db::get_thread_memory(
-                Some(db.as_ref()),
-                self.conversation_id,
-                "turn_complete_memory_link_read",
-            )
-            .await
-            .map(|memory| memory.memory_summary)
-            .filter(|summary| !summary.trim().is_empty());
-            let summary = existing_summary.or_else(|| {
-                memory_summary_fallback
-                    .clone()
-                    .filter(|summary| !summary.trim().is_empty())
-            });
-            summary.map(|summary| {
-                let mut hasher = Sha256::new();
-                hasher.update(summary.as_bytes());
-                let summary_sha256 = format!("{:x}", hasher.finalize());
-                let scope_kind = "thread".to_string();
-                let short_hash = summary_sha256.get(..12).unwrap_or(summary_sha256.as_str());
-                let scope_version = format!("{scope_kind}:{short_hash}");
-                let binding_key = format!("{scope_version}:{summary_sha256}");
-                crate::protocol::MemoryLink {
-                    scope_version: Some(scope_version),
-                    scope_kind: Some(scope_kind),
-                    summary_sha256: Some(summary_sha256),
-                    binding_key: Some(binding_key),
-                }
-            })
-        } else {
-            None
-        };
+        let memory = crate::thread_memory::current_thread_memory_link(
+            self.as_ref(),
+            memory_summary_fallback.as_deref(),
+        )
+        .await;
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();

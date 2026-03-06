@@ -5119,6 +5119,7 @@ pub(crate) async fn run_turn(
         turn_id: turn_context.sub_id.clone(),
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        memory: crate::thread_memory::current_thread_memory_link(sess.as_ref(), None).await,
     });
     sess.send_event(&turn_context, event).await;
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -8150,6 +8151,7 @@ mod tests {
                     turn_id: turn_id.clone(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -8324,6 +8326,7 @@ mod tests {
                     turn_id: first_turn_id.clone(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -8347,6 +8350,7 @@ mod tests {
                     turn_id: rolled_back_turn_id.clone(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -8413,6 +8417,7 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -8434,6 +8439,7 @@ mod tests {
                     turn_id: "turn-2".to_string(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -8455,6 +8461,7 @@ mod tests {
                     turn_id: "turn-3".to_string(),
                     model_context_window: Some(128_000),
                     collaboration_mode_kind: ModeKind::Default,
+                    memory: None,
                 },
             )),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {

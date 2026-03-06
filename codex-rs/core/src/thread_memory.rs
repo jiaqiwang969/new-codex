@@ -7,6 +7,8 @@ use codex_api::RawMemoryMetadata;
 use codex_protocol::models::ResponseItem;
 use codex_utils_string::take_bytes_at_char_boundary;
 use serde_json::Value;
+use sha2::Digest;
+use sha2::Sha256;
 use tracing::warn;
 
 use crate::codex::Session;
@@ -22,6 +24,49 @@ const THREAD_MEMORY_MAX_MESSAGE_BYTES: usize = 2_000;
 const THREAD_MEMORY_THREAD_POLL_ATTEMPTS: usize = 80;
 const THREAD_MEMORY_THREAD_POLL_SLEEP: Duration = Duration::from_millis(25);
 const THREAD_MEMORY_MIN_UPDATE_INTERVAL_SECS: i64 = 10 * 60;
+
+pub(crate) async fn current_thread_memory_link(
+    sess: &Session,
+    fallback_summary: Option<&str>,
+) -> Option<crate::protocol::MemoryLink> {
+    let existing_summary = if let Some(db) = sess.state_db() {
+        state_db::get_thread_memory(
+            Some(db.as_ref()),
+            sess.conversation_id,
+            "thread_memory_link_read",
+        )
+        .await
+        .map(|memory| memory.memory_summary)
+        .filter(|summary| !summary.trim().is_empty())
+    } else {
+        None
+    };
+    let summary = existing_summary.or_else(|| {
+        fallback_summary
+            .map(str::trim)
+            .filter(|summary| !summary.is_empty())
+            .map(ToOwned::to_owned)
+    })?;
+
+    Some(build_memory_link(summary.as_str()))
+}
+
+fn build_memory_link(summary: &str) -> crate::protocol::MemoryLink {
+    let mut hasher = Sha256::new();
+    hasher.update(summary.as_bytes());
+    let summary_sha256 = format!("{:x}", hasher.finalize());
+    let scope_kind = "thread".to_string();
+    let short_hash = summary_sha256.get(..12).unwrap_or(summary_sha256.as_str());
+    let scope_version = format!("{scope_kind}:{short_hash}");
+    let binding_key = format!("{scope_version}:{summary_sha256}");
+
+    crate::protocol::MemoryLink {
+        scope_version: Some(scope_version),
+        scope_kind: Some(scope_kind),
+        summary_sha256: Some(summary_sha256),
+        binding_key: Some(binding_key),
+    }
+}
 
 pub(crate) fn maybe_spawn_thread_memory_update_after_compaction(
     sess: Arc<Session>,

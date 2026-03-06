@@ -831,11 +831,12 @@ impl ThreadHistoryBuilder {
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
         self.finish_current_turn();
-        self.current_turn = Some(
-            self.new_turn(Some(payload.turn_id.clone()))
-                .with_status(TurnStatus::InProgress)
-                .opened_explicitly(),
-        );
+        let mut turn = self
+            .new_turn(Some(payload.turn_id.clone()))
+            .with_status(TurnStatus::InProgress)
+            .opened_explicitly();
+        turn.memory = payload.memory.clone().map(Into::into);
+        self.current_turn = Some(turn);
     }
 
     fn handle_turn_complete(&mut self, payload: &TurnCompleteEvent) {
@@ -1267,6 +1268,7 @@ mod tests {
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -1587,6 +1589,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Start".into(),
@@ -1642,6 +1645,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run tools".into(),
@@ -1746,6 +1750,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run dynamic tool".into(),
@@ -1805,6 +1810,7 @@ mod tests {
                 turn_id: "turn-1".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run tools".into(),
@@ -1891,6 +1897,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -1907,6 +1914,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -1975,6 +1983,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -1991,6 +2000,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2055,6 +2065,7 @@ mod tests {
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "apply patch".into(),
@@ -2118,6 +2129,7 @@ mod tests {
                 turn_id: turn_id.to_string(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "apply patch".into(),
@@ -2180,6 +2192,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -2196,6 +2209,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2237,6 +2251,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "first".into(),
@@ -2253,6 +2268,7 @@ mod tests {
                 turn_id: "turn-b".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "second".into(),
@@ -2289,6 +2305,7 @@ mod tests {
                 turn_id: "turn-compact".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
@@ -2394,6 +2411,62 @@ mod tests {
     }
 
     #[test]
+    fn turn_started_event_sets_memory_on_turn_snapshot() {
+        let memory = crate::protocol::v2::MemoryLink {
+            scope_version: Some("thread:bbbbbbbbbbbb".into()),
+            scope_kind: Some("thread".into()),
+            summary_sha256: Some("b".repeat(64)),
+            binding_key: Some(format!("thread:bbbbbbbbbbbb:{}", "b".repeat(64))),
+        };
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-start".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                memory: Some(codex_protocol::protocol::MemoryLink {
+                    scope_version: memory.scope_version.clone(),
+                    scope_kind: memory.scope_kind.clone(),
+                    summary_sha256: memory.summary_sha256.clone(),
+                    binding_key: memory.binding_key.clone(),
+                }),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-start".into(),
+                last_agent_message: None,
+                memory: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(
+            turns,
+            vec![Turn {
+                id: "turn-start".into(),
+                memory: Some(memory),
+                status: TurnStatus::Completed,
+                error: None,
+                items: vec![ThreadItem::UserMessage {
+                    id: "item-1".into(),
+                    content: vec![UserInput::Text {
+                        text: "hello".into(),
+                        text_elements: Vec::new(),
+                    }],
+                }],
+            }]
+        );
+    }
+
+    #[test]
     fn turn_complete_event_sets_memory_on_completed_turn() {
         let memory = crate::protocol::v2::MemoryLink {
             scope_version: Some("thread:aaaaaaaaaaaa".into()),
@@ -2406,6 +2479,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -2455,6 +2529,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
@@ -2504,6 +2579,7 @@ mod tests {
                 turn_id: "turn-a".into(),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                memory: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "hello".into(),
