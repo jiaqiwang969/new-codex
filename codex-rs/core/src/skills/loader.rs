@@ -841,6 +841,9 @@ mod tests {
     use codex_config::CONFIG_TOML_FILE;
     use codex_protocol::config_types::TrustLevel;
     use codex_protocol::models::FileSystemPermissions;
+    use codex_protocol::models::MacOsAutomationPermission;
+    use codex_protocol::models::MacOsPreferencesPermission;
+    use codex_protocol::models::MacOsSeatbeltProfileExtensions;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::protocol::SkillScope;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1474,6 +1477,37 @@ permissions: {}
         assert_eq!(outcome.skills[0].permissions, expected);
     }
 
+    #[test]
+    fn skill_metadata_parses_macos_permissions_yaml() {
+        let parsed = serde_yaml::from_str::<SkillMetadataFile>(
+            r#"
+permissions:
+  macos:
+    macos_preferences: "read_write"
+    macos_automation:
+      - "com.apple.Notes"
+    macos_accessibility: true
+    macos_calendar: true
+"#,
+        )
+        .expect("parse skill metadata");
+
+        assert_eq!(
+            parsed.permissions,
+            Some(PermissionProfile {
+                macos: Some(MacOsSeatbeltProfileExtensions {
+                    macos_preferences: MacOsPreferencesPermission::ReadWrite,
+                    macos_automation: MacOsAutomationPermission::BundleIds(vec![
+                        "com.apple.Notes".to_string(),
+                    ]),
+                    macos_accessibility: true,
+                    macos_calendar: true,
+                }),
+                ..Default::default()
+            })
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn loads_skill_macos_permissions_from_yaml() {
@@ -1486,11 +1520,11 @@ permissions: {}
             r#"
 permissions:
   macos:
-    preferences: "readwrite"
-    automations:
+    macos_preferences: "read_write"
+    macos_automation:
       - "com.apple.Notes"
-    accessibility: true
-    calendar: true
+    macos_accessibility: true
+    macos_calendar: true
 "#,
         );
 
@@ -1508,19 +1542,18 @@ permissions:
             .as_ref()
             .expect("permission profile");
         assert_eq!(
-            profile.macos_seatbelt_profile_extensions,
-            Some(
-                crate::seatbelt_permissions::MacOsSeatbeltProfileExtensions {
-                    macos_preferences:
-                        crate::seatbelt_permissions::MacOsPreferencesPermission::ReadWrite,
-                    macos_automation:
-                        crate::seatbelt_permissions::MacOsAutomationPermission::BundleIds(vec![
-                            "com.apple.Notes".to_string()
-                        ],),
+            outcome.skills[0].permission_profile,
+            Some(PermissionProfile {
+                macos: Some(MacOsSeatbeltProfileExtensions {
+                    macos_preferences: MacOsPreferencesPermission::ReadWrite,
+                    macos_automation: MacOsAutomationPermission::BundleIds(vec![
+                        "com.apple.Notes".to_string()
+                    ],),
                     macos_accessibility: true,
                     macos_calendar: true,
-                }
-            )
+                }),
+                ..Default::default()
+            })
         );
     }
 
@@ -1536,11 +1569,11 @@ permissions:
             r#"
 permissions:
   macos:
-    preferences: "readwrite"
-    automations:
+    macos_preferences: "read_write"
+    macos_automation:
       - "com.apple.Notes"
-    accessibility: true
-    calendar: true
+    macos_accessibility: true
+    macos_calendar: true
 "#,
         );
 
@@ -1554,17 +1587,17 @@ permissions:
         );
         assert_eq!(outcome.skills.len(), 1);
         assert_eq!(
-            outcome.skills[0].permissions,
-            Some(Permissions {
-                approval_policy: Constrained::allow_any(crate::protocol::AskForApproval::Never),
-                sandbox_policy: Constrained::allow_any(
-                    crate::protocol::SandboxPolicy::new_read_only_policy(),
-                ),
-                network: None,
-                allow_login_shell: true,
-                shell_environment_policy: ShellEnvironmentPolicy::default(),
-                windows_sandbox_mode: None,
-                macos_seatbelt_profile_extensions: None,
+            outcome.skills[0].permission_profile,
+            Some(PermissionProfile {
+                macos: Some(MacOsSeatbeltProfileExtensions {
+                    macos_preferences: MacOsPreferencesPermission::ReadWrite,
+                    macos_automation: MacOsAutomationPermission::BundleIds(vec![
+                        "com.apple.Notes".to_string()
+                    ],),
+                    macos_accessibility: true,
+                    macos_calendar: true,
+                }),
+                ..Default::default()
             })
         );
     }

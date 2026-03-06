@@ -6,6 +6,8 @@ sandbox placement and transformation of portable CommandSpec into a
 ready‑to‑spawn environment.
 */
 
+pub(crate) mod macos_permissions;
+
 use crate::exec::ExecExpiration;
 use crate::exec::ExecToolCallOutput;
 use crate::exec::SandboxType;
@@ -17,7 +19,7 @@ use crate::protocol::SandboxPolicy;
 #[cfg(target_os = "macos")]
 use crate::seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE;
 #[cfg(target_os = "macos")]
-use crate::seatbelt::create_seatbelt_command_args;
+use crate::seatbelt::create_seatbelt_command_args_with_extensions;
 #[cfg(target_os = "macos")]
 use crate::spawn::CODEX_SANDBOX_ENV_VAR;
 use crate::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
@@ -25,10 +27,12 @@ use crate::tools::sandboxing::SandboxablePreference;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::FileSystemPermissions;
+use codex_protocol::models::MacOsSeatbeltProfileExtensions;
 use codex_protocol::models::PermissionProfile;
 pub use codex_protocol::models::SandboxPermissions;
 use codex_protocol::protocol::ReadOnlyAccess;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use macos_permissions::merge_macos_seatbelt_profile_extensions;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -73,6 +77,8 @@ pub(crate) struct SandboxTransformRequest<'a> {
     // to make shared ownership explicit across runtime/sandbox plumbing.
     pub network: Option<&'a NetworkProxy>,
     pub sandbox_policy_cwd: &'a Path,
+    #[cfg(target_os = "macos")]
+    pub macos_seatbelt_profile_extensions: Option<&'a MacOsSeatbeltProfileExtensions>,
     pub codex_linux_sandbox_exe: Option<&'a PathBuf>,
     pub use_linux_sandbox_bwrap: bool,
     pub windows_sandbox_level: WindowsSandboxLevel,
@@ -95,24 +101,61 @@ pub(crate) enum SandboxTransformError {
     SeatbeltUnavailable,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EffectiveSandboxPermissions {
+    pub(crate) sandbox_policy: SandboxPolicy,
+    pub(crate) macos_seatbelt_profile_extensions: Option<MacOsSeatbeltProfileExtensions>,
+}
+
+impl EffectiveSandboxPermissions {
+    pub(crate) fn new(
+        sandbox_policy: &SandboxPolicy,
+        macos_seatbelt_profile_extensions: Option<&MacOsSeatbeltProfileExtensions>,
+        additional_permissions: Option<&PermissionProfile>,
+    ) -> Result<Self, SandboxTransformError> {
+        let Some(additional_permissions) = additional_permissions else {
+            return Ok(Self {
+                sandbox_policy: sandbox_policy.clone(),
+                macos_seatbelt_profile_extensions: macos_seatbelt_profile_extensions.cloned(),
+            });
+        };
+
+        Ok(Self {
+            sandbox_policy: sandbox_policy_with_additional_permissions(
+                sandbox_policy,
+                additional_permissions,
+            )?,
+            macos_seatbelt_profile_extensions: merge_macos_seatbelt_profile_extensions(
+                macos_seatbelt_profile_extensions,
+                additional_permissions.macos.as_ref(),
+            ),
+        })
+    }
+}
+
 pub(crate) fn normalize_additional_permissions(
     additional_permissions: PermissionProfile,
     command_cwd: &Path,
 ) -> Result<PermissionProfile, String> {
-    let Some(file_system) = additional_permissions.file_system else {
-        return Ok(PermissionProfile::default());
-    };
-    let read = file_system
-        .read
-        .map(|paths| normalize_permission_paths(paths, command_cwd, "file_system.read"))
+    let file_system = additional_permissions
+        .file_system
+        .map(|file_system| {
+            let read = file_system
+                .read
+                .map(|paths| normalize_permission_paths(paths, command_cwd, "file_system.read"))
+                .transpose()?;
+            let write = file_system
+                .write
+                .map(|paths| normalize_permission_paths(paths, command_cwd, "file_system.write"))
+                .transpose()?;
+            Ok::<FileSystemPermissions, String>(FileSystemPermissions { read, write })
+        })
         .transpose()?;
-    let write = file_system
-        .write
-        .map(|paths| normalize_permission_paths(paths, command_cwd, "file_system.write"))
-        .transpose()?;
+
     Ok(PermissionProfile {
-        file_system: Some(FileSystemPermissions { read, write }),
-        ..Default::default()
+        network: additional_permissions.network,
+        file_system,
+        macos: additional_permissions.macos,
     })
 }
 
@@ -342,18 +385,24 @@ impl SandboxManager {
             enforce_managed_network,
             network,
             sandbox_policy_cwd,
+            #[cfg(target_os = "macos")]
+            macos_seatbelt_profile_extensions,
             codex_linux_sandbox_exe,
             use_linux_sandbox_bwrap,
             windows_sandbox_level,
         } = request;
-        let effective_policy =
-            if let Some(additional_permissions) = spec.additional_permissions.take() {
-                sandbox_policy_with_additional_permissions(policy, &additional_permissions)?
-            } else {
-                policy.clone()
-            };
+        #[cfg(not(target_os = "macos"))]
+        let macos_seatbelt_profile_extensions = None;
+        let effective_permissions = EffectiveSandboxPermissions::new(
+            policy,
+            macos_seatbelt_profile_extensions,
+            spec.additional_permissions.as_ref(),
+        )?;
         let mut env = spec.env;
-        if !effective_policy.has_full_network_access() {
+        if !effective_permissions
+            .sandbox_policy
+            .has_full_network_access()
+        {
             env.insert(
                 CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR.to_string(),
                 "1".to_string(),
@@ -370,12 +419,15 @@ impl SandboxManager {
             SandboxType::MacosSeatbelt => {
                 let mut seatbelt_env = HashMap::new();
                 seatbelt_env.insert(CODEX_SANDBOX_ENV_VAR.to_string(), "seatbelt".to_string());
-                let mut args = create_seatbelt_command_args(
+                let mut args = create_seatbelt_command_args_with_extensions(
                     command.clone(),
-                    &effective_policy,
+                    &effective_permissions.sandbox_policy,
                     sandbox_policy_cwd,
                     enforce_managed_network,
                     network,
+                    effective_permissions
+                        .macos_seatbelt_profile_extensions
+                        .as_ref(),
                 );
                 let mut full_command = Vec::with_capacity(1 + args.len());
                 full_command.push(MACOS_PATH_TO_SEATBELT_EXECUTABLE.to_string());
@@ -390,7 +442,7 @@ impl SandboxManager {
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
                 let mut args = create_linux_sandbox_command_args(
                     command.clone(),
-                    &effective_policy,
+                    &effective_permissions.sandbox_policy,
                     sandbox_policy_cwd,
                     use_linux_sandbox_bwrap,
                     allow_proxy_network,
@@ -425,7 +477,7 @@ impl SandboxManager {
             sandbox,
             windows_sandbox_level,
             sandbox_permissions: spec.sandbox_permissions,
-            sandbox_policy: effective_policy,
+            sandbox_policy: effective_permissions.sandbox_policy,
             justification: spec.justification,
             arg0: arg0_override,
         })
