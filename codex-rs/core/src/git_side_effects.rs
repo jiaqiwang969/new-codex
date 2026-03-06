@@ -51,6 +51,8 @@ where
                 guard.extend(files.iter().cloned());
             }
 
+            turn.turn_metadata_state.refresh_git_enrichment_task();
+
             session
                 .send_event(
                     turn,

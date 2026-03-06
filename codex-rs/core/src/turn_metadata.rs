@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use tokio::task::JoinHandle;
@@ -124,6 +126,7 @@ pub(crate) struct TurnMetadataState {
     base_header: String,
     enriched_header: Arc<RwLock<Option<String>>>,
     enrichment_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    enrichment_generation: Arc<AtomicU64>,
 }
 
 impl TurnMetadataState {
@@ -155,6 +158,7 @@ impl TurnMetadataState {
             base_header,
             enriched_header: Arc::new(RwLock::new(None)),
             enrichment_task: Arc::new(Mutex::new(None)),
+            enrichment_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -172,6 +176,14 @@ impl TurnMetadataState {
     }
 
     pub(crate) fn spawn_git_enrichment_task(&self) {
+        self.start_git_enrichment_task(false);
+    }
+
+    pub(crate) fn refresh_git_enrichment_task(&self) {
+        self.start_git_enrichment_task(true);
+    }
+
+    fn start_git_enrichment_task(&self, force_refresh: bool) {
         if self.repo_root.is_none() {
             return;
         }
@@ -180,11 +192,19 @@ impl TurnMetadataState {
             .enrichment_task
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if task_guard.is_some() {
+        if let Some(task) = task_guard.as_ref()
+            && !task.is_finished()
+            && !force_refresh
+        {
             return;
         }
 
+        if let Some(task) = task_guard.take() {
+            task.abort();
+        }
+
         let state = self.clone();
+        let generation = state.enrichment_generation.fetch_add(1, Ordering::Relaxed) + 1;
         *task_guard = Some(tokio::spawn(async move {
             let workspace_git_metadata = state.fetch_workspace_git_metadata().await;
             let Some(repo_root) = state.repo_root.clone() else {
@@ -197,15 +217,23 @@ impl TurnMetadataState {
                 Some(repo_root),
                 Some(workspace_git_metadata),
             );
-            if enriched_metadata.workspaces.is_empty() {
-                return;
-            }
-
-            if let Some(header_value) = enriched_metadata.to_header_value() {
+            if !enriched_metadata.workspaces.is_empty()
+                && let Some(header_value) = enriched_metadata.to_header_value()
+            {
                 *state
                     .enriched_header
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(header_value);
+            }
+
+            if state.enrichment_generation.load(Ordering::Relaxed) == generation {
+                let mut task_guard = state
+                    .enrichment_task
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.enrichment_generation.load(Ordering::Relaxed) == generation {
+                    *task_guard = None;
+                }
             }
         }));
     }
@@ -242,6 +270,18 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
     use tokio::process::Command;
+    use tokio::time::Duration;
+
+    fn workspace_has_changes(header: &str) -> Option<bool> {
+        let parsed: Value = serde_json::from_str(header).ok()?;
+        parsed
+            .get("workspaces")
+            .and_then(Value::as_object)
+            .and_then(|workspaces| workspaces.values().next())
+            .and_then(Value::as_object)
+            .and_then(|workspace| workspace.get("has_changes"))
+            .and_then(Value::as_bool)
+    }
 
     #[tokio::test]
     async fn build_turn_metadata_header_includes_has_changes_for_clean_repo() {
@@ -297,6 +337,85 @@ mod tests {
             workspace.get("has_changes").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_git_enrichment_task_updates_has_changes_after_repo_mutation() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let repo_path = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo");
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git config user.name");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git config user.email");
+
+        std::fs::write(repo_path.join("README.md"), "hello").expect("write file");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git add");
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("git commit");
+
+        let state = TurnMetadataState::new(
+            "turn-a".to_string(),
+            repo_path.clone(),
+            &SandboxPolicy::new_read_only_policy(),
+            WindowsSandboxLevel::Disabled,
+            false,
+        );
+
+        state.spawn_git_enrichment_task();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(header) = state.current_header_value()
+                    && workspace_has_changes(&header) == Some(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for clean git metadata");
+
+        std::fs::write(repo_path.join("README.md"), "updated").expect("update file");
+        state.refresh_git_enrichment_task();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(header) = state.current_header_value()
+                    && workspace_has_changes(&header) == Some(true)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for dirty git metadata");
     }
 
     #[test]
