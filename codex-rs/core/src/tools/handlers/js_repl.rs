@@ -134,9 +134,18 @@ impl ToolHandler for JsReplHandler {
         let manager = turn.js_repl.manager().await?;
         let started_at = Instant::now();
         emit_js_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id).await;
-        let result = manager
-            .execute(Arc::clone(&session), Arc::clone(&turn), tracker, args)
-            .await;
+        let result = crate::git_side_effects::track_tool_side_effects(
+            turn.cwd.as_path(),
+            call_id.clone(),
+            session.as_ref(),
+            turn.as_ref(),
+            || async {
+                manager
+                    .execute(Arc::clone(&session), Arc::clone(&turn), tracker, args)
+                    .await
+            },
+        )
+        .await;
         let result = match result {
             Ok(result) => result,
             Err(err) => {

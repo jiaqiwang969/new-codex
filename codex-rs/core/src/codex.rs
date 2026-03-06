@@ -695,6 +695,7 @@ pub(crate) struct TurnContext {
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) js_repl: Arc<JsReplHandle>,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
+    pub(crate) side_effects_files: Arc<tokio::sync::Mutex<std::collections::BTreeSet<String>>>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) turn_skills: TurnSkillsContext,
 }
@@ -784,6 +785,9 @@ impl TurnContext {
             truncation_policy,
             js_repl: Arc::clone(&self.js_repl),
             dynamic_tools: self.dynamic_tools.clone(),
+            side_effects_files: Arc::new(
+                tokio::sync::Mutex::new(std::collections::BTreeSet::new()),
+            ),
             turn_metadata_state: self.turn_metadata_state.clone(),
             turn_skills: self.turn_skills.clone(),
         }
@@ -1166,6 +1170,9 @@ impl Session {
             truncation_policy: model_info.truncation_policy.into(),
             js_repl,
             dynamic_tools: session_configuration.dynamic_tools.clone(),
+            side_effects_files: Arc::new(
+                tokio::sync::Mutex::new(std::collections::BTreeSet::new()),
+            ),
             turn_metadata_state,
             turn_skills: TurnSkillsContext::new(skills_outcome),
         }
@@ -5071,6 +5078,7 @@ async fn spawn_review_thread(
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         js_repl: Arc::clone(&sess.js_repl),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
+        side_effects_files: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeSet::new())),
         truncation_policy: model_info.truncation_policy.into(),
         turn_metadata_state,
         turn_skills: TurnSkillsContext::new(parent_turn_context.turn_skills.outcome.clone()),
@@ -6530,6 +6538,7 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)
+        | EventMsg::FileSystemMutated(_)
         | EventMsg::PatchApplyBegin(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::ViewImageToolCall(_)

@@ -1107,6 +1107,8 @@ pub enum EventMsg {
 
     ExecCommandEnd(ExecCommandEndEvent),
 
+    FileSystemMutated(FileSystemMutatedEvent),
+
     /// Notification that the agent attached a local image via the view_image tool.
     ViewImageToolCall(ViewImageToolCallEvent),
 
@@ -2506,6 +2508,13 @@ pub struct BackgroundEventEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct FileSystemMutatedEvent {
+    pub call_id: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct DeprecationNoticeEvent {
     /// Concise summary of what is deprecated.
     pub summary: String,
@@ -3639,6 +3648,24 @@ mod tests {
             }
         });
         assert_eq!(expected, serde_json::to_value(&event)?);
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_file_system_mutated_event() -> Result<()> {
+        let event = EventMsg::FileSystemMutated(FileSystemMutatedEvent {
+            call_id: "call-1".to_string(),
+            files: vec!["src/main.rs".to_string(), "README.md".to_string()],
+        });
+
+        assert_eq!(
+            serde_json::to_value(event)?,
+            json!({
+                "type": "file_system_mutated",
+                "call_id": "call-1",
+                "files": ["src/main.rs", "README.md"],
+            })
+        );
         Ok(())
     }
 

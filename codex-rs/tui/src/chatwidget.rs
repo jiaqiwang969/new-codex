@@ -3881,7 +3881,7 @@ impl ChatWidget {
                     return;
                 }
                 if let Some(mask) = collaboration_modes::plan_mask(self.models_manager.as_ref()) {
-                    self.set_collaboration_mask(mask);
+                    self.set_collaboration_mask_and_notify_app(mask);
                 } else {
                     self.add_info_message("Plan mode unavailable right now.".to_string(), None);
                 }
@@ -4776,6 +4776,7 @@ impl ChatWidget {
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),
             EventMsg::PatchApplyEnd(ev) => self.on_patch_apply_end(ev),
             EventMsg::ExecCommandEnd(ev) => self.on_exec_command_end(ev),
+            EventMsg::FileSystemMutated(_) => {}
             EventMsg::ViewImageToolCall(ev) => self.on_view_image_tool_call(ev),
             EventMsg::ImageGenerationBegin(ev) => self.on_image_generation_begin(ev),
             EventMsg::ImageGenerationEnd(ev) => self.on_image_generation_end(ev),
@@ -7406,11 +7407,24 @@ impl ChatWidget {
     }
 
     fn initial_collaboration_mask(
-        _config: &Config,
+        config: &Config,
         models_manager: &ModelsManager,
         model_override: Option<&str>,
     ) -> Option<CollaborationModeMask> {
-        let mut mask = collaboration_modes::default_mask(models_manager)?;
+        let stored_mode = config
+            .config_layer_stack
+            .effective_config()
+            .get("tui")
+            .and_then(toml::Value::as_table)
+            .and_then(|tui| tui.get("experimental_mode"))
+            .and_then(toml::Value::as_str)
+            .and_then(|mode| {
+                serde_json::from_value::<ModeKind>(serde_json::Value::String(mode.to_string())).ok()
+            })
+            .filter(|mode| mode.is_tui_visible());
+        let mut mask = stored_mode
+            .and_then(|mode| collaboration_modes::mask_for_kind(models_manager, mode))
+            .or_else(|| collaboration_modes::default_mask(models_manager))?;
         if let Some(model_override) = model_override {
             mask.model = Some(model_override.to_string());
         }
@@ -7513,8 +7527,17 @@ impl ChatWidget {
             self.models_manager.as_ref(),
             self.active_collaboration_mask.as_ref(),
         ) {
-            self.set_collaboration_mask(next_mask);
+            self.set_collaboration_mask_and_notify_app(next_mask);
         }
+    }
+
+    fn set_collaboration_mask_and_notify_app(&mut self, mask: CollaborationModeMask) {
+        if !self.collaboration_modes_enabled() {
+            return;
+        }
+        self.set_collaboration_mask(mask.clone());
+        self.app_event_tx
+            .send(AppEvent::UpdateCollaborationMode(mask));
     }
 
     /// Update the active collaboration mask.
@@ -7968,7 +7991,7 @@ impl ChatWidget {
             );
             return;
         }
-        self.set_collaboration_mask(collaboration_mode);
+        self.set_collaboration_mask_and_notify_app(collaboration_mode);
         let should_queue = self.is_plan_streaming_in_tui();
         let user_message = UserMessage {
             text,

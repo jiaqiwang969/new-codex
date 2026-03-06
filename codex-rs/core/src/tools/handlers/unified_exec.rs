@@ -219,27 +219,36 @@ impl ToolHandler for UnifiedExecHandler {
                     return Ok(output);
                 }
 
-                manager
-                    .exec_command(
-                        ExecCommandRequest {
-                            command,
-                            process_id,
-                            yield_time_ms,
-                            max_output_tokens,
-                            workdir,
-                            network: context.turn.network.clone(),
-                            tty,
-                            sandbox_permissions,
-                            additional_permissions: normalized_additional_permissions,
-                            justification,
-                            prefix_rule,
-                        },
-                        &context,
-                    )
-                    .await
-                    .map_err(|err| {
-                        FunctionCallError::RespondToModel(format!("exec_command failed: {err:?}"))
-                    })?
+                crate::git_side_effects::track_tool_side_effects(
+                    &cwd,
+                    context.call_id.clone(),
+                    context.session.as_ref(),
+                    context.turn.as_ref(),
+                    || async {
+                        manager
+                            .exec_command(
+                                ExecCommandRequest {
+                                    command,
+                                    process_id,
+                                    yield_time_ms,
+                                    max_output_tokens,
+                                    workdir,
+                                    network: context.turn.network.clone(),
+                                    tty,
+                                    sandbox_permissions,
+                                    additional_permissions: normalized_additional_permissions,
+                                    justification,
+                                    prefix_rule,
+                                },
+                                &context,
+                            )
+                            .await
+                    },
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("exec_command failed: {err:?}"))
+                })?
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;

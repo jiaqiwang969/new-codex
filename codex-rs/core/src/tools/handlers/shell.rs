@@ -422,16 +422,25 @@ impl ShellHandler {
             call_id: call_id.clone(),
             tool_name,
         };
-        let out = orchestrator
-            .run(
-                &mut runtime,
-                &req,
-                &tool_ctx,
-                &turn,
-                turn.approval_policy.value(),
-            )
-            .await
-            .map(|result| result.output);
+        let out = crate::git_side_effects::track_tool_side_effects(
+            exec_params.cwd.as_path(),
+            call_id.clone(),
+            session.as_ref(),
+            turn.as_ref(),
+            || async {
+                orchestrator
+                    .run(
+                        &mut runtime,
+                        &req,
+                        &tool_ctx,
+                        &turn,
+                        turn.approval_policy.value(),
+                    )
+                    .await
+                    .map(|result| result.output)
+            },
+        )
+        .await;
         let event_ctx = ToolEventCtx::new(session.as_ref(), turn.as_ref(), &call_id, None);
         let content = emitter.finish(event_ctx, out).await?;
         Ok(ToolOutput::Function {

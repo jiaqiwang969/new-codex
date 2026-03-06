@@ -5182,9 +5182,12 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
     );
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    let selected_mask = match rx.try_recv() {
-        Ok(AppEvent::UpdateCollaborationMode(mask)) => mask,
-        other => panic!("expected UpdateCollaborationMode event, got {other:?}"),
+    let selected_mask = loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(_)) => continue,
+            Ok(AppEvent::UpdateCollaborationMode(mask)) => break mask,
+            other => panic!("expected UpdateCollaborationMode event, got {other:?}"),
+        }
     };
     chat.set_collaboration_mask(selected_mask);
 
@@ -5233,12 +5236,14 @@ async fn plan_slash_command_switches_to_plan_mode() {
 
     chat.dispatch_command(SlashCommand::Plan);
 
-    while let Ok(event) = rx.try_recv() {
-        assert!(
-            matches!(event, AppEvent::InsertHistoryCell(_)),
-            "plan should not emit a non-history app event: {event:?}"
-        );
-    }
+    let selected_mask = loop {
+        match rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(_)) => continue,
+            Ok(AppEvent::UpdateCollaborationMode(mask)) => break mask,
+            other => panic!("expected UpdateCollaborationMode event, got {other:?}"),
+        }
+    };
+    assert_eq!(selected_mask.mode, Some(ModeKind::Plan));
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert_eq!(chat.current_collaboration_mode(), &initial);
 }
@@ -5334,7 +5339,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
 }
 
 #[tokio::test]
-async fn experimental_mode_plan_is_ignored_on_startup() {
+async fn experimental_mode_plan_is_restored_on_startup() {
     let codex_home = tempdir().expect("tempdir");
     let cfg = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
@@ -5379,7 +5384,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
     };
 
     let chat = ChatWidget::new(init, thread_manager);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert_eq!(chat.current_model(), resolved_model);
 }
 

@@ -42,6 +42,7 @@ pub mod features;
 mod file_watcher;
 mod flags;
 pub mod git_info;
+pub mod git_side_effects;
 pub mod instructions;
 pub mod landlock;
 pub mod mcp;

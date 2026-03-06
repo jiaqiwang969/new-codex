@@ -60,6 +60,7 @@ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_otel::OtelManager;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -2286,7 +2287,9 @@ impl App {
                 self.refresh_status_line();
             }
             AppEvent::UpdateCollaborationMode(mask) => {
+                let mode_kind = mask.mode;
                 self.chat_widget.set_collaboration_mask(mask);
+                self.persist_collaboration_mode_selection(mode_kind).await;
                 self.refresh_status_line();
             }
             AppEvent::UpdatePersonality(personality) => {
@@ -3472,6 +3475,52 @@ impl App {
     fn on_update_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);
         self.chat_widget.set_personality(personality);
+    }
+
+    async fn persist_collaboration_mode_selection(&mut self, mode_kind: Option<ModeKind>) {
+        let profile = self.active_profile.as_deref();
+        let mode_kind = mode_kind.filter(|mode| mode.is_tui_visible());
+        let mode_value = match mode_kind {
+            Some(ModeKind::Plan) => Some("plan"),
+            Some(ModeKind::Default) => Some("default"),
+            Some(ModeKind::PairProgramming) | Some(ModeKind::Execute) | None => None,
+        };
+
+        let segments = if let Some(profile) = profile {
+            vec![
+                "profiles".to_string(),
+                profile.to_string(),
+                "tui".to_string(),
+                "experimental_mode".to_string(),
+            ]
+        } else {
+            vec!["tui".to_string(), "experimental_mode".to_string()]
+        };
+
+        let edit = if let Some(mode) = mode_value {
+            ConfigEdit::SetPath {
+                segments,
+                value: mode.into(),
+            }
+        } else {
+            ConfigEdit::ClearPath { segments }
+        };
+
+        if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
+            .with_edits([edit])
+            .apply()
+            .await
+        {
+            tracing::error!(error = %err, "failed to persist collaboration mode selection");
+            if let Some(profile) = profile {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to save collaboration mode for profile `{profile}`: {err}"
+                ));
+            } else {
+                self.chat_widget
+                    .add_error_message(format!("Failed to save collaboration mode: {err}"));
+            }
+        }
     }
 
     fn sync_tui_theme_selection(&mut self, name: String) {
@@ -5752,6 +5801,31 @@ mod tests {
             app.config.model_reasoning_effort,
             Some(ReasoningEffortConfig::High)
         );
+    }
+
+    #[tokio::test]
+    async fn persist_collaboration_mode_selection_writes_config_for_next_startup() -> Result<()> {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf();
+
+        app.persist_collaboration_mode_selection(Some(ModeKind::Plan))
+            .await;
+
+        let refreshed = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+
+        let effective = refreshed.config_layer_stack.effective_config();
+        let stored_mode = effective
+            .get("tui")
+            .and_then(toml::Value::as_table)
+            .and_then(|tui| tui.get("experimental_mode"))
+            .and_then(toml::Value::as_str);
+
+        assert_eq!(stored_mode, Some("plan"));
+        Ok(())
     }
 
     #[tokio::test]
