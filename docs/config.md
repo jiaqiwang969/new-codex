@@ -28,7 +28,13 @@ When Codex knows which client started the turn, the legacy notify JSON payload a
 
 ## Provider account pools
 
-Custom model providers may define `account_pool` entries to list multiple `(base_url, env_key)` pairs for the same provider. When present, Codex currently selects the first valid pool entry as the active account during config load and preserves the pool for later routing/failover layers.
+Custom model providers may define `account_pool` entries to list multiple `(base_url, env_key)` pairs for the same provider. When present, Codex selects the first valid pool entry as the active account during config load and preserves the pool for later routing and multi-round failover.
+
+Codex also supports an isolated pool overlay in `~/.codex/config-pool.toml` plus optional pool-only keys in `~/.codex/auth-pool.json`:
+
+- `config-pool.toml` can override `model_providers.<id>.base_url`, `env_key`, and `account_pool` without touching your main `config.toml`.
+- `auth-pool.json` is a flat JSON object mapping pool `env_key` names to API keys.
+- When Codex rotates to another pool account at runtime, it persists the selected `base_url` and `env_key` into `config-pool.toml` so the next session starts on the last healthy account.
 
 Example:
 

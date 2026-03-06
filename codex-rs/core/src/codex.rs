@@ -152,6 +152,8 @@ use crate::config::Constrained;
 use crate::config::ConstraintResult;
 use crate::config::GhostSnapshotConfig;
 use crate::config::StartedNetworkProxy;
+use crate::config::edit::ConfigEdit;
+use crate::config::edit::ConfigEditsBuilder;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::config::types::McpServerConfig;
 use crate::config::types::ShellEnvironmentPolicy;
@@ -6138,6 +6140,45 @@ fn account_index_label(provider: &ModelProviderInfo) -> String {
     }
 }
 
+async fn persist_provider_account_selection(
+    config: &Config,
+    provider_id: &str,
+    account: &ModelProviderAccount,
+) {
+    let mut edits = Vec::new();
+    for (field, value) in [
+        ("base_url", account.base_url.as_deref()),
+        ("env_key", account.env_key.as_deref()),
+    ] {
+        let segments = vec![
+            "model_providers".to_string(),
+            provider_id.to_string(),
+            field.to_string(),
+        ];
+        if let Some(value) = value {
+            edits.push(ConfigEdit::SetPath {
+                segments,
+                value: value.into(),
+            });
+        } else {
+            edits.push(ConfigEdit::ClearPath { segments });
+        }
+    }
+
+    if let Err(err) = ConfigEditsBuilder::new(&config.codex_home)
+        .with_target_file(crate::config::CONFIG_POOL_TOML_FILE)
+        .with_edits(edits)
+        .apply()
+        .await
+    {
+        warn!(
+            error = %err,
+            provider_id,
+            "failed to persist provider account selection"
+        );
+    }
+}
+
 struct PoolSwitchState {
     switch_count: usize,
     pool_size: usize,
@@ -6232,6 +6273,12 @@ async fn maybe_switch_provider_account(
             false,
         )
         .await;
+    persist_provider_account_selection(
+        updated_context.config.as_ref(),
+        provider_id.as_str(),
+        &next_account,
+    )
+    .await;
     let key_label = account_index_label(&next_provider);
     sess.notify_background_event(
         updated_context.as_ref(),

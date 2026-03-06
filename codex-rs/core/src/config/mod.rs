@@ -125,6 +125,36 @@ pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
 pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
+pub const CONFIG_POOL_TOML_FILE: &str = "config-pool.toml";
+pub const AUTH_POOL_JSON_FILE: &str = "auth-pool.json";
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct PoolProviderEntry {
+    #[serde(default)]
+    pub name: String,
+    pub base_url: Option<String>,
+    pub env_key: Option<String>,
+    #[serde(default)]
+    pub account_pool: Vec<ModelProviderAccount>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct ConfigPoolToml {
+    #[serde(default)]
+    pub model_providers: HashMap<String, PoolProviderEntry>,
+}
+
+pub fn load_pool_config(codex_home: &Path) -> Option<ConfigPoolToml> {
+    let pool_path = codex_home.join(CONFIG_POOL_TOML_FILE);
+    let contents = std::fs::read_to_string(&pool_path).ok()?;
+    match toml::from_str(&contents) {
+        Ok(config) => Some(config),
+        Err(err) => {
+            tracing::warn!("failed to parse {CONFIG_POOL_TOML_FILE}: {err}");
+            None
+        }
+    }
+}
 
 fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
     let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
@@ -1877,6 +1907,26 @@ impl Config {
         // Merge user-defined providers into the built-in list.
         for (key, provider) in cfg.model_providers.into_iter() {
             model_providers.entry(key).or_insert(provider);
+        }
+
+        if let Some(pool_config) = load_pool_config(&codex_home) {
+            for (key, pool_entry) in pool_config.model_providers {
+                if let Some(existing) = model_providers.get_mut(&key) {
+                    if !pool_entry.account_pool.is_empty() {
+                        existing.account_pool = pool_entry.account_pool;
+                    }
+                    if pool_entry.base_url.is_some() {
+                        existing.base_url = pool_entry.base_url;
+                    }
+                    if pool_entry.env_key.is_some() {
+                        existing.env_key = pool_entry.env_key;
+                    }
+                } else {
+                    tracing::warn!(
+                        "config-pool.toml references unknown provider '{key}'; define it in config.toml first"
+                    );
+                }
+            }
         }
 
         let model_provider_id = model_provider
@@ -6715,6 +6765,32 @@ speaker = "Desk Speakers"
         );
         assert_eq!(config.model_provider.account_pool.len(), 3);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_config_overlays_pool_file_for_built_in_provider() -> std::io::Result<()> {
+        let codex_home = tempdir()?;
+        std::fs::write(
+            codex_home.path().join(CONFIG_POOL_TOML_FILE),
+            r#"
+[model_providers.openai]
+base_url = "https://pool.example/v1"
+env_key = "POOL_KEY"
+"#,
+        )?;
+
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+
+        assert_eq!(config.model_provider_id, "openai");
+        assert_eq!(
+            config.model_provider.base_url.as_deref(),
+            Some("https://pool.example/v1")
+        );
+        assert_eq!(config.model_provider.env_key.as_deref(), Some("POOL_KEY"));
         Ok(())
     }
 

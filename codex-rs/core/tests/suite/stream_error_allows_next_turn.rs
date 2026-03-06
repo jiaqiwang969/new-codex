@@ -1,6 +1,7 @@
 use codex_core::ModelProviderAccount;
 use codex_core::ModelProviderInfo;
 use codex_core::WireApi;
+use codex_core::config::CONFIG_POOL_TOML_FILE;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
@@ -87,7 +88,7 @@ async fn rotates_to_next_pool_account_after_429() {
         ],
     };
 
-    let TestCodex { codex, .. } = test_codex()
+    let test = test_codex()
         .with_config(move |config| {
             config.base_instructions = Some("You are a helpful assistant".to_string());
             config.model_provider = provider;
@@ -95,6 +96,7 @@ async fn rotates_to_next_pool_account_after_429() {
         .build(&primary)
         .await
         .unwrap();
+    let codex = test.codex.clone();
 
     codex
         .submit(Op::UserInput {
@@ -119,6 +121,24 @@ async fn rotates_to_next_pool_account_after_429() {
     );
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let persisted = std::fs::read_to_string(test.codex_home_path().join(CONFIG_POOL_TOML_FILE))
+        .expect("read config-pool.toml");
+    let persisted: toml::Value = toml::from_str(&persisted).expect("parse config-pool.toml");
+    let provider = persisted
+        .get("model_providers")
+        .and_then(toml::Value::as_table)
+        .and_then(|providers| providers.get("openai"))
+        .and_then(toml::Value::as_table)
+        .expect("persisted provider entry");
+    assert_eq!(
+        provider.get("base_url").and_then(toml::Value::as_str),
+        Some(format!("{}/v1", secondary.uri()).as_str())
+    );
+    assert_eq!(
+        provider.get("env_key").and_then(toml::Value::as_str),
+        Some("PATH")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

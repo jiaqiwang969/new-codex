@@ -171,6 +171,7 @@ impl CodexAuth {
                 return Err(std::io::Error::other("API key auth is missing a key."));
             };
             let mut provider_api_keys = auth_dot_json.provider_api_keys;
+            provider_api_keys.extend(load_pool_api_keys(codex_home));
             provider_api_keys.insert(OPENAI_API_KEY_ENV_VAR.to_string(), api_key.to_string());
             return Ok(Self::ApiKey(ApiKeyAuth {
                 api_key: api_key.to_string(),
@@ -401,6 +402,33 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn load_pool_api_keys(codex_home: &Path) -> HashMap<String, String> {
+    let pool_path = codex_home.join(crate::config::AUTH_POOL_JSON_FILE);
+    let contents = match std::fs::read_to_string(&pool_path) {
+        Ok(contents) => contents,
+        Err(_) => return HashMap::new(),
+    };
+    let raw: HashMap<String, serde_json::Value> = match serde_json::from_str(&contents) {
+        Ok(raw) => raw,
+        Err(err) => {
+            tracing::warn!(
+                "failed to parse {}: {err}",
+                crate::config::AUTH_POOL_JSON_FILE
+            );
+            return HashMap::new();
+        }
+    };
+    raw.into_iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| (key, value.to_string()))
+        })
+        .collect()
 }
 
 /// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
@@ -1557,6 +1585,30 @@ mod tests {
         assert_eq!(auth.api_key(), Some("sk-test-key"));
 
         assert!(auth.get_token_data().is_err());
+    }
+
+    #[tokio::test]
+    #[serial(codex_api_key)]
+    async fn loads_provider_specific_api_keys_from_auth_pool_json() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("auth.json"),
+            r#"{"OPENAI_API_KEY":"sk-test-key","tokens":null,"last_refresh":null}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(crate::config::AUTH_POOL_JSON_FILE),
+            r#"{"POOL_KEY":"sk-pool-key"}"#,
+        )
+        .unwrap();
+
+        let auth = super::load_auth(dir.path(), false, AuthCredentialsStoreMode::File)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            auth.provider_api_key_for_env_key("POOL_KEY").as_deref(),
+            Some("sk-pool-key")
+        );
     }
 
     #[tokio::test]
