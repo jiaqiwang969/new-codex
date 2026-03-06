@@ -31,6 +31,16 @@ const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer su
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
+/// Serializable representation of an account entry within a provider.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ModelProviderAccount {
+    /// Base URL for this account's OpenAI-compatible API endpoint.
+    pub base_url: Option<String>,
+    /// Environment variable that stores the API key for this account.
+    pub env_key: Option<String>,
+}
+
 /// Wire protocol that the provider speaks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -111,6 +121,10 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the Responses API WebSocket transport.
     #[serde(default)]
     pub supports_websockets: bool,
+
+    /// Optional account pool for provider-local account selection.
+    #[serde(default)]
+    pub account_pool: Vec<ModelProviderAccount>,
 }
 
 impl ModelProviderInfo {
@@ -195,6 +209,34 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn current_account(&self) -> Option<ModelProviderAccount> {
+        let base_url = self
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let env_key = self
+            .env_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        match (base_url, env_key) {
+            (Some(base_url), Some(env_key)) => Some(ModelProviderAccount {
+                base_url: Some(base_url.to_string()),
+                env_key: Some(env_key.to_string()),
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn with_account(&self, account: &ModelProviderAccount) -> Self {
+        let mut provider = self.clone();
+        provider.base_url = account.base_url.clone();
+        provider.env_key = account.env_key.clone();
+        provider
+    }
+
     /// Effective maximum number of request retries for this provider.
     pub fn request_max_retries(&self) -> u64 {
         self.request_max_retries
@@ -253,6 +295,7 @@ impl ModelProviderInfo {
             stream_idle_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
+            account_pool: Vec::new(),
         }
     }
 
@@ -326,6 +369,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        account_pool: Vec::new(),
     }
 }
 
@@ -355,6 +399,7 @@ base_url = "http://localhost:11434/v1"
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -386,6 +431,7 @@ query_params = { api-version = "2025-04-01-preview" }
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -420,6 +466,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -437,5 +484,67 @@ wire_api = "chat"
 
         let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
         assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+    }
+
+    #[test]
+    fn current_account_trims_and_requires_both_values() {
+        let provider = ModelProviderInfo {
+            name: "Example".into(),
+            base_url: Some("  https://example.com/v1  ".into()),
+            env_key: Some("  EXAMPLE_KEY  ".into()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        };
+
+        assert_eq!(
+            provider.current_account(),
+            Some(ModelProviderAccount {
+                base_url: Some("https://example.com/v1".into()),
+                env_key: Some("EXAMPLE_KEY".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn with_account_replaces_active_account_fields() {
+        let provider = ModelProviderInfo {
+            name: "Example".into(),
+            base_url: Some("https://primary.example/v1".into()),
+            env_key: Some("PRIMARY_KEY".into()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![ModelProviderAccount {
+                base_url: Some("https://fallback.example/v1".into()),
+                env_key: Some("FALLBACK_KEY".into()),
+            }],
+        };
+        let account = ModelProviderAccount {
+            base_url: Some("https://secondary.example/v1".into()),
+            env_key: Some("SECONDARY_KEY".into()),
+        };
+
+        let updated = provider.with_account(&account);
+
+        assert_eq!(updated.current_account(), Some(account));
+        assert_eq!(updated.account_pool, provider.account_pool);
     }
 }

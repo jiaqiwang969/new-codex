@@ -43,6 +43,7 @@ use crate::git_info::resolve_root_git_project_for_trust;
 use crate::memories::memory_root;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use crate::model_provider_info::ModelProviderAccount;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
@@ -1672,6 +1673,42 @@ pub(crate) fn resolve_web_search_mode_for_turn(
     WebSearchMode::Disabled
 }
 
+fn normalize_provider_account(account: &ModelProviderAccount) -> Option<ModelProviderAccount> {
+    let base_url = account
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let env_key = account
+        .env_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if base_url.is_none() || env_key.is_none() {
+        return None;
+    }
+
+    Some(ModelProviderAccount { base_url, env_key })
+}
+
+pub(crate) fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
+    if provider.current_account().is_some() && provider.account_pool.is_empty() {
+        return;
+    }
+
+    if let Some(primary_account) = provider
+        .account_pool
+        .iter()
+        .find_map(normalize_provider_account)
+    {
+        provider.base_url = primary_account.base_url;
+        provider.env_key = primary_account.env_key;
+    }
+}
+
 impl Config {
     #[cfg(test)]
     fn load_from_base_config_with_overrides(
@@ -1846,7 +1883,7 @@ impl Config {
             .or(config_profile.model_provider)
             .or(cfg.model_provider)
             .unwrap_or_else(|| "openai".to_string());
-        let model_provider = model_providers
+        let mut model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
                 let message = if model_provider_id == LEGACY_OLLAMA_CHAT_PROVIDER_ID {
@@ -1857,6 +1894,7 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+        apply_primary_account_pool_selection(&mut model_provider);
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -5108,6 +5146,7 @@ model_verbosity = "high"
             stream_idle_timeout_ms: Some(300_000),
             requires_openai_auth: false,
             supports_websockets: false,
+            account_pool: Vec::new(),
         };
         let model_provider_map = {
             let mut model_provider_map = built_in_model_providers();
@@ -6615,6 +6654,146 @@ speaker = "Desk Speakers"
             Some("Desk Speakers")
         );
         Ok(())
+    }
+
+    #[test]
+    fn load_config_selects_first_valid_account_pool_entry() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let provider_id = "openai-main".to_string();
+        let provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: None,
+            env_key: None,
+            wire_api: crate::WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("   ".to_string()),
+                    env_key: Some("KEY_SKIP".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some(" https://preferred.example/v1 ".to_string()),
+                    env_key: Some(" KEY_PREFERRED ".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("KEY_FALLBACK".to_string()),
+                },
+            ],
+        };
+        let mut model_providers = HashMap::new();
+        model_providers.insert(provider_id.clone(), provider);
+
+        let cfg = ConfigToml {
+            model_provider: Some(provider_id),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.model_provider.current_account(),
+            Some(ModelProviderAccount {
+                base_url: Some("https://preferred.example/v1".to_string()),
+                env_key: Some("KEY_PREFERRED".to_string()),
+            })
+        );
+        assert_eq!(config.model_provider.account_pool.len(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn apply_primary_account_pool_selection_prefers_first_valid_pool_entry() {
+        let mut provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: Some("https://explicit.example/v1".to_string()),
+            env_key: Some("EXPLICIT_KEY".to_string()),
+            wire_api: crate::WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("   ".to_string()),
+                    env_key: Some("KEY_SKIP".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some(" https://preferred.example/v1 ".to_string()),
+                    env_key: Some(" KEY_PREFERRED ".to_string()),
+                },
+            ],
+        };
+
+        apply_primary_account_pool_selection(&mut provider);
+
+        assert_eq!(
+            provider.current_account(),
+            Some(ModelProviderAccount {
+                base_url: Some("https://preferred.example/v1".to_string()),
+                env_key: Some("KEY_PREFERRED".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn apply_primary_account_pool_selection_keeps_current_account_when_pool_is_invalid() {
+        let expected = ModelProviderAccount {
+            base_url: Some("https://explicit.example/v1".to_string()),
+            env_key: Some("EXPLICIT_KEY".to_string()),
+        };
+        let mut provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: expected.base_url.clone(),
+            env_key: expected.env_key.clone(),
+            wire_api: crate::WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some(" ".to_string()),
+                    env_key: Some("KEY_SKIP".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://missing-key.example/v1".to_string()),
+                    env_key: None,
+                },
+            ],
+        };
+
+        apply_primary_account_pool_selection(&mut provider);
+
+        assert_eq!(provider.current_account(), Some(expected));
     }
 }
 

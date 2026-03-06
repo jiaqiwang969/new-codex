@@ -26,6 +26,29 @@ Codex can run a notification hook when the agent finishes a turn. See the config
 
 When Codex knows which client started the turn, the legacy notify JSON payload also includes a top-level `client` field. The TUI reports `codex-tui`, and the app server reports the `clientInfo.name` value from `initialize`.
 
+## Provider account pools
+
+Custom model providers may define `account_pool` entries to list multiple `(base_url, env_key)` pairs for the same provider. When present, Codex currently selects the first valid pool entry as the active account during config load and preserves the pool for later routing/failover layers.
+
+Example:
+
+```toml
+[model_providers.my_proxy]
+name = "My Proxy"
+base_url = "https://proxy.example/v1"
+env_key = "PRIMARY_KEY"
+
+[[model_providers.my_proxy.account_pool]]
+base_url = "https://proxy-a.example/v1"
+env_key = "POOL_KEY_A"
+
+[[model_providers.my_proxy.account_pool]]
+base_url = "https://proxy-b.example/v1"
+env_key = "POOL_KEY_B"
+```
+
+Each pool entry must provide both `base_url` and `env_key` to be considered valid.
+
 ## JSON Schema
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
