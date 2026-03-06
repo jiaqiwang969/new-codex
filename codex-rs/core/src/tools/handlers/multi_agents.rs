@@ -120,6 +120,14 @@ mod spawn {
     struct SpawnAgentResult {
         agent_id: String,
         nickname: Option<String>,
+        agent_type: String,
+        model: String,
+        model_provider_id: String,
+        model_source: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_source_detail: Option<String>,
+        parent_thread_id: String,
+        spawn_depth: i32,
         #[serde(skip_serializing_if = "Option::is_none")]
         memory_scope_version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,6 +174,18 @@ mod spawn {
             .map_err(FunctionCallError::RespondToModel)?;
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
+
+        let agent_type = role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string();
+        let model = config
+            .model
+            .clone()
+            .unwrap_or_else(|| turn.model_info.slug.clone());
+        let model_provider_id = config.model_provider_id.clone();
+        let uses_role_config =
+            role_name.is_some_and(|role| !role.eq_ignore_ascii_case(DEFAULT_ROLE_NAME));
+        let model_source = if uses_role_config { "role" } else { "parent" }.to_string();
+        let model_source_detail = uses_role_config.then(|| "role_config".to_string());
+        let parent_thread_id = session.conversation_id.to_string();
 
         let result = session
             .services
@@ -217,15 +237,24 @@ mod spawn {
             )
             .await;
         let new_thread_id = result?;
-        let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-        turn.otel_manager
-            .counter("codex.multi_agent.spawn", 1, &[("role", role_tag)]);
+        turn.otel_manager.counter(
+            "codex.multi_agent.spawn",
+            1,
+            &[("role", agent_type.as_str())],
+        );
 
         let (memory_scope_version, memory_binding_key) =
             super::active_memory_binding_fields(session.as_ref()).await;
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
+            agent_type,
+            model,
+            model_provider_id,
+            model_source,
+            model_source_detail,
+            parent_thread_id,
+            spawn_depth: child_depth,
             memory_scope_version,
             memory_binding_key,
         })
@@ -1236,11 +1265,19 @@ mod tests {
         struct SpawnAgentResult {
             agent_id: String,
             nickname: Option<String>,
+            agent_type: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+            model_source_detail: Option<String>,
+            parent_thread_id: String,
+            spawn_depth: i32,
             memory_scope_version: String,
             memory_binding_key: String,
         }
 
         let (mut session, mut turn) = make_session_and_context().await;
+        let parent_thread_id = session.conversation_id.to_string();
         let expected_memory = seed_parent_thread_memory(&mut session, &turn).await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
@@ -1302,6 +1339,13 @@ mod tests {
             .expect("spawned agent thread should exist")
             .config_snapshot()
             .await;
+        assert_eq!(result.agent_type, "explorer");
+        assert!(!result.model.is_empty());
+        assert_eq!(result.model_provider_id, "ollama");
+        assert_eq!(result.model_source, "role");
+        assert_eq!(result.model_source_detail, Some("role_config".to_string()));
+        assert_eq!(result.parent_thread_id, parent_thread_id);
+        assert_eq!(result.spawn_depth, 1);
         assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
         assert_eq!(snapshot.model_provider_id, "ollama");
     }
@@ -1345,9 +1389,17 @@ mod tests {
         struct SpawnAgentResult {
             agent_id: String,
             nickname: Option<String>,
+            agent_type: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+            model_source_detail: Option<String>,
+            parent_thread_id: String,
+            spawn_depth: i32,
         }
 
         let (mut session, mut turn) = make_session_and_context().await;
+        let parent_thread_id = session.conversation_id.to_string();
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
         let expected_sandbox = pick_allowed_sandbox_policy(
@@ -1395,6 +1447,13 @@ mod tests {
                 .as_deref()
                 .is_some_and(|nickname| !nickname.is_empty())
         );
+        assert_eq!(result.agent_type, "explorer");
+        assert!(!result.model.is_empty());
+        assert!(!result.model_provider_id.is_empty());
+        assert_eq!(result.model_source, "role");
+        assert_eq!(result.model_source_detail, Some("role_config".to_string()));
+        assert_eq!(result.parent_thread_id, parent_thread_id);
+        assert_eq!(result.spawn_depth, 1);
 
         let snapshot = manager
             .get_thread(agent_id)
@@ -1443,9 +1502,17 @@ mod tests {
         struct SpawnAgentResult {
             agent_id: String,
             nickname: Option<String>,
+            agent_type: String,
+            model: String,
+            model_provider_id: String,
+            model_source: String,
+            model_source_detail: Option<String>,
+            parent_thread_id: String,
+            spawn_depth: i32,
         }
 
         let (mut session, mut turn) = make_session_and_context().await;
+        let parent_thread_id = session.conversation_id.to_string();
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
 
@@ -1486,6 +1553,13 @@ mod tests {
                 .as_deref()
                 .is_some_and(|nickname| !nickname.is_empty())
         );
+        assert_eq!(result.agent_type, "default");
+        assert!(!result.model.is_empty());
+        assert!(!result.model_provider_id.is_empty());
+        assert_eq!(result.model_source, "parent");
+        assert_eq!(result.model_source_detail, None);
+        assert_eq!(result.parent_thread_id, parent_thread_id);
+        assert_eq!(result.spawn_depth, DEFAULT_AGENT_MAX_DEPTH + 1);
         assert_eq!(success, Some(true));
     }
 
