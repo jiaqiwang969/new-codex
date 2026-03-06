@@ -5486,6 +5486,78 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
+                    let mut hook_input_messages = sampling_request_input_messages;
+                    if turn_context.config.notify.is_some()
+                        && !matches!(turn_context.session_source, SessionSource::SubAgent(_))
+                    {
+                        let files_changed = turn_context
+                            .side_effects_files
+                            .lock()
+                            .await
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let user_prompt = input
+                            .iter()
+                            .filter_map(|item| match item {
+                                UserInput::Text { text, .. } => Some(text.trim()),
+                                _ => None,
+                            })
+                            .filter(|text| !text.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(
+                                "
+",
+                            );
+
+                        if !files_changed.is_empty() && !user_prompt.is_empty() {
+                            let summary_input = codex_hooks::EntireSummaryInput {
+                                thread_id: sess.conversation_id.to_string(),
+                                turn_id: turn_context.sub_id.clone(),
+                                user_prompt,
+                                ai_response: last_agent_message.clone().unwrap_or_default(),
+                                files_changed,
+                            };
+
+                            match crate::entire_summary_generator::generate_entire_summary(
+                                &sess,
+                                &turn_context,
+                                &summary_input,
+                            )
+                            .await
+                            {
+                                Ok(summary) => {
+                                    if let Err(err) = codex_hooks::save_summary(
+                                        &turn_context.cwd,
+                                        &turn_context.sub_id,
+                                        &summary,
+                                    )
+                                    .await
+                                    {
+                                        warn!(
+                                            turn_id = %turn_context.sub_id,
+                                            error = %err,
+                                            "failed to save Entire summary"
+                                        );
+                                    }
+
+                                    if let Some(summary_text) = crate::entire_summary_generator::build_legacy_notify_summary_text(&summary)
+                                        && let Some(first_message) = hook_input_messages.first_mut()
+                                    {
+                                        *first_message = summary_text;
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        turn_id = %turn_context.sub_id,
+                                        error = %err,
+                                        "failed to generate Entire summary"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     let hook_outcomes = sess
                         .hooks()
                         .dispatch(HookPayload {
@@ -5497,7 +5569,7 @@ pub(crate) async fn run_turn(
                                 event: HookEventAfterAgent {
                                     thread_id: sess.conversation_id,
                                     turn_id: turn_context.sub_id.clone(),
-                                    input_messages: sampling_request_input_messages,
+                                    input_messages: hook_input_messages,
                                     last_assistant_message: last_agent_message.clone(),
                                 },
                             },
