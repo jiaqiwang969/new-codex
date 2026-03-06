@@ -693,6 +693,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 call_id,
                 sender_thread_id: _,
                 prompt,
+                ..
             }) => {
                 ts_msg!(
                     self,

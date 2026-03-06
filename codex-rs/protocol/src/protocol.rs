@@ -2986,6 +2986,10 @@ pub struct CollabAgentSpawnBeginEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    /// Optional role requested for the spawned agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_type: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3023,6 +3027,18 @@ pub struct CollabAgentSpawnEndEvent {
     pub call_id: String,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
+    /// Optional requested role for the spawned agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_type: Option<String>,
+    /// Optional model selected for the spawned agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// Optional provider selected for the spawned agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_provider_id: Option<String>,
     /// Thread ID of the newly spawned agent, if it was created.
     pub new_thread_id: Option<ThreadId>,
     /// Optional nickname assigned to the new agent.
@@ -3623,6 +3639,57 @@ mod tests {
             }
         });
         assert_eq!(expected, serde_json::to_value(&event)?);
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_collab_spawn_events_include_agent_metadata() -> Result<()> {
+        let sender_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let new_thread_id = ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c9")?;
+
+        let begin = CollabAgentSpawnBeginEvent {
+            call_id: "call-1".to_string(),
+            sender_thread_id,
+            agent_type: Some("explorer".to_string()),
+            prompt: "inspect this repo".to_string(),
+        };
+        let end = CollabAgentSpawnEndEvent {
+            call_id: "call-1".to_string(),
+            sender_thread_id,
+            agent_type: Some("explorer".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider_id: Some("openai".to_string()),
+            new_thread_id: Some(new_thread_id),
+            new_agent_nickname: Some("Scout".to_string()),
+            new_agent_role: Some("explorer".to_string()),
+            prompt: "inspect this repo".to_string(),
+            status: AgentStatus::PendingInit,
+        };
+
+        assert_eq!(
+            serde_json::to_value(begin)?,
+            json!({
+                "call_id": "call-1",
+                "sender_thread_id": sender_thread_id,
+                "agent_type": "explorer",
+                "prompt": "inspect this repo",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(end)?,
+            json!({
+                "call_id": "call-1",
+                "sender_thread_id": sender_thread_id,
+                "agent_type": "explorer",
+                "model": "gpt-5.3-codex",
+                "model_provider_id": "openai",
+                "new_thread_id": new_thread_id,
+                "new_agent_nickname": "Scout",
+                "new_agent_role": "explorer",
+                "prompt": "inspect this repo",
+                "status": "pending_init",
+            })
+        );
         Ok(())
     }
 

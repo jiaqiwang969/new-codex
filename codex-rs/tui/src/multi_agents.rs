@@ -78,6 +78,9 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
     let CollabAgentSpawnEndEvent {
         call_id: _,
         sender_thread_id: _,
+        agent_type: _,
+        model: _,
+        model_provider_id: _,
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
@@ -463,6 +466,9 @@ mod tests {
         let spawn = spawn_end(CollabAgentSpawnEndEvent {
             call_id: "call-spawn".to_string(),
             sender_thread_id,
+            agent_type: Some("explorer".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider_id: Some("openai".to_string()),
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
@@ -543,6 +549,9 @@ mod tests {
         let cell = spawn_end(CollabAgentSpawnEndEvent {
             call_id: "call-spawn".to_string(),
             sender_thread_id,
+            agent_type: Some("explorer".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider_id: Some("openai".to_string()),
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),

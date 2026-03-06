@@ -214,6 +214,7 @@ mod spawn {
             .map(ToOwned::to_owned);
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
+        let agent_type = role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string();
         let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         let max_depth = turn.config.agent_max_depth;
@@ -228,6 +229,7 @@ mod spawn {
                 CollabAgentSpawnBeginEvent {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
+                    agent_type: Some(agent_type.clone()),
                     prompt: prompt.clone(),
                 }
                 .into(),
@@ -241,7 +243,6 @@ mod spawn {
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
         apply_spawn_agent_overrides(&mut config, child_depth);
 
-        let agent_type = role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string();
         let uses_role_config =
             role_name.is_some_and(|role| !role.eq_ignore_ascii_case(DEFAULT_ROLE_NAME));
         let uses_default_role =
@@ -376,6 +377,9 @@ mod spawn {
                 CollabAgentSpawnEndEvent {
                     call_id,
                     sender_thread_id: session.conversation_id,
+                    agent_type: Some(agent_type.clone()),
+                    model: Some(model.clone()),
+                    model_provider_id: Some(model_provider_id.clone()),
                     new_thread_id,
                     new_agent_nickname,
                     new_agent_role,

@@ -548,6 +548,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
         EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
             call_id: "call-10".to_string(),
             sender_thread_id,
+            agent_type: Some("explorer".to_string()),
             prompt: prompt.clone(),
         }),
     );
@@ -574,6 +575,9 @@ fn collab_spawn_begin_and_end_emit_item_events() {
         EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
             call_id: "call-10".to_string(),
             sender_thread_id,
+            agent_type: Some("explorer".to_string()),
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider_id: Some("openai".to_string()),
             new_thread_id: Some(new_thread_id),
             new_agent_nickname: None,
             new_agent_role: None,
