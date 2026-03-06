@@ -196,6 +196,7 @@ async fn run_compact_task_inner(
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     let user_messages = collect_user_messages(history_items);
+    let trace_items = crate::thread_memory::build_thread_memory_trace_items(history_items);
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
 
@@ -224,6 +225,13 @@ async fn run_compact_task_inner(
     sess.replace_compacted_history(new_history, reference_context_item, compacted_item)
         .await;
     sess.recompute_token_usage(&turn_context).await;
+
+    crate::thread_memory::maybe_spawn_thread_memory_update_after_compaction(
+        sess.clone(),
+        turn_context.clone(),
+        summary_suffix.clone(),
+        trace_items,
+    );
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
         .await;

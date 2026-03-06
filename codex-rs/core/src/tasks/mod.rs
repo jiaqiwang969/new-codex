@@ -205,6 +205,7 @@ impl Session {
         turn_context: Arc<TurnContext>,
         last_agent_message: Option<String>,
     ) {
+        let memory_summary_fallback = last_agent_message.clone();
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
@@ -317,6 +318,12 @@ impl Session {
             last_agent_message,
         });
         self.send_event(turn_context.as_ref(), event).await;
+
+        crate::thread_memory::maybe_spawn_thread_memory_update_after_turn(
+            Arc::clone(self),
+            Arc::clone(&turn_context),
+            memory_summary_fallback,
+        );
     }
 
     async fn register_new_active_task(&self, task: RunningTask) {

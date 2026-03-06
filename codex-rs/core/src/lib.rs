@@ -168,3 +168,4 @@ pub use turn_metadata::build_turn_metadata_header;
 pub mod compact;
 pub mod memory_trace;
 pub mod otel_init;
+mod thread_memory;
