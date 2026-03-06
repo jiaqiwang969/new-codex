@@ -206,6 +206,14 @@ fn is_allowed_trace_item(item: &Map<String, Value>) -> bool {
         return false;
     };
 
+    if item_type == "function_call_output"
+        || item_type == "custom_tool_call_output"
+        || item_type == "reasoning"
+        || item_type == "ghost_snapshot"
+    {
+        return false;
+    }
+
     if item_type == "message" {
         return matches!(
             item.get("role").and_then(Value::as_str),
@@ -263,6 +271,25 @@ mod tests {
             serde_json::json!({"type": "message", "role": "user", "content": []}),
             serde_json::json!({"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1"}),
             serde_json::json!({"type": "message", "role": "developer", "content": []}),
+        ];
+        assert_eq!(normalized, expected);
+    }
+
+    #[test]
+    fn normalize_trace_items_excludes_tool_outputs_and_reasoning_payloads() {
+        let items = vec![
+            serde_json::json!({"type": "function_call_output", "call_id": "fc1", "output": "secret"}),
+            serde_json::json!({"type": "custom_tool_call_output", "call_id": "tc1", "output": "secret"}),
+            serde_json::json!({"type": "reasoning", "summary": []}),
+            serde_json::json!({"type": "ghost_snapshot", "files": []}),
+            serde_json::json!({"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1"}),
+            serde_json::json!({"type": "message", "role": "assistant", "content": []}),
+        ];
+
+        let normalized = normalize_trace_items(items, Path::new("trace.json")).expect("normalize");
+        let expected = vec![
+            serde_json::json!({"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1"}),
+            serde_json::json!({"type": "message", "role": "assistant", "content": []}),
         ];
         assert_eq!(normalized, expected);
     }
