@@ -292,6 +292,128 @@ LIMIT ?
             .collect::<Result<Vec<_>, _>>()
     }
 
+    /// Gets a stored stage-1 output for a single thread, if present.
+    pub async fn get_stage1_output(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<Stage1Output>> {
+        let thread_id = thread_id.to_string();
+        let row = sqlx::query(
+            r#"
+SELECT
+    so.thread_id,
+    COALESCE(t.rollout_path, '') AS rollout_path,
+    so.source_updated_at,
+    so.raw_memory,
+    so.rollout_summary,
+    so.rollout_slug,
+    so.generated_at,
+    COALESCE(t.cwd, '') AS cwd,
+    t.git_branch AS git_branch
+FROM stage1_outputs AS so
+LEFT JOIN threads AS t
+    ON t.id = so.thread_id
+WHERE so.thread_id = ?
+LIMIT 1
+            "#,
+        )
+        .bind(thread_id.as_str())
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+
+        row.map(|row| Stage1OutputRow::try_from_row(&row).and_then(Stage1Output::try_from))
+            .transpose()
+    }
+
+    /// Lists the most recent non-empty stage-1 outputs for threads with matching cwd.
+    pub async fn list_stage1_outputs_for_cwd(
+        &self,
+        cwd: &str,
+        n: usize,
+    ) -> anyhow::Result<Vec<Stage1Output>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query(
+            r#"
+SELECT
+    so.thread_id,
+    COALESCE(t.rollout_path, '') AS rollout_path,
+    so.source_updated_at,
+    so.raw_memory,
+    so.rollout_summary,
+    so.rollout_slug,
+    so.generated_at,
+    COALESCE(t.cwd, '') AS cwd,
+    t.git_branch AS git_branch
+FROM stage1_outputs AS so
+JOIN threads AS t
+    ON t.id = so.thread_id
+WHERE t.cwd = ?
+  AND (length(trim(so.raw_memory)) > 0 OR length(trim(so.rollout_summary)) > 0)
+ORDER BY so.source_updated_at DESC, so.thread_id DESC
+LIMIT ?
+            "#,
+        )
+        .bind(cwd)
+        .bind(n as i64)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Stage1OutputRow::try_from_row(&row).and_then(Stage1Output::try_from))
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Upserts stage-1 output for a thread without requiring a job claim.
+    ///
+    /// This is intended for on-demand writes (e.g. per-turn memory captures) that want to reuse
+    /// the same storage as the stage-1 pipeline.
+    pub async fn upsert_stage1_output(
+        &self,
+        thread_id: ThreadId,
+        source_updated_at: i64,
+        raw_memory: &str,
+        rollout_summary: &str,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp();
+        let thread_id = thread_id.to_string();
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+INSERT INTO stage1_outputs (
+    thread_id,
+    source_updated_at,
+    raw_memory,
+    rollout_summary,
+    rollout_slug,
+    generated_at
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(thread_id) DO UPDATE SET
+    source_updated_at = excluded.source_updated_at,
+    raw_memory = excluded.raw_memory,
+    rollout_summary = excluded.rollout_summary,
+    rollout_slug = excluded.rollout_slug,
+    generated_at = excluded.generated_at
+WHERE excluded.source_updated_at >= stage1_outputs.source_updated_at
+            "#,
+        )
+        .bind(thread_id.as_str())
+        .bind(source_updated_at)
+        .bind(raw_memory)
+        .bind(rollout_summary)
+        .bind(Option::<&str>::None)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        enqueue_global_consolidation_with_executor(&mut *tx, source_updated_at).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Returns the current phase-2 input set along with its diff against the
     /// last successful phase-2 selection.
     ///
@@ -1239,6 +1361,7 @@ mod tests {
     use super::test_support::unique_temp_dir;
     use crate::model::Phase2JobClaimOutcome;
     use crate::model::Stage1JobClaimOutcome;
+    use crate::model::Stage1Output;
     use crate::model::Stage1StartupClaimParams;
     use chrono::Duration;
     use chrono::Utc;
@@ -2454,6 +2577,257 @@ WHERE kind = 'memory_stage1'
             matches!(claim_rerun, Phase2JobClaimOutcome::Claimed { .. }),
             "advanced watermark should be claimable"
         );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn get_stage1_output_returns_thread_row_when_present() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let mut metadata =
+            test_thread_metadata(&codex_home, thread_id, codex_home.join("workspace-thread"));
+        metadata.git_branch = Some("feature/thread-memory".to_string());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert thread");
+
+        sqlx::query(
+            r#"
+INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, rollout_slug, generated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .bind(100_i64)
+        .bind("raw memory")
+        .bind("summary")
+        .bind(Some("rollout-thread"))
+        .bind(200_i64)
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("insert stage1 output");
+
+        let output = runtime
+            .get_stage1_output(thread_id)
+            .await
+            .expect("get stage1 output");
+
+        assert_eq!(
+            output,
+            Some(Stage1Output {
+                thread_id,
+                rollout_path: metadata.rollout_path.clone(),
+                source_updated_at: chrono::DateTime::<Utc>::from_timestamp(100, 0)
+                    .expect("source_updated_at"),
+                raw_memory: "raw memory".to_string(),
+                rollout_summary: "summary".to_string(),
+                rollout_slug: Some("rollout-thread".to_string()),
+                cwd: metadata.cwd.clone(),
+                git_branch: metadata.git_branch.clone(),
+                generated_at: chrono::DateTime::<Utc>::from_timestamp(200, 0)
+                    .expect("generated_at"),
+            })
+        );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn list_stage1_outputs_for_cwd_orders_by_source_updated_at_desc() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let shared_cwd = codex_home.join("workspace-shared");
+        let other_cwd = codex_home.join("workspace-other");
+
+        let thread_id_a = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let thread_id_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let thread_id_other =
+            ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+
+        let metadata_a = test_thread_metadata(&codex_home, thread_id_a, shared_cwd.clone());
+        let mut metadata_b = test_thread_metadata(&codex_home, thread_id_b, shared_cwd.clone());
+        metadata_b.git_branch = Some("feature/shared".to_string());
+        let metadata_other = test_thread_metadata(&codex_home, thread_id_other, other_cwd);
+
+        for metadata in [&metadata_a, &metadata_b, &metadata_other] {
+            runtime
+                .upsert_thread(metadata)
+                .await
+                .expect("upsert thread");
+        }
+
+        for (
+            thread_id,
+            source_updated_at,
+            raw_memory,
+            rollout_summary,
+            rollout_slug,
+            generated_at,
+        ) in [
+            (thread_id_a, 100_i64, "raw a", "summary a", None, 210_i64),
+            (
+                thread_id_b,
+                101_i64,
+                "raw b",
+                "summary b",
+                Some("rollout-b"),
+                211_i64,
+            ),
+            (
+                thread_id_other,
+                102_i64,
+                "raw other",
+                "summary other",
+                Some("rollout-other"),
+                212_i64,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, rollout_slug, generated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(thread_id.to_string())
+            .bind(source_updated_at)
+            .bind(raw_memory)
+            .bind(rollout_summary)
+            .bind(rollout_slug)
+            .bind(generated_at)
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("insert stage1 output");
+        }
+
+        let outputs = runtime
+            .list_stage1_outputs_for_cwd(shared_cwd.to_string_lossy().as_ref(), 10)
+            .await
+            .expect("list stage1 outputs for cwd");
+
+        assert_eq!(
+            outputs,
+            vec![
+                Stage1Output {
+                    thread_id: thread_id_b,
+                    rollout_path: metadata_b.rollout_path.clone(),
+                    source_updated_at: chrono::DateTime::<Utc>::from_timestamp(101, 0)
+                        .expect("source_updated_at b"),
+                    raw_memory: "raw b".to_string(),
+                    rollout_summary: "summary b".to_string(),
+                    rollout_slug: Some("rollout-b".to_string()),
+                    cwd: metadata_b.cwd.clone(),
+                    git_branch: metadata_b.git_branch.clone(),
+                    generated_at: chrono::DateTime::<Utc>::from_timestamp(211, 0)
+                        .expect("generated_at b"),
+                },
+                Stage1Output {
+                    thread_id: thread_id_a,
+                    rollout_path: metadata_a.rollout_path.clone(),
+                    source_updated_at: chrono::DateTime::<Utc>::from_timestamp(100, 0)
+                        .expect("source_updated_at a"),
+                    raw_memory: "raw a".to_string(),
+                    rollout_summary: "summary a".to_string(),
+                    rollout_slug: None,
+                    cwd: metadata_a.cwd.clone(),
+                    git_branch: metadata_a.git_branch.clone(),
+                    generated_at: chrono::DateTime::<Utc>::from_timestamp(210, 0)
+                        .expect("generated_at a"),
+                },
+            ]
+        );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn upsert_stage1_output_updates_only_when_source_updated_at_advances() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.join("workspace"));
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert thread");
+
+        runtime
+            .upsert_stage1_output(thread_id, 100, "raw one", "summary one")
+            .await
+            .expect("upsert initial stage1 output");
+
+        sqlx::query("UPDATE stage1_outputs SET generated_at = ? WHERE thread_id = ?")
+            .bind(200_i64)
+            .bind(thread_id.to_string())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("pin generated_at");
+
+        let initial = runtime
+            .get_stage1_output(thread_id)
+            .await
+            .expect("get initial stage1 output")
+            .expect("initial stage1 output present");
+
+        assert_eq!(
+            initial,
+            Stage1Output {
+                thread_id,
+                rollout_path: metadata.rollout_path.clone(),
+                source_updated_at: chrono::DateTime::<Utc>::from_timestamp(100, 0)
+                    .expect("initial source_updated_at"),
+                raw_memory: "raw one".to_string(),
+                rollout_summary: "summary one".to_string(),
+                rollout_slug: None,
+                cwd: metadata.cwd.clone(),
+                git_branch: metadata.git_branch.clone(),
+                generated_at: chrono::DateTime::<Utc>::from_timestamp(200, 0)
+                    .expect("initial generated_at"),
+            }
+        );
+
+        runtime
+            .upsert_stage1_output(thread_id, 99, "raw stale", "summary stale")
+            .await
+            .expect("upsert stale stage1 output");
+
+        let after_stale = runtime
+            .get_stage1_output(thread_id)
+            .await
+            .expect("get stage1 output after stale upsert")
+            .expect("stage1 output present after stale upsert");
+        assert_eq!(after_stale, initial);
+
+        runtime
+            .upsert_stage1_output(thread_id, 101, "raw fresh", "summary fresh")
+            .await
+            .expect("upsert fresh stage1 output");
+
+        let after_fresh = runtime
+            .get_stage1_output(thread_id)
+            .await
+            .expect("get stage1 output after fresh upsert")
+            .expect("stage1 output present after fresh upsert");
+        assert_eq!(after_fresh.thread_id, thread_id);
+        assert_eq!(after_fresh.rollout_path, metadata.rollout_path);
+        assert_eq!(after_fresh.source_updated_at.timestamp(), 101);
+        assert_eq!(after_fresh.raw_memory, "raw fresh");
+        assert_eq!(after_fresh.rollout_summary, "summary fresh");
+        assert_eq!(after_fresh.rollout_slug, None);
+        assert_eq!(after_fresh.cwd, metadata.cwd);
+        assert_eq!(after_fresh.git_branch, metadata.git_branch);
+        assert!(after_fresh.generated_at.timestamp() >= 200);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
