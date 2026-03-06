@@ -122,7 +122,24 @@ const CF_RAY_HEADER: &str = "cf-ray";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthCredentialsStoreMode;
+    use crate::auth::AuthDotJson;
+    use crate::auth::CodexAuth;
+    use crate::auth::save_auth;
+    use codex_app_server_protocol::AuthMode as ApiAuthMode;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+    use tempfile::tempdir;
+
+    fn unique_env_key(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        format!("{prefix}_{nanos}")
+    }
 
     #[test]
     fn map_api_error_maps_server_overloaded() {
@@ -217,6 +234,71 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn auth_provider_prefers_env_key_specific_auth_json_key_when_provider_env_key_is_missing() {
+        let codex_home = tempdir().expect("create tempdir");
+        let env_key = unique_env_key("CODEX_TEST_PROVIDER_AUTH_JSON_FALLBACK_KEY");
+        let auth = AuthDotJson {
+            auth_mode: Some(ApiAuthMode::ApiKey),
+            openai_api_key: Some("sk-openai-key".to_string()),
+            provider_api_keys: HashMap::from([(
+                env_key.to_string(),
+                "sk-provider-fallback-key".to_string(),
+            )]),
+            tokens: None,
+            last_refresh: None,
+        };
+        save_auth(codex_home.path(), &auth, AuthCredentialsStoreMode::File)
+            .expect("save auth json");
+        let loaded_auth =
+            CodexAuth::from_auth_storage(codex_home.path(), AuthCredentialsStoreMode::File)
+                .expect("load auth")
+                .expect("auth should exist");
+
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.env_key = Some(env_key);
+        let core_auth = auth_provider_from_auth(Some(loaded_auth), &provider)
+            .expect("fallback key from auth.json should be used");
+
+        assert_eq!(
+            core_auth.bearer_token().as_deref(),
+            Some("sk-provider-fallback-key")
+        );
+        assert_eq!(core_auth.account_id(), None);
+    }
+
+    #[test]
+    fn auth_provider_keeps_env_key_error_without_auth_fallback() {
+        let codex_home = tempdir().expect("create tempdir");
+        let auth = AuthDotJson {
+            auth_mode: Some(ApiAuthMode::ApiKey),
+            openai_api_key: Some("sk-openai-key".to_string()),
+            provider_api_keys: HashMap::new(),
+            tokens: None,
+            last_refresh: None,
+        };
+        save_auth(codex_home.path(), &auth, AuthCredentialsStoreMode::File)
+            .expect("save auth json");
+        let loaded_auth =
+            CodexAuth::from_auth_storage(codex_home.path(), AuthCredentialsStoreMode::File)
+                .expect("load auth")
+                .expect("auth should exist");
+
+        let env_key = unique_env_key("CODEX_TEST_PROVIDER_AUTH_JSON_MISSING_KEY");
+        let mut provider = ModelProviderInfo::create_openai_provider();
+        provider.env_key = Some(env_key.clone());
+        let err = match auth_provider_from_auth(Some(loaded_auth), &provider) {
+            Ok(_) => {
+                panic!("missing env key should still error when fallback key is absent");
+            }
+            Err(err) => err,
+        };
+        let CodexErr::EnvVar(env_error) = err else {
+            panic!("expected env-var error, got {err:?}");
+        };
+        assert_eq!(env_error.var, env_key);
+    }
 }
 
 fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
@@ -240,7 +322,22 @@ pub(crate) fn auth_provider_from_auth(
     auth: Option<CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> crate::error::Result<CoreAuthProvider> {
-    if let Some(api_key) = provider.api_key()? {
+    let provider_api_key = match provider.api_key() {
+        Ok(provider_api_key) => provider_api_key,
+        Err(CodexErr::EnvVar(env_var_error)) => {
+            if let Some(api_key) = auth
+                .as_ref()
+                .and_then(|auth| auth.provider_api_key_for_env_key(env_var_error.var.as_str()))
+            {
+                Some(api_key)
+            } else {
+                return Err(CodexErr::EnvVar(env_var_error));
+            }
+        }
+        Err(err) => return Err(err),
+    };
+
+    if let Some(api_key) = provider_api_key {
         return Ok(CoreAuthProvider {
             token: Some(api_key),
             account_id: None,

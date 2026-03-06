@@ -49,6 +49,9 @@ pub struct AuthDotJson {
     #[serde(rename = "OPENAI_API_KEY")]
     pub openai_api_key: Option<String>,
 
+    #[serde(default, flatten)]
+    pub provider_api_keys: HashMap<String, String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<TokenData>,
 
@@ -91,7 +94,20 @@ impl FileAuthStorage {
         let mut file = File::open(auth_file)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        let auth_dot_json: AuthDotJson = serde_json::from_str(&contents)?;
+        let mut auth_json: serde_json::Value = serde_json::from_str(&contents)?;
+        let Some(object) = auth_json.as_object_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "auth.json must contain a JSON object",
+            ));
+        };
+        object.retain(|key, value| {
+            matches!(
+                key.as_str(),
+                "auth_mode" | "OPENAI_API_KEY" | "tokens" | "last_refresh"
+            ) || value.is_string()
+        });
+        let auth_dot_json: AuthDotJson = serde_json::from_value(auth_json)?;
 
         Ok(auth_dot_json)
     }
@@ -351,6 +367,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("test-key".to_string()),
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -371,6 +388,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("test-key".to_string()),
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -388,11 +406,43 @@ mod tests {
     }
 
     #[test]
+    fn file_storage_ignores_unknown_non_string_fields_when_loading() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let file = get_auth_file(dir.path());
+        std::fs::write(
+            &file,
+            serde_json::json!({
+                "OPENAI_API_KEY": "sk-openai-key",
+                "ANTHROPIC_API_KEY": "sk-anthropic-key",
+                "legacy_object": {"nested": true},
+                "legacy_number": 123,
+                "tokens": null,
+                "last_refresh": null,
+            })
+            .to_string(),
+        )?;
+
+        let storage = FileAuthStorage::new(dir.path().to_path_buf());
+        let auth = storage.try_read_auth_json(&file)?;
+
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-openai-key"));
+        assert_eq!(
+            auth.provider_api_keys,
+            HashMap::from([(
+                "ANTHROPIC_API_KEY".to_string(),
+                "sk-anthropic-key".to_string(),
+            )])
+        );
+        Ok(())
+    }
+
+    #[test]
     fn file_storage_delete_removes_auth_file() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let auth_dot_json = AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test-key".to_string()),
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: None,
         };
@@ -416,6 +466,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-ephemeral".to_string()),
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -509,6 +560,7 @@ mod tests {
         AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some(format!("{prefix}-api-key")),
+            provider_api_keys: HashMap::new(),
             tokens: Some(TokenData {
                 id_token: id_token_with_prefix(prefix),
                 access_token: format!("{prefix}-access"),
@@ -530,6 +582,7 @@ mod tests {
         let expected = AuthDotJson {
             auth_mode: Some(AuthMode::ApiKey),
             openai_api_key: Some("sk-test".to_string()),
+            provider_api_keys: HashMap::new(),
             tokens: None,
             last_refresh: None,
         };
@@ -567,6 +620,7 @@ mod tests {
         let auth = AuthDotJson {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: Some(TokenData {
                 id_token: Default::default(),
                 access_token: "access".to_string(),
