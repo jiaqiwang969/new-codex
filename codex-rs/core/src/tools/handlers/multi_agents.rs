@@ -120,6 +120,10 @@ mod spawn {
     struct SpawnAgentResult {
         agent_id: String,
         nickname: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -217,9 +221,13 @@ mod spawn {
         turn.otel_manager
             .counter("codex.multi_agent.spawn", 1, &[("role", role_tag)]);
 
+        let (memory_scope_version, memory_binding_key) =
+            super::active_memory_binding_fields(session.as_ref()).await;
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
+            memory_scope_version,
+            memory_binding_key,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -248,6 +256,10 @@ mod send_input {
     #[derive(Debug, Serialize)]
     struct SendInputResult {
         submission_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -313,8 +325,15 @@ mod send_input {
             )
             .await;
         let submission_id = result?;
+        let (memory_scope_version, memory_binding_key) =
+            super::active_memory_binding_fields(session.as_ref()).await;
 
-        let content = serde_json::to_string(&SendInputResult { submission_id }).map_err(|err| {
+        let content = serde_json::to_string(&SendInputResult {
+            submission_id,
+            memory_scope_version,
+            memory_binding_key,
+        })
+        .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize send_input result: {err}"))
         })?;
 
@@ -338,6 +357,10 @@ mod resume_agent {
     #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
     pub(super) struct ResumeAgentResult {
         pub(super) status: AgentStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -427,8 +450,15 @@ mod resume_agent {
         }
         turn.otel_manager
             .counter("codex.multi_agent.resume", 1, &[]);
+        let (memory_scope_version, memory_binding_key) =
+            super::active_memory_binding_fields(session.as_ref()).await;
 
-        let content = serde_json::to_string(&ResumeAgentResult { status }).map_err(|err| {
+        let content = serde_json::to_string(&ResumeAgentResult {
+            status,
+            memory_scope_version,
+            memory_binding_key,
+        })
+        .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize resume_agent result: {err}"))
         })?;
 
@@ -488,6 +518,10 @@ pub(crate) mod wait {
     pub(crate) struct WaitResult {
         pub(crate) status: HashMap<ThreadId, AgentStatus>,
         pub(crate) timed_out: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(crate) memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(crate) memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -622,9 +656,13 @@ pub(crate) mod wait {
         // Convert payload.
         let statuses_map = statuses.clone().into_iter().collect::<HashMap<_, _>>();
         let agent_statuses = build_wait_agent_statuses(&statuses_map, &receiver_agents);
+        let (memory_scope_version, memory_binding_key) =
+            super::active_memory_binding_fields(session.as_ref()).await;
         let result = WaitResult {
             status: statuses_map.clone(),
             timed_out: statuses.is_empty(),
+            memory_scope_version,
+            memory_binding_key,
         };
 
         // Final event emission.
@@ -681,6 +719,10 @@ pub mod close_agent {
     #[derive(Debug, Deserialize, Serialize)]
     pub(super) struct CloseAgentResult {
         pub(super) status: AgentStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_scope_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(super) memory_binding_key: Option<String>,
     }
 
     pub async fn handle(
@@ -760,8 +802,15 @@ pub mod close_agent {
             )
             .await;
         result?;
+        let (memory_scope_version, memory_binding_key) =
+            super::active_memory_binding_fields(session.as_ref()).await;
 
-        let content = serde_json::to_string(&CloseAgentResult { status }).map_err(|err| {
+        let content = serde_json::to_string(&CloseAgentResult {
+            status,
+            memory_scope_version,
+            memory_binding_key,
+        })
+        .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize close_agent result: {err}"))
         })?;
 
@@ -835,6 +884,13 @@ fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
             FunctionCallError::RespondToModel("collab manager unavailable".to_string())
         }
         err => FunctionCallError::RespondToModel(format!("collab tool failed: {err}")),
+    }
+}
+
+async fn active_memory_binding_fields(session: &Session) -> (Option<String>, Option<String>) {
+    match crate::thread_memory::current_thread_memory_link(session, None).await {
+        Some(memory) => (memory.scope_version, memory.binding_key),
+        None => (None, None),
     }
 }
 
@@ -1038,6 +1094,59 @@ mod tests {
         )
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct ExpectedMemoryFields {
+        memory_scope_version: String,
+        memory_binding_key: String,
+    }
+
+    async fn seed_parent_thread_memory(
+        session: &mut crate::codex::Session,
+        turn: &TurnContext,
+    ) -> ExpectedMemoryFields {
+        let codex_home = session.codex_home().await;
+        let state_db = Arc::new(
+            codex_state::StateRuntime::init(
+                codex_home.clone(),
+                turn.config.model_provider_id.clone(),
+                None,
+            )
+            .await
+            .expect("initialize state db"),
+        );
+        session.services.state_db = Some(Arc::clone(&state_db));
+
+        let mut metadata_builder = codex_state::ThreadMetadataBuilder::new(
+            session.conversation_id,
+            codex_home.join(format!("rollout-{}.jsonl", session.conversation_id)),
+            chrono::Utc::now(),
+            SessionSource::Cli,
+        );
+        metadata_builder.cwd = turn.cwd.clone();
+        metadata_builder.model_provider = Some(turn.config.model_provider_id.clone());
+        let metadata = metadata_builder.build(&turn.config.model_provider_id);
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert thread metadata");
+        crate::state_db::upsert_thread_memory(
+            Some(state_db.as_ref()),
+            session.conversation_id,
+            "parent thread memory summary",
+            "parent thread memory summary",
+            "multi_agents_test_seed_memory",
+        )
+        .await;
+
+        let memory = crate::thread_memory::current_thread_memory_link(session, None)
+            .await
+            .expect("thread memory link");
+        ExpectedMemoryFields {
+            memory_scope_version: memory.scope_version.expect("memory scope version"),
+            memory_binding_key: memory.binding_key.expect("memory binding key"),
+        }
+    }
+
     #[tokio::test]
     async fn handler_rejects_non_function_payloads() {
         let (session, turn) = make_session_and_context().await;
@@ -1127,9 +1236,12 @@ mod tests {
         struct SpawnAgentResult {
             agent_id: String,
             nickname: Option<String>,
+            memory_scope_version: String,
+            memory_binding_key: String,
         }
 
         let (mut session, mut turn) = make_session_and_context().await;
+        let expected_memory = seed_parent_thread_memory(&mut session, &turn).await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
         let mut config = (*turn.config).clone();
@@ -1175,6 +1287,14 @@ mod tests {
                 .nickname
                 .as_deref()
                 .is_some_and(|nickname| !nickname.is_empty())
+        );
+        assert_eq!(
+            result.memory_scope_version,
+            expected_memory.memory_scope_version
+        );
+        assert_eq!(
+            result.memory_binding_key,
+            expected_memory.memory_binding_key
         );
         let snapshot = manager
             .get_thread(agent_id)
@@ -1626,7 +1746,22 @@ mod tests {
 
     #[tokio::test]
     async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
+        #[derive(Debug, Deserialize)]
+        struct ResumeAgentResult {
+            status: AgentStatus,
+            memory_scope_version: String,
+            memory_binding_key: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct SendInputResult {
+            submission_id: String,
+            memory_scope_version: String,
+            memory_binding_key: String,
+        }
+
         let (mut session, turn) = make_session_and_context().await;
+        let expected_memory = seed_parent_thread_memory(&mut session, &turn).await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
         let config = turn.config.as_ref().clone();
@@ -1678,9 +1813,17 @@ mod tests {
         else {
             panic!("expected function output");
         };
-        let result: resume_agent::ResumeAgentResult =
+        let result: ResumeAgentResult =
             serde_json::from_str(&content).expect("resume_agent result should be json");
         assert_ne!(result.status, AgentStatus::NotFound);
+        assert_eq!(
+            result.memory_scope_version,
+            expected_memory.memory_scope_version
+        );
+        assert_eq!(
+            result.memory_binding_key,
+            expected_memory.memory_binding_key
+        );
         assert_eq!(success, Some(true));
 
         let send_invocation = invocation(
@@ -1701,13 +1844,17 @@ mod tests {
         else {
             panic!("expected function output");
         };
-        let result: serde_json::Value =
+        let result: SendInputResult =
             serde_json::from_str(&content).expect("send_input result should be json");
-        let submission_id = result
-            .get("submission_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        assert!(!submission_id.is_empty());
+        assert!(!result.submission_id.is_empty());
+        assert_eq!(
+            result.memory_scope_version,
+            expected_memory.memory_scope_version
+        );
+        assert_eq!(
+            result.memory_binding_key,
+            expected_memory.memory_binding_key
+        );
         assert_eq!(success, Some(true));
 
         let _ = manager
@@ -1807,7 +1954,16 @@ mod tests {
 
     #[tokio::test]
     async fn wait_returns_not_found_for_missing_agents() {
+        #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+        struct WaitResult {
+            status: HashMap<ThreadId, AgentStatus>,
+            timed_out: bool,
+            memory_scope_version: String,
+            memory_binding_key: String,
+        }
+
         let (mut session, turn) = make_session_and_context().await;
+        let expected_memory = seed_parent_thread_memory(&mut session, &turn).await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
         let id_a = ThreadId::new();
@@ -1833,16 +1989,18 @@ mod tests {
         else {
             panic!("expected function output");
         };
-        let result: wait::WaitResult =
+        let result: WaitResult =
             serde_json::from_str(&content).expect("wait result should be json");
         assert_eq!(
             result,
-            wait::WaitResult {
+            WaitResult {
                 status: HashMap::from([
                     (id_a, AgentStatus::NotFound),
                     (id_b, AgentStatus::NotFound),
                 ]),
-                timed_out: false
+                timed_out: false,
+                memory_scope_version: expected_memory.memory_scope_version,
+                memory_binding_key: expected_memory.memory_binding_key,
             }
         );
         assert_eq!(success, None);
@@ -1883,7 +2041,9 @@ mod tests {
             result,
             wait::WaitResult {
                 status: HashMap::new(),
-                timed_out: true
+                timed_out: true,
+                memory_scope_version: None,
+                memory_binding_key: None,
             }
         );
         assert_eq!(success, None);
@@ -1980,7 +2140,9 @@ mod tests {
             result,
             wait::WaitResult {
                 status: HashMap::from([(agent_id, AgentStatus::Shutdown)]),
-                timed_out: false
+                timed_out: false,
+                memory_scope_version: None,
+                memory_binding_key: None,
             }
         );
         assert_eq!(success, None);
@@ -1988,7 +2150,15 @@ mod tests {
 
     #[tokio::test]
     async fn close_agent_submits_shutdown_and_returns_status() {
+        #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+        struct CloseAgentResult {
+            status: AgentStatus,
+            memory_scope_version: String,
+            memory_binding_key: String,
+        }
+
         let (mut session, turn) = make_session_and_context().await;
+        let expected_memory = seed_parent_thread_memory(&mut session, &turn).await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
         let config = turn.config.as_ref().clone();
@@ -2014,9 +2184,16 @@ mod tests {
         else {
             panic!("expected function output");
         };
-        let result: close_agent::CloseAgentResult =
+        let result: CloseAgentResult =
             serde_json::from_str(&content).expect("close_agent result should be json");
-        assert_eq!(result.status, status_before);
+        assert_eq!(
+            result,
+            CloseAgentResult {
+                status: status_before,
+                memory_scope_version: expected_memory.memory_scope_version,
+                memory_binding_key: expected_memory.memory_binding_key,
+            }
+        );
         assert_eq!(success, Some(true));
 
         let ops = manager.captured_ops();
