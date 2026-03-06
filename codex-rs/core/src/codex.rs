@@ -4439,14 +4439,8 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 decision,
                 content,
             } => {
-                handlers::resolve_elicitation(
-                    &sess,
-                    server_name,
-                    request_id,
-                    decision,
-                    content,
-                )
-                .await;
+                handlers::resolve_elicitation(&sess, server_name, request_id, decision, content)
+                    .await;
             }
             Op::Shutdown => {
                 if handlers::shutdown(&sess, sub.id.clone()).await {

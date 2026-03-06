@@ -3,11 +3,6 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(target_os = "macos")]
-use codex_protocol::models::MacOsAutomationValue;
-use codex_protocol::models::MacOsPermissions;
-#[cfg(target_os = "macos")]
-use codex_protocol::models::MacOsPreferencesValue;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use dirs::home_dir;
@@ -71,9 +66,7 @@ pub(crate) fn compile_permission_profile(
         // Default sandbox policy
         SandboxPolicy::new_read_only_policy()
     };
-    let macos_permissions = macos.unwrap_or_default();
-    let macos_seatbelt_profile_extensions =
-        build_macos_seatbelt_profile_extensions(&macos_permissions);
+    let macos_seatbelt_profile_extensions = build_macos_seatbelt_profile_extensions(macos.as_ref());
 
     Some(Permissions {
         approval_policy: Constrained::allow_any(AskForApproval::Never),
@@ -152,86 +145,14 @@ fn expand_home(path: &str) -> PathBuf {
 
 #[cfg(target_os = "macos")]
 fn build_macos_seatbelt_profile_extensions(
-    permissions: &MacOsPermissions,
+    permissions: Option<&MacOsSeatbeltProfileExtensions>,
 ) -> Option<MacOsSeatbeltProfileExtensions> {
-    let defaults = MacOsSeatbeltProfileExtensions::default();
-
-    let extensions = MacOsSeatbeltProfileExtensions {
-        macos_preferences: resolve_macos_preferences_permission(
-            permissions.preferences.as_ref(),
-            defaults.macos_preferences,
-        ),
-        macos_automation: resolve_macos_automation_permission(
-            permissions.automations.as_ref(),
-            defaults.macos_automation,
-        ),
-        macos_accessibility: permissions
-            .accessibility
-            .unwrap_or(defaults.macos_accessibility),
-        macos_calendar: permissions.calendar.unwrap_or(defaults.macos_calendar),
-    };
-    Some(extensions)
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_macos_preferences_permission(
-    value: Option<&MacOsPreferencesValue>,
-    default: crate::seatbelt_permissions::MacOsPreferencesPermission,
-) -> crate::seatbelt_permissions::MacOsPreferencesPermission {
-    use crate::seatbelt_permissions::MacOsPreferencesPermission;
-
-    match value {
-        Some(MacOsPreferencesValue::Bool(true)) => MacOsPreferencesPermission::ReadOnly,
-        Some(MacOsPreferencesValue::Bool(false)) => MacOsPreferencesPermission::None,
-        Some(MacOsPreferencesValue::Mode(mode)) => {
-            let mode = mode.trim();
-            if mode.eq_ignore_ascii_case("readonly") || mode.eq_ignore_ascii_case("read-only") {
-                MacOsPreferencesPermission::ReadOnly
-            } else if mode.eq_ignore_ascii_case("readwrite")
-                || mode.eq_ignore_ascii_case("read-write")
-            {
-                MacOsPreferencesPermission::ReadWrite
-            } else {
-                warn!(
-                    "ignoring permissions.macos.preferences: expected true/false, readonly, or readwrite"
-                );
-                default
-            }
-        }
-        None => default,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_macos_automation_permission(
-    value: Option<&MacOsAutomationValue>,
-    default: crate::seatbelt_permissions::MacOsAutomationPermission,
-) -> crate::seatbelt_permissions::MacOsAutomationPermission {
-    use crate::seatbelt_permissions::MacOsAutomationPermission;
-
-    match value {
-        Some(MacOsAutomationValue::Bool(true)) => MacOsAutomationPermission::All,
-        Some(MacOsAutomationValue::Bool(false)) => MacOsAutomationPermission::None,
-        Some(MacOsAutomationValue::BundleIds(bundle_ids)) => {
-            let bundle_ids = bundle_ids
-                .iter()
-                .map(|bundle_id| bundle_id.trim())
-                .filter(|bundle_id| !bundle_id.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<String>>();
-            if bundle_ids.is_empty() {
-                MacOsAutomationPermission::None
-            } else {
-                MacOsAutomationPermission::BundleIds(bundle_ids)
-            }
-        }
-        None => default,
-    }
+    Some(permissions.cloned().unwrap_or_default())
 }
 
 #[cfg(not(target_os = "macos"))]
 fn build_macos_seatbelt_profile_extensions(
-    _: &MacOsPermissions,
+    _: Option<&codex_protocol::models::MacOsSeatbeltProfileExtensions>,
 ) -> Option<MacOsSeatbeltProfileExtensions> {
     None
 }
@@ -263,11 +184,11 @@ mod tests {
     use crate::protocol::SandboxPolicy;
     use codex_protocol::models::FileSystemPermissions;
     #[cfg(target_os = "macos")]
-    use codex_protocol::models::MacOsAutomationValue;
+    use codex_protocol::models::MacOsAutomationPermission;
     #[cfg(target_os = "macos")]
-    use codex_protocol::models::MacOsPermissions;
+    use codex_protocol::models::MacOsPreferencesPermission;
     #[cfg(target_os = "macos")]
-    use codex_protocol::models::MacOsPreferencesValue;
+    use codex_protocol::models::MacOsSeatbeltProfileExtensions;
     use codex_protocol::models::PermissionProfile;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
@@ -439,13 +360,13 @@ mod tests {
         let profile = compile_permission_profile(
             &skill_dir,
             Some(PermissionProfile {
-                macos: Some(MacOsPermissions {
-                    preferences: Some(MacOsPreferencesValue::Mode("readwrite".to_string())),
-                    automations: Some(MacOsAutomationValue::BundleIds(vec![
+                macos: Some(MacOsSeatbeltProfileExtensions {
+                    macos_preferences: MacOsPreferencesPermission::ReadWrite,
+                    macos_automation: MacOsAutomationPermission::BundleIds(vec![
                         "com.apple.Notes".to_string(),
-                    ])),
-                    accessibility: Some(true),
-                    calendar: Some(true),
+                    ]),
+                    macos_accessibility: true,
+                    macos_calendar: true,
                 }),
                 ..Default::default()
             }),

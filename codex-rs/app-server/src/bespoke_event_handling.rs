@@ -606,17 +606,15 @@ pub(crate) async fn apply_bespoke_event_handling(
                     server_name: request.server_name.clone(),
                     request: request.request.into(),
                 };
-                let (pending_request_id, rx) = outgoing
+                let rx = outgoing
                     .send_request(ServerRequestPayload::McpServerElicitationRequest(params))
                     .await;
                 tokio::spawn(async move {
                     on_mcp_server_elicitation_response(
                         request.server_name,
                         request.id,
-                        pending_request_id,
                         rx,
                         conversation,
-                        thread_state,
                         permission_guard,
                     )
                     .await;
@@ -2025,14 +2023,11 @@ async fn on_request_user_input_response(
 async fn on_mcp_server_elicitation_response(
     server_name: String,
     request_id: codex_protocol::mcp::RequestId,
-    pending_request_id: RequestId,
     receiver: oneshot::Receiver<ClientRequestResult>,
     conversation: Arc<CodexThread>,
-    thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(permission_guard);
     let response = mcp_server_elicitation_response_from_client_result(response);
 
@@ -2082,6 +2077,18 @@ fn mcp_server_elicitation_response_from_client_result(
             }
         }
     }
+}
+
+fn is_turn_transition_server_request_error(err: &JSONRPCErrorError) -> bool {
+    err.data
+        .as_ref()
+        .and_then(|data| data.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|reason| reason == "turnTransition")
+        || err
+            .message
+            .to_ascii_lowercase()
+            .contains("turn state was changed")
 }
 
 const REVIEW_FALLBACK_MESSAGE: &str = "Reviewer failed to output a response.";

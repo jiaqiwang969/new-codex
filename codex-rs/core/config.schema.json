@@ -324,6 +324,9 @@
             "apps_mcp_gateway": {
               "type": "boolean"
             },
+            "artifact": {
+              "type": "boolean"
+            },
             "child_agents_md": {
               "type": "boolean"
             },
@@ -360,6 +363,9 @@
             "experimental_windows_sandbox": {
               "type": "boolean"
             },
+            "fast_mode": {
+              "type": "boolean"
+            },
             "freeze_sandbox_debug": {
               "type": "boolean"
             },
@@ -382,6 +388,9 @@
               "type": "boolean"
             },
             "personality": {
+              "type": "boolean"
+            },
+            "plugins": {
               "type": "boolean"
             },
             "powershell_utf8": {
@@ -1676,6 +1685,9 @@
         "apps_mcp_gateway": {
           "type": "boolean"
         },
+        "artifact": {
+          "type": "boolean"
+        },
         "child_agents_md": {
           "type": "boolean"
         },
@@ -1712,6 +1724,9 @@
         "experimental_windows_sandbox": {
           "type": "boolean"
         },
+        "fast_mode": {
+          "type": "boolean"
+        },
         "freeze_sandbox_debug": {
           "type": "boolean"
         },
@@ -1734,6 +1749,9 @@
           "type": "boolean"
         },
         "personality": {
+          "type": "boolean"
+        },
+        "plugins": {
           "type": "boolean"
         },
         "powershell_utf8": {

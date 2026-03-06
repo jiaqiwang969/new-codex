@@ -185,6 +185,12 @@ impl ToolOrchestrator {
             enforce_managed_network: has_managed_network_requirements,
             manager: &self.sandbox,
             sandbox_cwd: &turn_ctx.cwd,
+            #[cfg(target_os = "macos")]
+            macos_seatbelt_profile_extensions: turn_ctx
+                .config
+                .permissions
+                .macos_seatbelt_profile_extensions
+                .as_ref(),
             codex_linux_sandbox_exe: turn_ctx.codex_linux_sandbox_exe.as_ref(),
             use_linux_sandbox_bwrap,
             windows_sandbox_level: turn_ctx.windows_sandbox_level,
@@ -299,6 +305,12 @@ impl ToolOrchestrator {
                     enforce_managed_network: has_managed_network_requirements,
                     manager: &self.sandbox,
                     sandbox_cwd: &turn_ctx.cwd,
+                    #[cfg(target_os = "macos")]
+                    macos_seatbelt_profile_extensions: turn_ctx
+                        .config
+                        .permissions
+                        .macos_seatbelt_profile_extensions
+                        .as_ref(),
                     codex_linux_sandbox_exe: None,
                     use_linux_sandbox_bwrap,
                     windows_sandbox_level: turn_ctx.windows_sandbox_level,

@@ -978,8 +978,6 @@ mod tests {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
         let exec_request = ApprovalRequest::Exec {
-            thread_id: ThreadId::new(),
-            thread_label: None,
             id: "test".into(),
             command: vec!["osascript".into(), "-e".into(), "tell application".into()],
             reason: Some("need macOS automation".into()),

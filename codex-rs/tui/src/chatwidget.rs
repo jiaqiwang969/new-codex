@@ -1189,7 +1189,7 @@ impl ChatWidget {
         );
         self.refresh_model_display();
         self.sync_personality_command_enabled();
-        let show_fast_status = self.should_show_fast_status(event.service_tier);
+        let show_fast_status = self.should_show_fast_status();
         let session_info_cell = history_cell::new_session_info(
             &self.config,
             &model_for_header,
@@ -9187,17 +9187,8 @@ impl ChatWidget {
         self.config.personality = Some(personality);
     }
 
-    /// Set Fast mode in the widget's config copy.
-    pub(crate) fn set_service_tier(&mut self, service_tier: Option<ServiceTier>) {
-        self.config.service_tier = service_tier;
-    }
-
-    pub(crate) fn current_service_tier(&self) -> Option<ServiceTier> {
-        self.config.service_tier
-    }
-
-    pub(crate) fn should_show_fast_status(&self, service_tier: Option<ServiceTier>) -> bool {
-        matches!(service_tier, Some(ServiceTier::Fast))
+    pub(crate) fn should_show_fast_status(&self) -> bool {
+        self.fast_mode_enabled()
             && self
                 .auth_manager
                 .auth_cached()
@@ -9209,16 +9200,6 @@ impl ChatWidget {
         self.config.features.enabled(Feature::FastMode)
     }
 
-    pub(crate) fn set_realtime_audio_device(
-        &mut self,
-        kind: RealtimeAudioDeviceKind,
-        name: Option<String>,
-    ) {
-        match kind {
-            RealtimeAudioDeviceKind::Microphone => self.config.realtime_audio.microphone = name,
-            RealtimeAudioDeviceKind::Speaker => self.config.realtime_audio.speaker = name,
-        }
-    }
     /// Set the syntax theme override in the widget's config copy.
     pub(crate) fn set_tui_theme(&mut self, theme: Option<String>) {
         self.config.tui_theme = theme;

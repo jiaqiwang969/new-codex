@@ -1537,10 +1537,6 @@ permissions:
             outcome.errors
         );
         assert_eq!(outcome.skills.len(), 1);
-        let profile = outcome.skills[0]
-            .permissions
-            .as_ref()
-            .expect("permission profile");
         assert_eq!(
             outcome.skills[0].permission_profile,
             Some(PermissionProfile {

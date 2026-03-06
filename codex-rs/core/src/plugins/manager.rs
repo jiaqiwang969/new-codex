@@ -13,7 +13,6 @@ use crate::config::ConfigServiceError;
 use crate::config::ConfigToml;
 use crate::config::profile::ConfigProfile;
 use crate::config::types::McpServerConfig;
-use crate::config::types::PluginConfig;
 use crate::config_loader::ConfigLayerStack;
 use crate::features::Feature;
 use crate::features::FeatureOverrides;
@@ -35,6 +34,16 @@ use tracing::warn;
 const DEFAULT_SKILLS_DIR_NAME: &str = "skills";
 const DEFAULT_MCP_CONFIG_FILE: &str = ".mcp.json";
 const DEFAULT_APP_CONFIG_FILE: &str = ".app.json";
+
+#[derive(Debug, Clone, Deserialize)]
+struct PluginConfig {
+    #[serde(default = "default_plugin_enabled")]
+    enabled: bool,
+}
+
+const fn default_plugin_enabled() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AppConnectorId(pub String);
@@ -380,16 +389,6 @@ pub(crate) fn load_plugins_from_layer_stack(
     }
 
     PluginLoadOutcome::from_plugins(plugins)
-}
-
-pub(crate) fn plugin_namespace_for_skill_path(path: &Path) -> Option<String> {
-    for ancestor in path.ancestors() {
-        if let Some(manifest) = load_plugin_manifest(ancestor) {
-            return Some(plugin_manifest_name(&manifest, ancestor));
-        }
-    }
-
-    None
 }
 
 fn configured_plugins_from_stack(
@@ -754,7 +753,6 @@ mod tests {
                         enabled_tools: None,
                         disabled_tools: None,
                         scopes: None,
-                        oauth_resource: None,
                     },
                 )]),
                 apps: vec![AppConnectorId("connector_example".to_string())],
@@ -909,7 +907,6 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             scopes: None,
-            oauth_resource: None,
         };
         let plugin = |config_name: &str, dir_name: &str, manifest_name: &str| LoadedPlugin {
             config_name: config_name.to_string(),
@@ -976,24 +973,6 @@ mod tests {
                     ..summary("beta@test", "beta-plugin")
                 },
             ]
-        );
-    }
-
-    #[test]
-    fn plugin_namespace_for_skill_path_uses_manifest_name() {
-        let codex_home = TempDir::new().unwrap();
-        let plugin_root = codex_home.path().join("plugins/sample");
-        let skill_path = plugin_root.join("skills/search/SKILL.md");
-
-        write_file(
-            &plugin_root.join(".codex-plugin/plugin.json"),
-            r#"{"name":"sample"}"#,
-        );
-        write_file(&skill_path, "---\ndescription: search\n---\n");
-
-        assert_eq!(
-            plugin_namespace_for_skill_path(&skill_path),
-            Some("sample".to_string())
         );
     }
 
