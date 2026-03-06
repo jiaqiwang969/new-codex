@@ -3208,6 +3208,11 @@ mod tests {
     use crate::items::ImageGenerationItem;
     use crate::items::UserMessageItem;
     use crate::items::WebSearchItem;
+    use crate::permissions::FileSystemAccessMode;
+    use crate::permissions::FileSystemPath;
+    use crate::permissions::FileSystemSandboxEntry;
+    use crate::permissions::FileSystemSandboxPolicy;
+    use crate::permissions::NetworkSandboxPolicy;
     use anyhow::Result;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;

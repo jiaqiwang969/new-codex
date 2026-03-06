@@ -27,6 +27,7 @@ use crate::config::types::WindowsSandboxModeToml;
 use crate::config::types::WindowsToml;
 use crate::config_loader::CloudRequirementsLoader;
 use crate::config_loader::ConfigLayerStack;
+use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::ConfigRequirements;
 use crate::config_loader::ConstrainedWithSource;
 use crate::config_loader::LoaderOverrides;
@@ -90,8 +91,10 @@ use std::path::PathBuf;
 #[cfg(test)]
 use tempfile::tempdir;
 
-use crate::config::permissions::network_proxy_config_from_permissions;
+use crate::config::permissions::compile_permission_profile;
+use crate::config::permissions::network_proxy_config_from_profile_network;
 use crate::config::profile::ConfigProfile;
+use codex_network_proxy::NetworkProxyConfig;
 use toml::Value as TomlValue;
 use toml_edit::DocumentMut;
 
@@ -111,8 +114,12 @@ pub use codex_network_proxy::NetworkProxyAuditMetadata;
 pub use managed_features::ManagedFeatures;
 pub use network_proxy_spec::NetworkProxySpec;
 pub use network_proxy_spec::StartedNetworkProxy;
+pub use permissions::FilesystemPermissionToml;
+pub use permissions::FilesystemPermissionsToml;
 pub use permissions::NetworkToml;
+pub use permissions::PermissionProfileToml;
 pub use permissions::PermissionsToml;
+pub(crate) use permissions::resolve_permission_profile;
 pub use service::ConfigService;
 pub use service::ConfigServiceError;
 
@@ -189,9 +196,11 @@ pub struct Permissions {
     pub approval_policy: Constrained<AskForApproval>,
     /// Effective sandbox policy used for shell/unified exec.
     pub sandbox_policy: Constrained<SandboxPolicy>,
-    /// Effective filesystem sandbox policy projected from the effective sandbox policy.
+    /// Effective filesystem sandbox policy, including entries that cannot yet
+    /// be fully represented by the legacy [`SandboxPolicy`] projection.
     pub file_system_sandbox_policy: FileSystemSandboxPolicy,
-    /// Effective network sandbox policy projected from the effective sandbox policy.
+    /// Effective network sandbox policy split out from the legacy
+    /// [`SandboxPolicy`] projection.
     pub network_sandbox_policy: NetworkSandboxPolicy,
     /// Effective network configuration applied to all spawned processes.
     pub network: Option<NetworkProxySpec>,
@@ -1081,7 +1090,11 @@ pub struct ConfigToml {
     /// Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`.
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
 
-    /// Nested permissions settings.
+    /// Default named permissions profile to apply from the `[permissions]`
+    /// table.
+    pub default_permissions: Option<String>,
+
+    /// Named permissions profiles.
     #[serde(default)]
     pub permissions: Option<PermissionsToml>,
 
@@ -1599,6 +1612,78 @@ impl ConfigToml {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionConfigSyntax {
+    Legacy,
+    Profiles,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PermissionSelectionToml {
+    default_permissions: Option<String>,
+    sandbox_mode: Option<SandboxMode>,
+}
+
+fn resolve_permission_config_syntax(
+    config_layer_stack: &ConfigLayerStack,
+    cfg: &ConfigToml,
+    sandbox_mode_override: Option<SandboxMode>,
+    profile_sandbox_mode: Option<SandboxMode>,
+) -> Option<PermissionConfigSyntax> {
+    if sandbox_mode_override.is_some() || profile_sandbox_mode.is_some() {
+        return Some(PermissionConfigSyntax::Legacy);
+    }
+
+    let mut selection = None;
+    for layer in
+        config_layer_stack.get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, false)
+    {
+        let Ok(layer_selection) = layer.config.clone().try_into::<PermissionSelectionToml>() else {
+            continue;
+        };
+
+        if layer_selection.sandbox_mode.is_some() {
+            selection = Some(PermissionConfigSyntax::Legacy);
+        }
+        if layer_selection.default_permissions.is_some() {
+            selection = Some(PermissionConfigSyntax::Profiles);
+        }
+    }
+
+    selection.or_else(|| {
+        if cfg.default_permissions.is_some() {
+            Some(PermissionConfigSyntax::Profiles)
+        } else if cfg.sandbox_mode.is_some() {
+            Some(PermissionConfigSyntax::Legacy)
+        } else {
+            None
+        }
+    })
+}
+
+fn add_additional_file_system_writes(
+    file_system_sandbox_policy: &mut FileSystemSandboxPolicy,
+    additional_writable_roots: &[AbsolutePathBuf],
+) {
+    for path in additional_writable_roots {
+        let exists = file_system_sandbox_policy.entries.iter().any(|entry| {
+            matches!(
+                &entry.path,
+                codex_protocol::permissions::FileSystemPath::Path { path: existing }
+                    if existing == path && entry.access == codex_protocol::permissions::FileSystemAccessMode::Write
+            )
+        });
+        if !exists {
+            file_system_sandbox_policy.entries.push(
+                codex_protocol::permissions::FileSystemSandboxEntry {
+                    path: codex_protocol::permissions::FileSystemPath::Path { path: path.clone() },
+                    access: codex_protocol::permissions::FileSystemAccessMode::Write,
+                },
+            );
+        }
+    }
+}
+
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
@@ -1822,9 +1907,6 @@ impl Config {
                 .clone(),
             None => ConfigProfile::default(),
         };
-        let configured_network_proxy_config =
-            network_proxy_config_from_permissions(cfg.permissions.as_ref());
-
         let feature_overrides = FeatureOverrides {
             include_apply_patch_tool: include_apply_patch_tool_override,
             web_search_request: override_tools_web_search_request,
@@ -1851,42 +1933,123 @@ impl Config {
                 }
             }
         };
-        let additional_writable_roots: Vec<AbsolutePathBuf> = additional_writable_roots
+        let mut additional_writable_roots: Vec<AbsolutePathBuf> = additional_writable_roots
             .into_iter()
             .map(|path| AbsolutePathBuf::resolve_path_against_base(path, &resolved_cwd))
             .collect::<Result<Vec<_>, _>>()?;
         let active_project = cfg
             .get_active_project(&resolved_cwd)
             .unwrap_or(ProjectConfig { trust_level: None });
+        let permission_config_syntax = resolve_permission_config_syntax(
+            &config_layer_stack,
+            &cfg,
+            sandbox_mode,
+            config_profile.sandbox_mode,
+        );
+        let has_permission_profiles = cfg
+            .permissions
+            .as_ref()
+            .is_some_and(|profiles| !profiles.is_empty());
+        if has_permission_profiles
+            && !matches!(
+                permission_config_syntax,
+                Some(PermissionConfigSyntax::Legacy)
+            )
+            && cfg.default_permissions.is_none()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "config defines `[permissions]` profiles but does not set `default_permissions`",
+            ));
+        }
 
         let windows_sandbox_level = match windows_sandbox_mode {
             Some(WindowsSandboxModeToml::Elevated) => WindowsSandboxLevel::Elevated,
             Some(WindowsSandboxModeToml::Unelevated) => WindowsSandboxLevel::RestrictedToken,
             None => WindowsSandboxLevel::from_features(&features),
         };
-        let mut sandbox_policy = cfg.derive_sandbox_policy(
-            sandbox_mode,
-            config_profile.sandbox_mode,
-            windows_sandbox_level,
-            &resolved_cwd,
-            Some(&constrained_sandbox_policy),
-        );
-        if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut sandbox_policy {
-            let memories_root = memory_root(&codex_home);
-            std::fs::create_dir_all(&memories_root)?;
-            let memories_root = AbsolutePathBuf::from_absolute_path(&memories_root)?;
-            if !writable_roots
-                .iter()
-                .any(|existing| existing == &memories_root)
-            {
-                writable_roots.push(memories_root);
+        let memories_root = memory_root(&codex_home);
+        std::fs::create_dir_all(&memories_root)?;
+        let memories_root = AbsolutePathBuf::from_absolute_path(&memories_root)?;
+        if !additional_writable_roots
+            .iter()
+            .any(|existing| existing == &memories_root)
+        {
+            additional_writable_roots.push(memories_root);
+        }
+
+        let profiles_are_active = matches!(
+            permission_config_syntax,
+            Some(PermissionConfigSyntax::Profiles)
+        ) || (permission_config_syntax.is_none()
+            && has_permission_profiles);
+        let (
+            configured_network_proxy_config,
+            sandbox_policy,
+            file_system_sandbox_policy,
+            network_sandbox_policy,
+        ) = if profiles_are_active {
+            let permissions = cfg.permissions.as_ref().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "default_permissions requires a `[permissions]` table",
+                )
+            })?;
+            let default_permissions = cfg.default_permissions.as_deref().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "default_permissions requires a named permissions profile",
+                )
+            })?;
+            let profile = resolve_permission_profile(permissions, default_permissions)?;
+            let configured_network_proxy_config =
+                network_proxy_config_from_profile_network(profile.network.as_ref());
+            let (mut file_system_sandbox_policy, network_sandbox_policy) =
+                compile_permission_profile(permissions, default_permissions)?;
+            let mut sandbox_policy = file_system_sandbox_policy
+                .to_legacy_sandbox_policy(network_sandbox_policy, &resolved_cwd)?;
+            if matches!(sandbox_policy, SandboxPolicy::WorkspaceWrite { .. }) {
+                add_additional_file_system_writes(
+                    &mut file_system_sandbox_policy,
+                    &additional_writable_roots,
+                );
+                sandbox_policy = file_system_sandbox_policy
+                    .to_legacy_sandbox_policy(network_sandbox_policy, &resolved_cwd)?;
             }
-            for path in additional_writable_roots {
-                if !writable_roots.iter().any(|existing| existing == &path) {
-                    writable_roots.push(path);
+            (
+                configured_network_proxy_config,
+                sandbox_policy,
+                file_system_sandbox_policy,
+                network_sandbox_policy,
+            )
+        } else {
+            let configured_network_proxy_config = NetworkProxyConfig::default();
+            let mut sandbox_policy = cfg.derive_sandbox_policy(
+                sandbox_mode,
+                config_profile.sandbox_mode,
+                windows_sandbox_level,
+                &resolved_cwd,
+                Some(&constrained_sandbox_policy),
+            );
+            if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut sandbox_policy {
+                for path in &additional_writable_roots {
+                    if !writable_roots.iter().any(|existing| existing == path) {
+                        writable_roots.push(path.clone());
+                    }
                 }
             }
-        }
+            let file_system_sandbox_policy = FileSystemSandboxPolicy::from(&sandbox_policy);
+            let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
+            (
+                configured_network_proxy_config,
+                sandbox_policy,
+                file_system_sandbox_policy,
+                network_sandbox_policy,
+            )
+        };
+        let approval_policy_was_explicit = approval_policy_override.is_some()
+            || config_profile.approval_policy.is_some()
+            || cfg.approval_policy.is_some();
         let mut approval_policy = approval_policy_override
             .or(config_profile.approval_policy)
             .or(cfg.approval_policy)
@@ -1899,7 +2062,9 @@ impl Config {
                     AskForApproval::default()
                 }
             });
-        if let Err(err) = constrained_approval_policy.can_set(&approval_policy) {
+        if !approval_policy_was_explicit
+            && let Err(err) = constrained_approval_policy.can_set(&approval_policy)
+        {
             tracing::warn!(
                 error = %err,
                 "default approval policy is disallowed by requirements; falling back to required default"
@@ -2165,6 +2330,7 @@ impl Config {
             .map(AbsolutePathBuf::to_path_buf)
             .or_else(|| resolve_sqlite_home_env(&resolved_cwd))
             .unwrap_or_else(|| codex_home.to_path_buf());
+        let original_sandbox_policy = sandbox_policy.clone();
 
         apply_requirement_constrained_value(
             "approval_policy",
@@ -2213,10 +2379,19 @@ impl Config {
         } else {
             network.enabled().then_some(network)
         };
-        let file_system_sandbox_policy =
-            FileSystemSandboxPolicy::from(constrained_sandbox_policy.value.get());
-        let network_sandbox_policy =
-            NetworkSandboxPolicy::from(constrained_sandbox_policy.value.get());
+        let effective_sandbox_policy = constrained_sandbox_policy.value.get().clone();
+        let effective_file_system_sandbox_policy =
+            if effective_sandbox_policy == original_sandbox_policy {
+                file_system_sandbox_policy
+            } else {
+                FileSystemSandboxPolicy::from(&effective_sandbox_policy)
+            };
+        let effective_network_sandbox_policy =
+            if effective_sandbox_policy == original_sandbox_policy {
+                network_sandbox_policy
+            } else {
+                NetworkSandboxPolicy::from(&effective_sandbox_policy)
+            };
 
         let config = Self {
             model,
@@ -2231,8 +2406,8 @@ impl Config {
             permissions: Permissions {
                 approval_policy: constrained_approval_policy.value,
                 sandbox_policy: constrained_sandbox_policy.value,
-                file_system_sandbox_policy,
-                network_sandbox_policy,
+                file_system_sandbox_policy: effective_file_system_sandbox_policy,
+                network_sandbox_policy: effective_network_sandbox_policy,
                 network,
                 allow_login_shell,
                 shell_environment_policy,
@@ -2610,6 +2785,7 @@ mod tests {
     use crate::config_loader::RequirementSource;
     use crate::features::Feature;
     use codex_config::CONFIG_TOML_FILE;
+    use codex_protocol::permissions::FileSystemAccessMode;
 
     use super::*;
     use core_test_support::test_absolute_path;
@@ -2795,9 +2971,18 @@ entire_summary_enabled = false
     }
 
     #[test]
-    fn config_toml_deserializes_permissions_network() {
+    fn config_toml_deserializes_permission_profiles() {
         let toml = r#"
-[permissions.network]
+default_permissions = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.filesystem.":project_roots"]
+"." = "write"
+"docs" = "read"
+
+[permissions.workspace.network]
 enabled = true
 proxy_url = "http://127.0.0.1:43128"
 enable_socks5 = false
@@ -2805,55 +2990,92 @@ allow_upstream_proxy = false
 allowed_domains = ["openai.com"]
 "#;
         let cfg: ConfigToml = toml::from_str(toml)
-            .expect("TOML deserialization should succeed for permissions.network");
+            .expect("TOML deserialization should succeed for permissions profiles");
 
+        assert_eq!(cfg.default_permissions.as_deref(), Some("workspace"));
         assert_eq!(
-            cfg.permissions
-                .and_then(|permissions| permissions.network)
-                .expect("permissions.network should deserialize"),
-            NetworkToml {
-                enabled: Some(true),
-                proxy_url: Some("http://127.0.0.1:43128".to_string()),
-                enable_socks5: Some(false),
-                socks_url: None,
-                enable_socks5_udp: None,
-                allow_upstream_proxy: Some(false),
-                dangerously_allow_non_loopback_proxy: None,
-                dangerously_allow_all_unix_sockets: None,
-                mode: None,
-                allowed_domains: Some(vec!["openai.com".to_string()]),
-                denied_domains: None,
-                allow_unix_sockets: None,
-                allow_local_binding: None,
+            cfg.permissions.expect("[permissions] should deserialize"),
+            PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([
+                                (
+                                    ":minimal".to_string(),
+                                    FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                                ),
+                                (
+                                    ":project_roots".to_string(),
+                                    FilesystemPermissionToml::Scoped(BTreeMap::from([
+                                        (".".to_string(), FileSystemAccessMode::Write),
+                                        ("docs".to_string(), FileSystemAccessMode::Read),
+                                    ])),
+                                ),
+                            ]),
+                        }),
+                        network: Some(NetworkToml {
+                            enabled: Some(true),
+                            proxy_url: Some("http://127.0.0.1:43128".to_string()),
+                            enable_socks5: Some(false),
+                            socks_url: None,
+                            enable_socks5_udp: None,
+                            allow_upstream_proxy: Some(false),
+                            dangerously_allow_non_loopback_proxy: None,
+                            dangerously_allow_all_unix_sockets: None,
+                            mode: None,
+                            allowed_domains: Some(vec!["openai.com".to_string()]),
+                            denied_domains: None,
+                            allow_unix_sockets: None,
+                            allow_local_binding: None,
+                        }),
+                    },
+                )]),
             }
         );
     }
 
     #[test]
-    fn permissions_network_enabled_populates_runtime_network_proxy_spec() -> std::io::Result<()> {
+    fn permissions_profiles_network_populates_runtime_network_proxy_spec() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
-        let cfg = ConfigToml {
-            permissions: Some(PermissionsToml {
-                network: Some(NetworkToml {
-                    enabled: Some(true),
-                    proxy_url: Some("http://127.0.0.1:43128".to_string()),
-                    enable_socks5: Some(false),
-                    ..Default::default()
-                }),
-            }),
-            ..Default::default()
-        };
+        let cwd = TempDir::new()?;
+        std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
 
         let config = Config::load_from_base_config_with_overrides(
-            cfg,
-            ConfigOverrides::default(),
+            ConfigToml {
+                default_permissions: Some("workspace".to_string()),
+                permissions: Some(PermissionsToml {
+                    entries: BTreeMap::from([(
+                        "workspace".to_string(),
+                        PermissionProfileToml {
+                            filesystem: Some(FilesystemPermissionsToml {
+                                entries: BTreeMap::from([(
+                                    ":minimal".to_string(),
+                                    FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                                )]),
+                            }),
+                            network: Some(NetworkToml {
+                                enabled: Some(true),
+                                proxy_url: Some("http://127.0.0.1:43128".to_string()),
+                                enable_socks5: Some(false),
+                                ..Default::default()
+                            }),
+                        },
+                    )]),
+                }),
+                ..Default::default()
+            },
+            ConfigOverrides {
+                cwd: Some(cwd.path().to_path_buf()),
+                ..Default::default()
+            },
             codex_home.path().to_path_buf(),
         )?;
         let network = config
             .permissions
             .network
             .as_ref()
-            .expect("enabled permissions.network should produce a NetworkProxySpec");
+            .expect("enabled profile network should produce a NetworkProxySpec");
 
         assert_eq!(network.proxy_host_and_port(), "127.0.0.1:43128");
         assert!(!network.socks_enabled());
@@ -2861,23 +3083,41 @@ allowed_domains = ["openai.com"]
     }
 
     #[test]
-    fn permissions_network_disabled_by_default_does_not_start_proxy() -> std::io::Result<()> {
+    fn permissions_profiles_network_disabled_by_default_does_not_start_proxy() -> std::io::Result<()>
+    {
         let codex_home = TempDir::new()?;
-        let cfg = ConfigToml {
-            permissions: Some(PermissionsToml {
-                network: Some(NetworkToml {
-                    allowed_domains: Some(vec!["openai.com".to_string()]),
-                    ..Default::default()
-                }),
-            }),
-            ..Default::default()
-        };
+        let cwd = TempDir::new()?;
+        std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
 
         let config = Config::load_from_base_config_with_overrides(
-            cfg,
-            ConfigOverrides::default(),
+            ConfigToml {
+                default_permissions: Some("workspace".to_string()),
+                permissions: Some(PermissionsToml {
+                    entries: BTreeMap::from([(
+                        "workspace".to_string(),
+                        PermissionProfileToml {
+                            filesystem: Some(FilesystemPermissionsToml {
+                                entries: BTreeMap::from([(
+                                    ":minimal".to_string(),
+                                    FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                                )]),
+                            }),
+                            network: Some(NetworkToml {
+                                allowed_domains: Some(vec!["openai.com".to_string()]),
+                                ..Default::default()
+                            }),
+                        },
+                    )]),
+                }),
+                ..Default::default()
+            },
+            ConfigOverrides {
+                cwd: Some(cwd.path().to_path_buf()),
+                ..Default::default()
+            },
             codex_home.path().to_path_buf(),
         )?;
+
         assert!(config.permissions.network.is_none());
         Ok(())
     }
