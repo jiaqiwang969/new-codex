@@ -3242,6 +3242,26 @@ impl Session {
         {
             developer_sections.push(memory_prompt);
         }
+        if !matches!(turn_context.session_source, SessionSource::SubAgent(_))
+            && let Ok(checkpoints) =
+                crate::entire_integration::get_recent_entire_checkpoints_with_summaries(
+                    turn_context.cwd.as_path(),
+                    3,
+                )
+                .await
+            && !checkpoints.is_empty()
+        {
+            let summary = crate::entire_integration::format_checkpoints_summary(&checkpoints);
+            let summary = codex_utils_string::take_last_bytes_at_char_boundary(&summary, 3000)
+                .trim()
+                .to_string();
+            if !summary.is_empty() {
+                developer_sections.push(format!(
+                    "Recent AI Sessions (via Entire):
+{summary}"
+                ));
+            }
+        }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         if let Some(collab_instructions) =
             DeveloperInstructions::from_collaboration_mode(&collaboration_mode)
@@ -9184,6 +9204,67 @@ mod tests {
     }
 
     // todo: use online model info
+    fn init_git_repo_with_entire_checkpoint(repo_root: &Path) {
+        let run_git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo_root)
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let run_git_with_env = |args: &[&str], envs: &[(&str, &str)]| {
+            let mut command = std::process::Command::new("git");
+            command.args(args).current_dir(repo_root);
+            for (key, value) in envs {
+                command.env(key, value);
+            }
+            let output = command.output().expect("run git with env");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run_git(&["init"]);
+        run_git(&["config", "user.name", "Codex Tests"]);
+        run_git(&["config", "user.email", "codex@example.com"]);
+        std::fs::write(repo_root.join("feature.txt"), "baseline").expect("write file");
+        run_git(&["add", "feature.txt"]);
+        run_git(&["commit", "-m", "Initial commit"]);
+        std::fs::write(repo_root.join("feature.txt"), "hello").expect("write file");
+        run_git(&["add", "feature.txt"]);
+        run_git_with_env(
+            &[
+                "commit",
+                "-m",
+                "Add Entire history plumbing",
+                "-m",
+                "Entire-Checkpoint: checkpoint-123456789",
+            ],
+            &[
+                ("GIT_AUTHOR_DATE", "2025-01-02T03:04:05Z"),
+                ("GIT_COMMITTER_DATE", "2025-01-02T03:04:05Z"),
+            ],
+        );
+        run_git(&["checkout", "-b", "entire/checkpoint-123456789"]);
+        std::fs::write(
+            repo_root.join("session.json"),
+            r#"{"model_slug":"gpt-5.3-codex"}"#,
+        )
+        .expect("write session json");
+        run_git(&["add", "session.json"]);
+        run_git(&["commit", "-m", "Store session metadata"]);
+        run_git(&["checkout", "-"]);
+    }
+
     pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         let (tx_event, _rx_event) = async_channel::unbounded();
         let codex_home = tempfile::tempdir().expect("create temp dir");
@@ -10036,6 +10117,86 @@ mod tests {
                 .iter()
                 .any(|text| text.contains("Reason: inactive")),
             "expected a realtime end update from previous turn settings, got {developer_texts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_includes_recent_entire_sessions_for_primary_session() {
+        let repo_root = tempfile::tempdir().expect("create temp dir");
+        init_git_repo_with_entire_checkpoint(repo_root.path());
+        codex_hooks::save_summary(
+            repo_root.path(),
+            "checkpoint-123456789",
+            &codex_hooks::EntireSummary {
+                is_meaningful: true,
+                motivation: Some("Keep upstream alignment context visible".to_string()),
+                approach: None,
+                challenges: None,
+                tradeoffs: None,
+                outcome: Some(
+                    "Future turns reuse prior rationale instead of duplicating work".to_string(),
+                ),
+            },
+        )
+        .await
+        .expect("save summary");
+
+        let (session, mut turn_context) = make_session_and_context().await;
+        turn_context.cwd = repo_root.path().to_path_buf();
+
+        let initial_context = session.build_initial_context(&turn_context).await;
+        let developer_texts = developer_input_texts(&initial_context);
+        assert!(
+            developer_texts
+                .iter()
+                .any(|text| text.contains("Recent AI Sessions (via Entire):")),
+            "expected recent Entire sessions in developer instructions, got {developer_texts:?}"
+        );
+        assert!(
+            developer_texts.iter().any(|text| text.contains(
+                "Keep upstream alignment context visible → Future turns reuse prior rationale instead of duplicating work"
+            )),
+            "expected Entire WHY summary in developer instructions, got {developer_texts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_skips_recent_entire_sessions_for_subagents() {
+        let repo_root = tempfile::tempdir().expect("create temp dir");
+        init_git_repo_with_entire_checkpoint(repo_root.path());
+        codex_hooks::save_summary(
+            repo_root.path(),
+            "checkpoint-123456789",
+            &codex_hooks::EntireSummary {
+                is_meaningful: true,
+                motivation: Some("Keep upstream alignment context visible".to_string()),
+                approach: None,
+                challenges: None,
+                tradeoffs: None,
+                outcome: Some(
+                    "Future turns reuse prior rationale instead of duplicating work".to_string(),
+                ),
+            },
+        )
+        .await
+        .expect("save summary");
+
+        let (session, mut turn_context) = make_session_and_context().await;
+        turn_context.cwd = repo_root.path().to_path_buf();
+        turn_context.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_nickname: None,
+            agent_role: Some("default".to_string()),
+        });
+
+        let initial_context = session.build_initial_context(&turn_context).await;
+        let developer_texts = developer_input_texts(&initial_context);
+        assert!(
+            !developer_texts
+                .iter()
+                .any(|text| text.contains("Recent AI Sessions (via Entire):")),
+            "did not expect Entire context for subagents, got {developer_texts:?}"
         );
     }
 

@@ -30,6 +30,7 @@ pub mod connectors;
 mod context_manager;
 mod contextual_user_message;
 pub mod custom_prompts;
+pub mod entire_integration;
 pub mod env;
 mod environment_context;
 pub mod error;
