@@ -163,27 +163,27 @@ Validated in `codex-rs` on this branch:
 - `just fix -p codex-tui`
 - `just fmt`
 
-### Current known verification gap
+### `codex-core` verification status
 
-`cargo test -p codex-core` is not fully green on this machine when run as the full crate suite.
+A fresh full-crate verification was completed successfully on this machine once the file-descriptor limit was raised before the run.
 
-Observed failure classes:
+Verified command:
 
-- environment-specific `zsh` path expectation mismatch
-- environment-specific seatbelt filesystem permission behavior
-- low `ulimit -n` causing `Too many open files` during large parallel test execution
+- `ulimit -n 4096 && cargo test -p codex-core`
 
-Concrete reproduction note from this branch:
+Fresh result from this branch:
 
-- on this machine, `cargo test -p codex-core` fails quickly under the default soft limit of `256` file descriptors with `os error 24`
-- the failing examples included `agent::role::tests::apply_role_preserves_unspecified_keys`, `agent::control::tests::spawn_agent_fork_injects_output_for_parent_spawn_call`, and several `tools::handlers::multi_agents::*` tests
-- raising the soft limit first, for example `ulimit -n 4096 && cargo test -p codex-core`, removes the immediate `EMFILE` failures and allows the suite to keep progressing
-- after raising `nofile`, `codex-core` still contains legitimately long-running integration tests; the harness reports some tests as "running for over 60 seconds", but that is distinct from the earlier file-descriptor failure mode
+- lib tests: `1530 passed; 0 failed; 5 ignored`
+- integration tests in `tests/all.rs`: `738 passed; 0 failed; 18 ignored`
+- `responses_headers`: `4 passed; 0 failed`
+- the long-running portion of the suite completed after about `2381.17s` for `tests/all.rs`
 
-Important triage note:
+Environment diagnosis that still matters:
 
-- the migration-related tests that touch the changed collaboration, config-loading, and js-repl paths were rerun individually and passed
-- this suggests the remaining red signal is dominated by local environment/test-harness sensitivity rather than by the migrated feature slices themselves
+- with the default soft limit of `256`, the same full-crate command previously failed quickly with `os error 24` / `Too many open files`
+- representative failures under the low-limit environment included `agent::role::tests::apply_role_preserves_unspecified_keys`, `agent::control::tests::spawn_agent_fork_injects_output_for_parent_spawn_call`, and several `tools::handlers::multi_agents::*` tests
+- once `nofile` was raised, the suite no longer reproduced those `EMFILE` failures and instead behaved like a legitimately long-running integration suite
+- the harness messages saying some tests had been running for over 60 seconds were not evidence of a deadlock; those tests later completed successfully
 
 ### Full workspace test suite
 
