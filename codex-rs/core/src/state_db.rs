@@ -12,9 +12,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
-use codex_state::DB_METRIC_COMPARE_ERROR;
 pub use codex_state::LogEntry;
-use codex_state::STATE_DB_VERSION;
 use codex_state::ThreadMetadataBuilder;
 use serde_json::Value;
 use std::path::Path;
@@ -275,7 +273,7 @@ pub async fn list_threads_db(
                         item.id,
                         item.rollout_path.display()
                     );
-                    record_discrepancy("list_threads_db", "stale_db_path_dropped");
+                    warn!("state db discrepancy during list_threads_db: stale_db_path_dropped");
                     let _ = ctx.delete_thread(item.id).await;
                 }
             }
@@ -544,7 +542,7 @@ pub async fn read_repair_rollout_path(
         if repaired == metadata {
             return;
         }
-        record_discrepancy("read_repair_rollout_path", "upsert_needed");
+        warn!("state db discrepancy during read_repair_rollout_path: upsert_needed (fast path)");
         if let Err(err) = ctx.upsert_thread(&repaired).await {
             warn!(
                 "state db read-repair upsert failed for {}: {err}",
@@ -558,7 +556,7 @@ pub async fn read_repair_rollout_path(
     // Slow path: when the row is missing/unreadable (or direct upsert failed),
     // rebuild metadata from rollout contents and reconcile it into SQLite.
     if !saw_existing_metadata {
-        record_discrepancy("read_repair_rollout_path", "upsert_needed");
+        warn!("state db discrepancy during read_repair_rollout_path: upsert_needed (slow path)");
     }
     let default_provider = crate::rollout::list::read_session_meta_line(rollout_path)
         .await
@@ -601,7 +599,7 @@ pub async fn apply_rollout_items(
                     "state db apply_rollout_items missing builder during {stage}: {}",
                     rollout_path.display()
                 );
-                record_discrepancy(stage, "missing_builder");
+                warn!("state db discrepancy during apply_rollout_items: {stage}, missing_builder");
                 return;
             }
         },
@@ -643,24 +641,6 @@ pub async fn touch_thread_updated_at(
             warn!("state db touch_thread_updated_at failed during {stage} for {thread_id}: {err}");
             false
         })
-}
-
-/// Record a state discrepancy metric with a stage and reason tag.
-pub fn record_discrepancy(stage: &str, reason: &str) {
-    // We access the global metric because the call sites might not have access to the broader
-    // OtelManager.
-    tracing::warn!("state db record_discrepancy: {stage}, {reason}");
-    if let Some(metric) = codex_otel::metrics::global() {
-        let _ = metric.counter(
-            DB_METRIC_COMPARE_ERROR,
-            1,
-            &[
-                ("stage", stage),
-                ("reason", reason),
-                ("version", &STATE_DB_VERSION.to_string()),
-            ],
-        );
-    }
 }
 
 #[cfg(test)]
