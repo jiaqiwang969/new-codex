@@ -201,6 +201,7 @@ mod tests {
         PluginCapabilitySummary {
             config_name: format!("{display_name}@test"),
             display_name: display_name.to_string(),
+            description: None,
             has_skills: true,
             mcp_server_names: Vec::new(),
             app_connector_ids: Vec::new(),

@@ -12238,6 +12238,107 @@
         "title": "PluginInstallResponse",
         "type": "object"
       },
+      "PluginInterface": {
+        "properties": {
+          "brandColor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "composerIcon": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultPrompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "developerName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "logo": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "longDescription": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "privacyPolicyUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "screenshots": {
+            "items": {
+              "$ref": "#/definitions/v2/AbsolutePathBuf"
+            },
+            "type": "array"
+          },
+          "shortDescription": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "termsOfServiceUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "websiteUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "capabilities",
+          "screenshots"
+        ],
+        "type": "object"
+      },
       "PluginListParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -12277,7 +12378,7 @@
             "type": "string"
           },
           "path": {
-            "type": "string"
+            "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
           "plugins": {
             "items": {
@@ -12298,7 +12399,7 @@
           {
             "properties": {
               "path": {
-                "type": "string"
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
               },
               "type": {
                 "enum": [
@@ -12322,6 +12423,22 @@
           "enabled": {
             "type": "boolean"
           },
+          "id": {
+            "type": "string"
+          },
+          "installed": {
+            "type": "boolean"
+          },
+          "interface": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PluginInterface"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -12331,6 +12448,8 @@
         },
         "required": [
           "enabled",
+          "id",
+          "installed",
           "name",
           "source"
         ],
