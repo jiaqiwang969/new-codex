@@ -10,6 +10,7 @@ members = [
     "apply-patch",
     "arg0",
     "feedback",
+    "git-graph",
     "codex-backend-openapi-models",
     "cloud-requirements",
     "cloud-tasks",
@@ -104,6 +105,7 @@ codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
 codex-feedback = { path = "feedback" }
 codex-file-search = { path = "file-search" }
 codex-git = { path = "utils/git" }
+codex-git-graph = { path = "git-graph" }
 codex-hooks = { path = "hooks" }
 codex-keyring-store = { path = "keyring-store" }
 codex-linux-sandbox = { path = "linux-sandbox" }

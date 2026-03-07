@@ -1,0 +1,28 @@
+[package]
+name = "codex-git-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+description = "Git graph layout and rendering arranged for a branching model"
+
+[lib]
+name = "git_graph"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+atty = "0.2"
+chrono = { workspace = true }
+crossterm = { workspace = true }
+git2 = { version = "0.20", default-features = false }
+itertools = { workspace = true }
+lazy_static = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+svg = "0.12"
+textwrap = { version = "0.16.2", default-features = false, features = ["unicode-width"] }
+toml = { workspace = true }
+yansi = "0.5"
