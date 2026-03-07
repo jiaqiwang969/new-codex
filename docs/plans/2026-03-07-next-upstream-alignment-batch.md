@@ -2,6 +2,8 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+> **Audit update (2026-03-07):** A follow-up content audit found no remaining upstream commits whose touched files still differ from `integration/upstream-main-b2`. Keep this document as historical process guidance; the branch is now in a content-aligned handoff state rather than awaiting another mandatory sync batch.
+
 **Goal:** Continue aligning this customized Codex fork with `upstream/main` in small, low-risk batches while preserving and improving custom capabilities like git-graph, Entire hooks/summaries, account pool, collaboration, and memory.
 
 **Architecture:** Work from the current `integration/upstream-main-b2` branch and prefer upstream commits that either apply cleanly or are already effectively present. For each candidate, verify whether our customized tree already covers the behavior before cherry-picking or porting. Keep each batch small, test the touched Rust crates, and preserve local custom flows unless upstream is clearly better.

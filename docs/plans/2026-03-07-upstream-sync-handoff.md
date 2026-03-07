@@ -196,11 +196,38 @@ Current branch tip includes the following high-value migration commits near the 
 - `e232add41` — `feat: add isolated account-pool persistence overlay`
 - `19794cd88` — `feat: track tool side effects and persist collab mode`
 
+## Final Content-Alignment Audit
+
+A post-integration audit was run against current `upstream/main` to answer a simple question: are there still upstream code changes missing from this branch, or is the remaining divergence mostly commit-history shape plus intentional customizations?
+
+### Audit method
+
+The audit compared this branch to `upstream/main` in two ways:
+
+- `git log --cherry-pick --right-only --no-merges integration/upstream-main-b2...upstream/main` to enumerate upstream commits not present by hash
+- for each resulting upstream commit, compare the current branch against `upstream/main` for that commit's touched files
+
+### Audit result
+
+The result was that every currently outstanding upstream commit in the graph is already **effectively matched by content** on this branch. In other words:
+
+- the branch still reports `ahead 70, behind 38` because the commit graph differs
+- but the 38 "behind" commits do not currently represent missing upstream code/content
+- the remaining diff against `upstream/main` is dominated by intentional custom capabilities and their generated/schema artifacts
+
+### Practical interpretation
+
+At this point, the mainline sync goal has effectively been achieved at the content level:
+
+- upstream behavior has been reabsorbed where it is now canonical or better
+- custom differentiators remain intentionally present where they add product value
+- future sync work should focus on keeping these custom seams narrow rather than chasing the current `behind` count as if it were missing functionality
+
 ## Recommended Next Actions
 
-1. Review the branch delta against `upstream/main` commit-by-commit, starting from the protocol/schema refresh and git-graph reattachment commits.
+1. Review the intentional custom delta against `upstream/main`, focusing on account pool, memory, collaboration/model_sub, Entire integration, and git-graph.
 2. If desired, run the full workspace suite in an environment with a higher file-descriptor limit and stable seatbelt/zsh expectations.
-3. Decide whether to keep this branch as the integration branch of record or open a PR from it as the new upstream-sync landing branch.
+3. Decide whether to keep this branch as the integration branch of record, open a PR from it, or later rebase/merge only for history hygiene.
 
 ## Bottom Line
 
