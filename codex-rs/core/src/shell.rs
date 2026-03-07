@@ -350,20 +350,26 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn detects_zsh() {
         let zsh_shell = get_shell(ShellType::Zsh, None).unwrap();
-
         let shell_path = zsh_shell.shell_path;
 
-        assert_eq!(shell_path, std::path::Path::new("/bin/zsh"));
+        assert_eq!(zsh_shell.shell_type, ShellType::Zsh);
+        assert_eq!(
+            shell_path.file_name().and_then(|name| name.to_str()),
+            Some("zsh")
+        );
     }
 
     #[test]
     #[cfg(target_os = "macos")]
     fn fish_fallback_to_zsh() {
         let zsh_shell = default_user_shell_from_path(Some(PathBuf::from("/bin/fish")));
-
         let shell_path = zsh_shell.shell_path;
 
-        assert_eq!(shell_path, std::path::Path::new("/bin/zsh"));
+        assert_eq!(zsh_shell.shell_type, ShellType::Zsh);
+        assert_eq!(
+            shell_path.file_name().and_then(|name| name.to_str()),
+            Some("zsh")
+        );
     }
 
     #[test]

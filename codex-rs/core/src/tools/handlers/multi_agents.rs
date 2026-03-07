@@ -1779,6 +1779,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde::Deserialize;
     use serde_json::json;
+    use serial_test::serial;
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -2338,6 +2339,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn spawn_agent_default_role_uses_auto_model_sub_from_vouch_when_unset() {
         #[derive(Debug, Deserialize)]
         struct SpawnAgentResult {
@@ -2685,6 +2687,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn spawn_agent_errors_when_manager_dropped() {
         let (session, turn) = make_session_and_context().await;
         let invocation = invocation(
@@ -2831,6 +2834,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         #[derive(Debug, Deserialize)]
         struct SpawnAgentResult {
@@ -2898,6 +2902,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn send_input_rejects_empty_message() {
         let (session, turn) = make_session_and_context().await;
         let invocation = invocation(
@@ -2960,6 +2965,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn send_input_reports_missing_agent() {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
@@ -3020,6 +3026,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn send_input_accepts_structured_items() {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
@@ -3110,6 +3117,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn resume_agent_noops_for_active_agent() {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
@@ -3153,6 +3161,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         #[derive(Debug, Deserialize)]
         struct ResumeAgentResult {
@@ -3361,6 +3370,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn wait_returns_not_found_for_missing_agents() {
         #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
         struct WaitResult {
@@ -3499,6 +3509,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn wait_returns_final_status_without_timeout() {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();

@@ -20,6 +20,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serial_test::serial;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -27,6 +28,7 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(memory_phase2)]
 async fn memories_startup_phase2_tracks_added_and_removed_inputs_across_runs() -> Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
@@ -160,6 +162,7 @@ async fn memories_startup_phase2_tracks_added_and_removed_inputs_across_runs() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(memory_phase2)]
 async fn web_search_pollution_moves_selected_thread_into_removed_phase2_inputs() -> Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
@@ -424,7 +427,7 @@ async fn wait_for_phase2_success(
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for phase2 success for {expected_thread_id}"
+            "timed out waiting for phase2 success for {expected_thread_id}: {selection:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

@@ -18,6 +18,28 @@ const CODEX_HOME_ENV_VAR: &str = "CODEX_HOME";
 // It allows the test binary to behave like codex and dispatch to apply_patch and codex-linux-sandbox
 // based on the arg0.
 // NOTE: this doesn't work on ARM
+#[cfg(unix)]
+#[ctor]
+fn raise_open_file_limit_for_tests() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 || limit.rlim_cur >= limit.rlim_max
+        {
+            return;
+        }
+
+        let updated = libc::rlimit {
+            rlim_cur: limit.rlim_max,
+            ..limit
+        };
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &updated);
+    }
+}
+
 #[ctor]
 pub static CODEX_ALIASES_TEMP_DIR: TestCodexAliasesGuard = unsafe {
     #[allow(clippy::unwrap_used)]

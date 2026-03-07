@@ -1743,6 +1743,7 @@ mod tests {
     use codex_protocol::models::ResponseInputItem;
     use codex_protocol::openai_models::InputModality;
     use pretty_assertions::assert_eq;
+    use serial_test::serial;
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
@@ -1988,6 +1989,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn emitted_image_content_item_preserves_explicit_detail() {
         let (_session, turn) = make_session_and_context().await;
         let content_item = emitted_image_content_item(
@@ -2005,6 +2007,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn emitted_image_content_item_uses_turn_original_detail_when_enabled() {
         let (_session, mut turn) = make_session_and_context().await;
         Arc::make_mut(&mut turn.config)
@@ -2200,6 +2203,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_timeout_does_not_deadlock() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2235,6 +2239,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_timeout_kills_kernel_process() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2294,6 +2299,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_forced_kernel_exit_recovers_on_next_exec() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2356,6 +2362,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_uncaught_exception_returns_exec_error_and_recovers() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2455,6 +2462,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_waits_for_unawaited_tool_calls_before_completion() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2502,6 +2510,7 @@ console.log("cell-complete");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_does_not_auto_attach_image_via_view_image_tool() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2560,6 +2569,7 @@ console.log(out.type);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_can_emit_image_via_view_image_tool() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2628,6 +2638,7 @@ console.log(out.type);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_can_emit_image_from_bytes_and_mime_type() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2683,6 +2694,7 @@ await codex.emitImage({ bytes: png, mimeType: "image/png" });
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_can_emit_multiple_images_in_one_cell() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2747,6 +2759,7 @@ await codex.emitImage(
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_waits_for_unawaited_emit_image_before_completion() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2802,6 +2815,7 @@ console.log("cell-complete");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_unawaited_emit_image_errors_fail_cell() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2846,6 +2860,7 @@ console.log("cell-complete");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_caught_emit_image_error_does_not_fail_cell() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2895,6 +2910,7 @@ console.log("cell-complete");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_emit_image_requires_explicit_mime_type_for_bytes() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2942,6 +2958,7 @@ await codex.emitImage({ bytes: png });
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_emit_image_rejects_non_data_url() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -2985,6 +3002,7 @@ await codex.emitImage("https://example.com/image.png");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_emit_image_accepts_case_insensitive_data_url() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3034,6 +3052,7 @@ await codex.emitImage("DATA:image/png;base64,AAA");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_emit_image_rejects_invalid_detail() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3081,6 +3100,7 @@ await codex.emitImage({ bytes: png, mimeType: "image/png", detail: "ultra" });
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial(low_fd_runtime)]
     async fn js_repl_emit_image_rejects_mixed_content() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3164,6 +3184,7 @@ await codex.emitImage(out);
         Ok(())
     }
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_prefers_env_node_module_dirs_over_config() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3208,6 +3229,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_resolves_from_first_config_dir() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3255,6 +3277,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_falls_back_to_cwd_node_modules() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3296,6 +3319,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_accepts_node_modules_dir_entries() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3337,6 +3361,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_supports_relative_file_imports() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3391,6 +3416,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_supports_absolute_file_imports() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3439,6 +3465,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_imported_local_files_can_access_repl_globals() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3484,6 +3511,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_reimports_local_files_after_edit() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3540,6 +3568,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_reimports_local_files_after_fixing_failure() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3596,6 +3625,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_local_files_expose_node_like_import_meta() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3668,6 +3698,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_rejects_top_level_static_imports_with_clear_error() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3699,6 +3730,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_local_files_reject_static_bare_imports() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3748,6 +3780,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_rejects_unsupported_file_specifiers() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3848,6 +3881,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_blocks_sensitive_builtin_imports_from_local_files() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());
@@ -3895,6 +3929,7 @@ await codex.emitImage(out);
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn js_repl_local_files_do_not_escape_node_module_search_roots() -> anyhow::Result<()> {
         if !can_run_js_repl_runtime_tests().await {
             return Ok(());

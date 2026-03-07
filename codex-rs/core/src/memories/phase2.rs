@@ -265,8 +265,10 @@ mod agent {
         agent_config.cwd = root;
         // Approval policy
         agent_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
-        // Consolidation runs as an internal sub-agent and must not recursively delegate.
         let _ = agent_config.features.disable(Feature::Collab);
+        let _ = agent_config.features.disable(Feature::MemoryTool);
+        agent_config.memories.generate_memories = false;
+        agent_config.memories.use_memories = false;
 
         // Sandbox policy
         let mut writable_roots = Vec::new();

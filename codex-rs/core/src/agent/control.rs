@@ -512,6 +512,7 @@ mod tests {
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
     use pretty_assertions::assert_eq;
+    use serial_test::serial;
     use tempfile::TempDir;
     use tokio::time::Duration;
     use tokio::time::sleep;
@@ -522,9 +523,11 @@ mod tests {
         cli_overrides: Vec<(String, TomlValue)>,
     ) -> (TempDir, Config) {
         let home = TempDir::new().expect("create temp dir");
+        let home_path = home.path().to_path_buf();
         let config = ConfigBuilder::default()
-            .codex_home(home.path().to_path_buf())
+            .codex_home(home_path.clone())
             .cli_overrides(cli_overrides)
+            .fallback_cwd(Some(home_path))
             .loader_overrides(LoaderOverrides {
                 #[cfg(target_os = "macos")]
                 managed_preferences_base64: Some(String::new()),
@@ -771,6 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn subscribe_status_errors_for_missing_thread() {
         let harness = AgentControlHarness::new().await;
         let thread_id = ThreadId::new();
@@ -783,6 +787,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(low_fd_runtime)]
     async fn subscribe_status_updates_on_shutdown() {
         let harness = AgentControlHarness::new().await;
         let (thread_id, thread) = harness.start_thread().await;
