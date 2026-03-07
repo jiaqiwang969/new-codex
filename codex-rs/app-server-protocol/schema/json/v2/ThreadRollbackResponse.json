@@ -425,6 +425,35 @@
       ],
       "type": "string"
     },
+    "MemoryLink": {
+      "properties": {
+        "bindingKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopeKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopeVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summarySha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "MessagePhase": {
       "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
       "oneOf": [
@@ -1416,6 +1445,16 @@
             "$ref": "#/definitions/ThreadItem"
           },
           "type": "array"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "status": {
           "$ref": "#/definitions/TurnStatus"

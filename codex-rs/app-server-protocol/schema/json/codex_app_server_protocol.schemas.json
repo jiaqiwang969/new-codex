@@ -2041,6 +2041,16 @@
               ],
               "default": "default"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/v2/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "model_context_window": {
               "format": "int64",
               "type": [
@@ -2073,6 +2083,16 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/v2/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "turn_id": {
@@ -2989,6 +3009,33 @@
             "type"
           ],
           "title": "ExecCommandEndEventMsg",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "files": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "file_system_mutated"
+              ],
+              "title": "FileSystemMutatedEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "files",
+            "type"
+          ],
+          "title": "FileSystemMutatedEventMsg",
           "type": "object"
         },
         {
@@ -4153,6 +4200,13 @@
         {
           "description": "Collab interaction: agent spawn begin.",
           "properties": {
+            "agent_type": {
+              "description": "Optional role requested for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -4189,9 +4243,30 @@
         {
           "description": "Collab interaction: agent spawn end.",
           "properties": {
+            "agent_type": {
+              "description": "Optional requested role for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
+            },
+            "model": {
+              "description": "Optional model selected for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_provider_id": {
+              "description": "Optional provider selected for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "new_agent_nickname": {
               "description": "Optional nickname assigned to the new agent.",
@@ -11317,6 +11392,35 @@
         ],
         "type": "string"
       },
+      "MemoryLink": {
+        "properties": {
+          "bindingKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopeKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopeVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summarySha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "MergeStrategy": {
         "enum": [
           "replace",
@@ -15759,6 +15863,16 @@
               "$ref": "#/definitions/v2/ThreadItem"
             },
             "type": "array"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/MemoryLink"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "$ref": "#/definitions/v2/TurnStatus"

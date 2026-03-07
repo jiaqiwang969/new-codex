@@ -13,6 +13,10 @@ call_id: string,
  */
 sender_thread_id: ThreadId, 
 /**
+ * Optional role requested for the spawned agent.
+ */
+agent_type?: string, 
+/**
  * Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
  * beginning.
  */

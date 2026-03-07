@@ -800,6 +800,16 @@
               ],
               "default": "default"
             },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "model_context_window": {
               "format": "int64",
               "type": [
@@ -832,6 +842,16 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "memory": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MemoryLink"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "turn_id": {
@@ -1748,6 +1768,33 @@
             "type"
           ],
           "title": "ExecCommandEndEventMsg",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "files": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "enum": [
+                "file_system_mutated"
+              ],
+              "title": "FileSystemMutatedEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "files",
+            "type"
+          ],
+          "title": "FileSystemMutatedEventMsg",
           "type": "object"
         },
         {
@@ -2912,6 +2959,13 @@
         {
           "description": "Collab interaction: agent spawn begin.",
           "properties": {
+            "agent_type": {
+              "description": "Optional role requested for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -2948,9 +3002,30 @@
         {
           "description": "Collab interaction: agent spawn end.",
           "properties": {
+            "agent_type": {
+              "description": "Optional requested role for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
+            },
+            "model": {
+              "description": "Optional model selected for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_provider_id": {
+              "description": "Optional provider selected for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "new_agent_nickname": {
               "description": "Optional nickname assigned to the new agent.",
@@ -3945,6 +4020,35 @@
           "type": "object"
         }
       ]
+    },
+    "MemoryLink": {
+      "properties": {
+        "binding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "MessagePhase": {
       "description": "Classifies an assistant message as interim commentary or final answer text.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
@@ -6612,6 +6716,16 @@
           ],
           "default": "default"
         },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model_context_window": {
           "format": "int64",
           "type": [
@@ -6644,6 +6758,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MemoryLink"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "turn_id": {
@@ -7560,6 +7684,33 @@
         "type"
       ],
       "title": "ExecCommandEndEventMsg",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "file_system_mutated"
+          ],
+          "title": "FileSystemMutatedEventMsgType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "files",
+        "type"
+      ],
+      "title": "FileSystemMutatedEventMsg",
       "type": "object"
     },
     {
@@ -8724,6 +8875,13 @@
     {
       "description": "Collab interaction: agent spawn begin.",
       "properties": {
+        "agent_type": {
+          "description": "Optional role requested for the spawned agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
@@ -8760,9 +8918,30 @@
     {
       "description": "Collab interaction: agent spawn end.",
       "properties": {
+        "agent_type": {
+          "description": "Optional requested role for the spawned agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"
+        },
+        "model": {
+          "description": "Optional model selected for the spawned agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider_id": {
+          "description": "Optional provider selected for the spawned agent.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "new_agent_nickname": {
           "description": "Optional nickname assigned to the new agent.",

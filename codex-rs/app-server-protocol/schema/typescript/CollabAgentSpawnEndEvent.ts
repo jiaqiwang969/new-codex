@@ -14,6 +14,18 @@ call_id: string,
  */
 sender_thread_id: ThreadId, 
 /**
+ * Optional requested role for the spawned agent.
+ */
+agent_type?: string, 
+/**
+ * Optional model selected for the spawned agent.
+ */
+model?: string, 
+/**
+ * Optional provider selected for the spawned agent.
+ */
+model_provider_id?: string, 
+/**
  * Thread ID of the newly spawned agent, if it was created.
  */
 new_thread_id: ThreadId | null, 
