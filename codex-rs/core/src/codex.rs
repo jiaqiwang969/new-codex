@@ -5616,6 +5616,13 @@ pub(crate) async fn run_turn(
                         .await;
                         return None;
                     }
+                    if !matches!(turn_context.session_source, SessionSource::SubAgent(_)) {
+                        crate::entire_integration::backfill_recent_entire_summaries(
+                            &sess,
+                            &turn_context,
+                            3,
+                        );
+                    }
                     break;
                 }
                 continue;

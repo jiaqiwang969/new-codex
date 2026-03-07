@@ -1,9 +1,13 @@
 use anyhow::Result;
+
+use crate::codex::Session;
+use crate::codex::TurnContext;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_hooks::EntireSummary;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +32,106 @@ pub async fn get_recent_entire_checkpoints_with_summaries(
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     }
     Ok(checkpoints)
+}
+
+pub(crate) fn backfill_recent_entire_summaries(
+    session: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    limit: usize,
+) {
+    let session = Arc::clone(session);
+    let turn_context = Arc::clone(turn_context);
+    tokio::spawn(async move {
+        if let Err(err) =
+            backfill_recent_entire_summaries_inner(&session, &turn_context, limit).await
+        {
+            warn!(
+                turn_id = %turn_context.sub_id,
+                error = %err,
+                "failed to backfill Entire summaries"
+            );
+        }
+    });
+}
+
+async fn backfill_recent_entire_summaries_inner(
+    session: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    limit: usize,
+) -> Result<()> {
+    for checkpoint in get_recent_entire_checkpoints(turn_context.cwd.as_path(), limit).await? {
+        if !should_backfill_summary(&checkpoint) {
+            continue;
+        }
+
+        if codex_hooks::load_summary(&turn_context.cwd, &checkpoint.checkpoint_id)
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?
+            .is_some()
+        {
+            continue;
+        }
+
+        let summary_input = codex_hooks::EntireSummaryInput {
+            thread_id: session.conversation_id.to_string(),
+            turn_id: checkpoint.checkpoint_id.clone(),
+            user_prompt: checkpoint.prompt_summary.clone(),
+            ai_response: format!("Modified {} files", checkpoint.files_changed.len()),
+            files_changed: checkpoint.files_changed.clone(),
+        };
+
+        match crate::entire_summary_generator::generate_entire_summary(
+            session,
+            turn_context,
+            &summary_input,
+        )
+        .await
+        {
+            Ok(summary) => {
+                if let Err(err) = codex_hooks::save_summary(
+                    &turn_context.cwd,
+                    &checkpoint.checkpoint_id,
+                    &summary,
+                )
+                .await
+                {
+                    warn!(
+                        checkpoint_id = %checkpoint.checkpoint_id,
+                        error = %err,
+                        "failed to save backfilled Entire summary"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    checkpoint_id = %checkpoint.checkpoint_id,
+                    error = %err,
+                    "failed to generate backfilled Entire summary"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn should_backfill_summary(checkpoint: &EntireCheckpoint) -> bool {
+    if !checkpoint.files_changed.is_empty() {
+        return true;
+    }
+
+    let normalized_prompt = checkpoint.prompt_summary.trim().to_ascii_lowercase();
+    if normalized_prompt.is_empty() {
+        return false;
+    }
+    if normalized_prompt.chars().count() >= 10 {
+        return true;
+    }
+
+    !matches!(
+        normalized_prompt.as_str(),
+        "hi" | "hello" | "hey" | "ok" | "okay" | "thanks" | "thank you" | "yo"
+    )
 }
 
 pub async fn get_recent_entire_checkpoints(
