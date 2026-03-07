@@ -173,6 +173,13 @@ Observed failure classes:
 - environment-specific seatbelt filesystem permission behavior
 - low `ulimit -n` causing `Too many open files` during large parallel test execution
 
+Concrete reproduction note from this branch:
+
+- on this machine, `cargo test -p codex-core` fails quickly under the default soft limit of `256` file descriptors with `os error 24`
+- the failing examples included `agent::role::tests::apply_role_preserves_unspecified_keys`, `agent::control::tests::spawn_agent_fork_injects_output_for_parent_spawn_call`, and several `tools::handlers::multi_agents::*` tests
+- raising the soft limit first, for example `ulimit -n 4096 && cargo test -p codex-core`, removes the immediate `EMFILE` failures and allows the suite to keep progressing
+- after raising `nofile`, `codex-core` still contains legitimately long-running integration tests; the harness reports some tests as "running for over 60 seconds", but that is distinct from the earlier file-descriptor failure mode
+
 Important triage note:
 
 - the migration-related tests that touch the changed collaboration, config-loading, and js-repl paths were rerun individually and passed
