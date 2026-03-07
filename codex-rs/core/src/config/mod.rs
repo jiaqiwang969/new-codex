@@ -68,7 +68,9 @@ use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::MacOsSeatbeltProfileExtensions;
 use codex_protocol::openai_models::ModelsResponse;
@@ -509,6 +511,9 @@ pub struct Config {
 
     /// Explicit or feature-derived web search mode.
     pub web_search_mode: Constrained<WebSearchMode>,
+
+    /// Additional parameters for the web search tool when it is enabled.
+    pub web_search_config: Option<WebSearchConfig>,
 
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
@@ -1403,8 +1408,8 @@ pub struct RealtimeAudioToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ToolsToml {
-    #[serde(default, alias = "web_search_request")]
-    pub web_search: Option<bool>,
+    #[serde(default)]
+    pub web_search: Option<WebSearchToolConfig>,
 
     /// Enable the `view_image` tool that lets the agent attach local images.
     #[serde(default)]
@@ -1466,7 +1471,7 @@ pub struct AgentRoleToml {
 impl From<ToolsToml> for Tools {
     fn from(tools_toml: ToolsToml) -> Self {
         Self {
-            web_search: tools_toml.web_search,
+            web_search: tools_toml.web_search.is_some().then_some(true),
             view_image: tools_toml.view_image,
         }
     }
@@ -1756,6 +1761,27 @@ fn resolve_web_search_mode(
         return Some(WebSearchMode::Live);
     }
     None
+}
+
+fn resolve_web_search_config(
+    config_toml: &ConfigToml,
+    config_profile: &ConfigProfile,
+) -> Option<WebSearchConfig> {
+    let base = config_toml
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.web_search.as_ref());
+    let profile = config_profile
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.web_search.as_ref());
+
+    match (base, profile) {
+        (None, None) => None,
+        (Some(base), None) => Some(base.clone().into()),
+        (None, Some(profile)) => Some(profile.clone().into()),
+        (Some(base), Some(profile)) => Some(base.merge(profile).into()),
+    }
 }
 
 pub(crate) fn resolve_web_search_mode_for_turn(
@@ -2073,6 +2099,7 @@ impl Config {
         }
         let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
             .unwrap_or(WebSearchMode::Cached);
+        let web_search_config = resolve_web_search_config(&cfg, &config_profile);
 
         let mut model_providers = built_in_model_providers();
         // Merge user-defined providers into the built-in list.
@@ -2499,6 +2526,7 @@ impl Config {
             forced_login_method,
             include_apply_patch_tool: include_apply_patch_tool_flag,
             web_search_mode: constrained_web_search_mode.value,
+            web_search_config,
             use_experimental_unified_exec_tool,
             background_terminal_max_timeout,
             ghost_snapshot,
@@ -3719,7 +3747,7 @@ trust_level = "trusted"
         profiles.insert(
             "work".to_string(),
             ConfigProfile {
-                tools_web_search: Some(false),
+                web_search: Some(WebSearchMode::Disabled),
                 ..Default::default()
             },
         );
@@ -5578,6 +5606,7 @@ model_verbosity = "high"
                 forced_login_method: None,
                 include_apply_patch_tool: false,
                 web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+                web_search_config: None,
                 use_experimental_unified_exec_tool: !cfg!(windows),
                 background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
                 ghost_snapshot: GhostSnapshotConfig::default(),
@@ -5713,6 +5742,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+            web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
             background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
             ghost_snapshot: GhostSnapshotConfig::default(),
@@ -5846,6 +5876,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+            web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
             background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
             ghost_snapshot: GhostSnapshotConfig::default(),
@@ -5965,6 +5996,7 @@ model_verbosity = "high"
             forced_login_method: None,
             include_apply_patch_tool: false,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
+            web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
             background_terminal_max_timeout: DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
             ghost_snapshot: GhostSnapshotConfig::default(),
