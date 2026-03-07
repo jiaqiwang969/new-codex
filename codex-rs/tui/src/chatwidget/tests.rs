@@ -5807,6 +5807,32 @@ async fn slash_resume_opens_picker() {
 }
 
 #[tokio::test]
+async fn slash_graph_reports_non_git_repo() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let temp = tempdir().expect("tempdir");
+    chat.config.cwd = temp.path().to_path_buf();
+
+    chat.dispatch_command(SlashCommand::Graph);
+
+    let text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match rx.recv().await {
+                Some(AppEvent::GitGraphResult(text)) => break text,
+                Some(_) => continue,
+                None => panic!("app event channel closed before /graph result was emitted"),
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for /graph result");
+
+    assert!(
+        text.contains("not inside a git repository"),
+        "expected non-git repo message, got {text:?}"
+    );
+}
+
+#[tokio::test]
 async fn slash_fork_requests_current_fork() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 

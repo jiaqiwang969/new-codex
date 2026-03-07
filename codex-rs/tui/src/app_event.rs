@@ -136,6 +136,9 @@ pub(crate) enum AppEvent {
         is_final: bool,
     },
 
+    /// Result of computing a `/graph` command.
+    GitGraphResult(String),
+
     /// Result of computing a `/diff` command.
     DiffResult(String),
 

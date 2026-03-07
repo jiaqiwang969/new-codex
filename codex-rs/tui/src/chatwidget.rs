@@ -242,6 +242,7 @@ use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::get_git_diff::get_git_diff;
+use crate::git_graph_widget::get_git_graph;
 use crate::history_cell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
@@ -3978,6 +3979,24 @@ impl ChatWidget {
             // SlashCommand::Undo => {
             //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
             // }
+            SlashCommand::Graph => {
+                let cwd = self.config.cwd.clone();
+                self.request_redraw();
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let text = match get_git_graph(cwd).await {
+                        Ok((is_git_repo, graph_text)) => {
+                            if is_git_repo {
+                                graph_text
+                            } else {
+                                "`/graph` — _not inside a git repository_".to_string()
+                            }
+                        }
+                        Err(e) => format!("Failed to generate git graph: {e}"),
+                    };
+                    tx.send(AppEvent::GitGraphResult(text));
+                });
+            }
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
                 let tx = self.app_event_tx.clone();

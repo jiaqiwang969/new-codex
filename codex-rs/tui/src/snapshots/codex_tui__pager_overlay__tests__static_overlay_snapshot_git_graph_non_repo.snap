@@ -1,0 +1,12 @@
+---
+source: tui/src/pager_overlay.rs
+expression: term.backend()
+---
+"/ G I T   G R A P H / / / / / / / / / / / / / / "
+"`/graph` — _not inside a git repository_        "
+"~                                               "
+"~                                               "
+"───────────────────────────────────────── 100% ─"
+" ↑/↓ to scroll   pgup/pgdn to page   home/end to"
+" q to quit                                      "
+"                                                "

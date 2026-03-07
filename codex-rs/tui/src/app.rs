@@ -2224,6 +2224,19 @@ impl App {
             AppEvent::SubmitThreadOp { thread_id, op } => {
                 self.submit_op_to_thread(thread_id, op).await;
             }
+            AppEvent::GitGraphResult(text) => {
+                let _ = tui.enter_alt_screen();
+                let pager_lines: Vec<ratatui::text::Line<'static>> = if text.trim().is_empty() {
+                    vec!["No git history found.".italic().into()]
+                } else {
+                    text.lines().map(ansi_escape_line).collect()
+                };
+                self.overlay = Some(Overlay::new_static_with_lines(
+                    pager_lines,
+                    "G I T   G R A P H".to_string(),
+                ));
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
                 self.chat_widget.on_diff_complete();

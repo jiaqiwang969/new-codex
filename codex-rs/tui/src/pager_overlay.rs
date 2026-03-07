@@ -1089,6 +1089,18 @@ mod tests {
         assert_snapshot!(term.backend());
     }
 
+    #[test]
+    fn static_overlay_snapshot_git_graph_non_repo() {
+        let mut overlay = StaticOverlay::with_title(
+            vec!["`/graph` — _not inside a git repository_".into()],
+            "G I T   G R A P H".to_string(),
+        );
+        let mut term = Terminal::new(TestBackend::new(48, 8)).expect("term");
+        term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        assert_snapshot!(term.backend());
+    }
+
     /// Render transcript overlay and return visible line numbers (`line-NN`) in order.
     fn transcript_line_numbers(overlay: &mut TranscriptOverlay, area: Rect) -> Vec<usize> {
         let mut buf = Buffer::empty(area);

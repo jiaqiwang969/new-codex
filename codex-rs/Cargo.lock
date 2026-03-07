@@ -2473,6 +2473,7 @@ dependencies = [
  "codex-core",
  "codex-feedback",
  "codex-file-search",
+ "codex-git-graph",
  "codex-login",
  "codex-otel",
  "codex-protocol",

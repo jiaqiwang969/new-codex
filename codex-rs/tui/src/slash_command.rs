@@ -33,6 +33,7 @@ pub enum SlashCommand {
     Collab,
     Agent,
     // Undo,
+    Graph,
     Diff,
     Copy,
     Mention,
@@ -77,6 +78,7 @@ impl SlashCommand {
             SlashCommand::Fork => "fork the current chat",
             // SlashCommand::Undo => "ask Codex to undo a turn",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
+            SlashCommand::Graph => "show git graph for the current repository",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Copy => "copy the latest Codex output to your clipboard",
             SlashCommand::Mention => "mention a file",
@@ -153,7 +155,8 @@ impl SlashCommand {
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
-            SlashCommand::Diff
+            SlashCommand::Graph
+            | SlashCommand::Diff
             | SlashCommand::Copy
             | SlashCommand::Rename
             | SlashCommand::Mention
