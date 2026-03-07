@@ -117,13 +117,15 @@ pub async fn get_git_remote_urls(cwd: &Path) -> Option<BTreeMap<String, String>>
 
 /// Collect fetch remotes without checking whether `cwd` is in a git repo.
 pub async fn get_git_remote_urls_assume_git_repo(cwd: &Path) -> Option<BTreeMap<String, String>> {
-    let output = run_git_command_with_timeout(&["remote", "-v"], cwd).await?;
+    let output =
+        run_git_command_with_timeout(&["config", "--get-regexp", r"^remote\..*\.url$"], cwd)
+            .await?;
     if !output.status.success() {
         return None;
     }
 
     let stdout = String::from_utf8(output.stdout).ok()?;
-    parse_git_remote_urls(stdout.as_str())
+    parse_git_remote_config_urls(stdout.as_str())
 }
 
 /// Return the current HEAD commit hash without checking whether `cwd` is in a git repo.
@@ -151,22 +153,22 @@ pub async fn get_has_changes(cwd: &Path) -> Option<bool> {
     Some(!output.stdout.is_empty())
 }
 
-fn parse_git_remote_urls(stdout: &str) -> Option<BTreeMap<String, String>> {
+fn parse_git_remote_config_urls(stdout: &str) -> Option<BTreeMap<String, String>> {
     let mut remotes = BTreeMap::new();
     for line in stdout.lines() {
-        let Some(fetch_line) = line.strip_suffix(" (fetch)") else {
+        let Some(split_index) = line.find(char::is_whitespace) else {
             continue;
         };
-
-        let Some((name, url_part)) = fetch_line
-            .split_once('\t')
-            .or_else(|| fetch_line.split_once(' '))
+        let (key, value_part) = line.split_at(split_index);
+        let Some(name) = key
+            .strip_prefix("remote.")
+            .and_then(|key| key.strip_suffix(".url"))
         else {
             continue;
         };
 
-        let url = url_part.trim_start();
-        if !url.is_empty() {
+        let url = value_part.trim_start();
+        if !name.is_empty() && !url.is_empty() {
             remotes.insert(name.to_string(), url.to_string());
         }
     }
@@ -698,6 +700,7 @@ mod tests {
     use super::*;
 
     use core_test_support::skip_if_sandbox;
+    use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -938,6 +941,44 @@ mod tests {
 
         // Should have repository URL
         assert_eq!(git_info.repository_url, Some(expected_remote));
+    }
+
+    #[tokio::test]
+    async fn test_get_git_remote_urls_ignores_instead_of_rewrites() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let repo_path = create_test_git_repo(&temp_dir).await;
+
+        Command::new("git")
+            .args([
+                "config",
+                "url.git@github.com:.insteadOf",
+                "https://github.com/",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("Failed to configure url rewrite");
+
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/openai/codex.git",
+            ])
+            .current_dir(&repo_path)
+            .output()
+            .await
+            .expect("Failed to add remote");
+
+        let remotes = get_git_remote_urls(&repo_path)
+            .await
+            .expect("Should collect git remotes from repo");
+
+        assert_eq!(
+            remotes.get("origin").map(String::as_str),
+            Some("https://github.com/openai/codex.git")
+        );
     }
 
     #[tokio::test]
