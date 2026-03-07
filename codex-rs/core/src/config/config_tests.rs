@@ -767,6 +767,43 @@ fn workspace_write_always_includes_memories_root_once() -> std::io::Result<()> {
 }
 
 #[test]
+fn memory_startup_still_runs_under_split_permission_projection() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let memories_root = codex_home.path().join("memories");
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            sandbox_workspace_write: Some(SandboxWorkspaceWrite {
+                writable_roots: vec![AbsolutePathBuf::from_absolute_path(&memories_root)?],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    let expected_memories_root = AbsolutePathBuf::from_absolute_path(&memories_root)?;
+    let writable_roots = config
+        .permissions
+        .file_system_sandbox_policy
+        .get_writable_roots_with_cwd(config.cwd.as_path());
+
+    assert_eq!(
+        writable_roots
+            .iter()
+            .filter(|root| root.root == expected_memories_root)
+            .count(),
+        1,
+        "expected split filesystem policy to preserve exactly one memories writable root"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn config_defaults_to_file_cli_auth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml::default();

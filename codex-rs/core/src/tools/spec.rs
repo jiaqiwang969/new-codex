@@ -2483,6 +2483,36 @@ mod tests {
     }
 
     #[test]
+    fn collab_tools_remain_available_under_permission_profile_changes() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::Collab);
+        features.disable(Feature::Sqlite);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        assert_contains_tool_names(
+            &tools,
+            &[
+                "spawn_agent",
+                "send_input",
+                "wait",
+                "close_agent",
+                "calibrate_model_sub",
+                "record_model_sub_duel",
+                "record_model_sub_winner",
+                "spawn_agents_on_csv",
+            ],
+        );
+    }
+
+    #[test]
     fn test_build_specs_collab_tools_enabled() {
         let config = test_config();
         let model_info =
