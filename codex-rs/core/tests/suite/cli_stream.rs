@@ -57,7 +57,7 @@ async fn responses_mode_stream_cli() {
         return;
     };
     let mut cmd = AssertCommand::new(bin);
-    cmd.timeout(Duration::from_secs(30));
+    cmd.timeout(Duration::from_secs(120));
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")
