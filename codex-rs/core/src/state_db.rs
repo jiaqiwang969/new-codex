@@ -1,5 +1,4 @@
 use crate::config::Config;
-use crate::features::Feature;
 use crate::path_utils::normalize_for_path_comparison;
 use crate::rollout::list::Cursor;
 use crate::rollout::list::ThreadSortKey;
@@ -24,7 +23,7 @@ use std::sync::Arc;
 use tracing::warn;
 use uuid::Uuid;
 
-/// Core-facing handle to the optional SQLite-backed state runtime.
+/// Core-facing handle to the SQLite-backed state runtime.
 pub type StateDbHandle = Arc<codex_state::StateRuntime>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,15 +34,9 @@ pub struct ThreadMemory {
     pub memory_summary: String,
 }
 
-/// Initialize the state runtime when the `sqlite` feature flag is enabled. To only be used
-/// inside `core`. The initialization should not be done anywhere else.
-pub(crate) async fn init_if_enabled(
-    config: &Config,
-    otel: Option<&OtelManager>,
-) -> Option<StateDbHandle> {
-    if !config.features.enabled(Feature::Sqlite) {
-        return None;
-    }
+/// Initialize the state runtime for thread state persistence and backfill checks. To only be
+/// used inside `core`. The initialization should not be done anywhere else.
+pub(crate) async fn init(config: &Config, otel: Option<&OtelManager>) -> Option<StateDbHandle> {
     let runtime = match codex_state::StateRuntime::init(
         config.sqlite_home.clone(),
         config.model_provider_id.clone(),
@@ -85,12 +78,10 @@ pub(crate) async fn init_if_enabled(
     Some(runtime)
 }
 
-/// Get the DB if the feature is enabled and the DB exists.
+/// Get the DB if it exists.
 pub async fn get_state_db(config: &Config, otel: Option<&OtelManager>) -> Option<StateDbHandle> {
     let state_path = codex_state::state_db_path(config.sqlite_home.as_path());
-    if !config.features.enabled(Feature::Sqlite)
-        || !tokio::fs::try_exists(&state_path).await.unwrap_or(false)
-    {
+    if !tokio::fs::try_exists(&state_path).await.unwrap_or(false) {
         return None;
     }
     let runtime = codex_state::StateRuntime::init(
