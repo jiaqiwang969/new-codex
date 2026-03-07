@@ -61,6 +61,13 @@ pub use crate::approvals::NetworkApprovalContext;
 pub use crate::approvals::NetworkApprovalProtocol;
 pub use crate::approvals::NetworkPolicyAmendment;
 pub use crate::approvals::NetworkPolicyRuleAction;
+pub use crate::permissions::FileSystemAccessMode;
+pub use crate::permissions::FileSystemPath;
+pub use crate::permissions::FileSystemSandboxEntry;
+pub use crate::permissions::FileSystemSandboxKind;
+pub use crate::permissions::FileSystemSandboxPolicy;
+pub use crate::permissions::FileSystemSpecialPath;
+pub use crate::permissions::NetworkSandboxPolicy;
 pub use crate::request_user_input::RequestUserInputEvent;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid

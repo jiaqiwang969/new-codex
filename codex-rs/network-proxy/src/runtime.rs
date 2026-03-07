@@ -842,6 +842,7 @@ mod tests {
     async fn host_blocked_requires_allowlist_match() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 
@@ -861,6 +862,7 @@ mod tests {
     async fn add_allowed_domain_removes_matching_deny_entry() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             denied_domains: vec!["example.com".to_string()],
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 
@@ -879,6 +881,7 @@ mod tests {
     async fn add_denied_domain_removes_matching_allow_entry() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 
@@ -1075,6 +1078,7 @@ mod tests {
     async fn host_blocked_subdomain_wildcards_exclude_apex() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["*.openai.com".to_string()],
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 

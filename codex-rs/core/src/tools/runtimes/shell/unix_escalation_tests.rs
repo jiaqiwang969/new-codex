@@ -571,6 +571,10 @@ async fn prepare_escalated_exec_permissions_preserve_macos_seatbelt_extensions()
     let permissions = Permissions {
         approval_policy: Constrained::allow_any(AskForApproval::Never),
         sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
+        file_system_sandbox_policy: FileSystemSandboxPolicy::from(
+            &SandboxPolicy::new_read_only_policy(),
+        ),
+        network_sandbox_policy: NetworkSandboxPolicy::Restricted,
         network: None,
         allow_login_shell: true,
         shell_environment_policy: ShellEnvironmentPolicy::default(),

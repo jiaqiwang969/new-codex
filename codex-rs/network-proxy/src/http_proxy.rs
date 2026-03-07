@@ -983,6 +983,7 @@ mod tests {
     async fn http_connect_accept_blocks_in_limited_mode() {
         let policy = NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
+            allow_local_binding: true,
             ..Default::default()
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
@@ -1008,6 +1009,7 @@ mod tests {
     async fn http_connect_accept_allows_allowlisted_host_in_full_mode() {
         let policy = NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
+            allow_local_binding: true,
             ..Default::default()
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));

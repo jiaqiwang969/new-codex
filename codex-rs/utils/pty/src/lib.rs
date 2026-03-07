@@ -7,6 +7,8 @@ mod tests;
 #[cfg(windows)]
 mod win;
 
+pub const DEFAULT_OUTPUT_BYTES_CAP: usize = 1024 * 1024;
+
 /// Spawn a non-interactive process using regular pipes for stdin/stdout/stderr.
 pub use pipe::spawn_process as spawn_pipe_process;
 /// Spawn a non-interactive process using regular pipes, but close stdin immediately.

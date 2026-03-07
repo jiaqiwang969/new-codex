@@ -144,6 +144,10 @@ fn normalize_pattern(pattern: &str) -> String {
     }
 }
 
+pub(crate) fn is_global_wildcard_domain_pattern(pattern: &str) -> bool {
+    normalize_pattern(pattern) == "*"
+}
+
 pub(crate) fn compile_globset(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     let mut seen = HashSet::new();

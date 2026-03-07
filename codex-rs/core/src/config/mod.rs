@@ -72,6 +72,8 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::MacOsSeatbeltProfileExtensions;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_rmcp_client::OAuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -187,6 +189,10 @@ pub struct Permissions {
     pub approval_policy: Constrained<AskForApproval>,
     /// Effective sandbox policy used for shell/unified exec.
     pub sandbox_policy: Constrained<SandboxPolicy>,
+    /// Effective filesystem sandbox policy projected from the effective sandbox policy.
+    pub file_system_sandbox_policy: FileSystemSandboxPolicy,
+    /// Effective network sandbox policy projected from the effective sandbox policy.
+    pub network_sandbox_policy: NetworkSandboxPolicy,
     /// Effective network configuration applied to all spawned processes.
     pub network: Option<NetworkProxySpec>,
     /// Whether the model may request a login shell for shell-based tools.
@@ -2207,6 +2213,10 @@ impl Config {
         } else {
             network.enabled().then_some(network)
         };
+        let file_system_sandbox_policy =
+            FileSystemSandboxPolicy::from(constrained_sandbox_policy.value.get());
+        let network_sandbox_policy =
+            NetworkSandboxPolicy::from(constrained_sandbox_policy.value.get());
 
         let config = Self {
             model,
@@ -2221,6 +2231,8 @@ impl Config {
             permissions: Permissions {
                 approval_policy: constrained_approval_policy.value,
                 sandbox_policy: constrained_sandbox_policy.value,
+                file_system_sandbox_policy,
+                network_sandbox_policy,
                 network,
                 allow_login_shell,
                 shell_environment_policy,
@@ -5261,6 +5273,12 @@ model_verbosity = "high"
                 permissions: Permissions {
                     approval_policy: Constrained::allow_any(AskForApproval::Never),
                     sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
+                    file_system_sandbox_policy: FileSystemSandboxPolicy::from(
+                        &SandboxPolicy::new_read_only_policy()
+                    ),
+                    network_sandbox_policy: NetworkSandboxPolicy::from(
+                        &SandboxPolicy::new_read_only_policy()
+                    ),
                     network: None,
                     allow_login_shell: true,
                     shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -5390,6 +5408,12 @@ model_verbosity = "high"
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::UnlessTrusted),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
+                file_system_sandbox_policy: FileSystemSandboxPolicy::from(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
+                network_sandbox_policy: NetworkSandboxPolicy::from(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
                 network: None,
                 allow_login_shell: true,
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -5517,6 +5541,12 @@ model_verbosity = "high"
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
+                file_system_sandbox_policy: FileSystemSandboxPolicy::from(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
+                network_sandbox_policy: NetworkSandboxPolicy::from(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
                 network: None,
                 allow_login_shell: true,
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -5630,6 +5660,12 @@ model_verbosity = "high"
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
+                file_system_sandbox_policy: FileSystemSandboxPolicy::from(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
+                network_sandbox_policy: NetworkSandboxPolicy::from(
+                    &SandboxPolicy::new_read_only_policy(),
+                ),
                 network: None,
                 allow_login_shell: true,
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
