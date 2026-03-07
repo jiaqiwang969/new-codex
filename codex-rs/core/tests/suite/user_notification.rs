@@ -243,6 +243,111 @@ mv "${tmp_path}" "${payload_path}""#,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn summarize_context_does_not_rewrite_notify_payload_when_entire_summary_disabled()
+-> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let shell_args = serde_json::to_string(&json!({
+        "command": ["/bin/sh", "-c", "printf 'after\n' > tracked.txt"],
+        "timeout_ms": 2_000
+    }))?;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                responses::ev_response_created("resp-1"),
+                ev_function_call("call-1", "shell", &shell_args),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "Done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let notify_dir = TempDir::new()?;
+    let notify_script = notify_dir.path().join("notify.sh");
+    std::fs::write(
+        &notify_script,
+        r#"#!/bin/bash
+set -e
+payload_path="$(dirname "${0}")/notify.txt"
+tmp_path="${payload_path}.tmp"
+echo -n "${@: -1}" > "${tmp_path}"
+mv "${tmp_path}" "${payload_path}""#,
+    )?;
+    std::fs::set_permissions(&notify_script, std::fs::Permissions::from_mode(0o755))?;
+
+    let notify_file = notify_dir.path().join("notify.txt");
+    let notify_script_str = notify_script.to_str().unwrap().to_string();
+
+    let test = test_codex()
+        .with_model("gpt-5.1-codex")
+        .with_config(move |cfg| {
+            cfg.notify = Some(vec![notify_script_str]);
+            cfg.memories.entire_summary_enabled = false;
+        })
+        .build(&server)
+        .await?;
+    let cwd = test.cwd_path().to_path_buf();
+
+    for cmd in [
+        &["git", "init", "-q"][..],
+        &["git", "config", "user.name", "Test User"][..],
+        &["git", "config", "user.email", "test@example.com"][..],
+    ] {
+        let status = tokio::process::Command::new(cmd[0])
+            .args(&cmd[1..])
+            .current_dir(&cwd)
+            .status()
+            .await?;
+        assert!(status.success(), "git command should succeed: {cmd:?}");
+    }
+    std::fs::write(cwd.join("tracked.txt"), "before\n")?;
+    let add_status = tokio::process::Command::new("git")
+        .args(["add", "tracked.txt"])
+        .current_dir(&cwd)
+        .status()
+        .await?;
+    assert!(add_status.success());
+    let commit_status = tokio::process::Command::new("git")
+        .args(["commit", "-qm", "initial"])
+        .current_dir(&cwd)
+        .status()
+        .await?;
+    assert!(commit_status.success());
+
+    test.submit_turn_with_policy(
+        "update the tracked file",
+        codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
+    )
+    .await?;
+
+    assert_eq!(mock.requests().len(), 2);
+    fs_wait::wait_for_path_exists(&notify_file, Duration::from_secs(5)).await?;
+    let notify_payload_raw = tokio::fs::read_to_string(&notify_file).await?;
+    let payload: Value = serde_json::from_str(&notify_payload_raw)?;
+
+    assert_eq!(payload["type"], json!("agent-turn-complete"));
+    assert_eq!(
+        payload["input-messages"],
+        json!(["update the tracked file"])
+    );
+    assert_eq!(payload["last-assistant-message"], json!("Done"));
+    assert!(
+        codex_hooks::load_summary(&cwd, payload["turn-id"].as_str().expect("turn id"))
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?
+            .is_none()
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn summarize_context_three_requests_and_instructions() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 

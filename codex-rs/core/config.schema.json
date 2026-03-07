@@ -645,6 +645,10 @@
           "description": "Model used for memory consolidation.",
           "type": "string"
         },
+        "entire_summary_enabled": {
+          "description": "When `false`, skip generating and using AI-authored Entire WHY summaries.",
+          "type": "boolean"
+        },
         "extract_model": {
           "description": "Model used for thread summarisation.",
           "type": "string"

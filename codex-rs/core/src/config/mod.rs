@@ -2691,6 +2691,7 @@ max_rollouts_per_startup = 9
 min_rollout_idle_hours = 24
 extract_model = "gpt-5-mini"
 consolidation_model = "gpt-5"
+entire_summary_enabled = false
 "#;
         let memories_cfg =
             toml::from_str::<ConfigToml>(memories).expect("TOML deserialization should succeed");
@@ -2706,6 +2707,7 @@ consolidation_model = "gpt-5"
                 min_rollout_idle_hours: Some(24),
                 extract_model: Some("gpt-5-mini".to_string()),
                 consolidation_model: Some("gpt-5".to_string()),
+                entire_summary_enabled: Some(false),
             }),
             memories_cfg.memories
         );
@@ -2729,6 +2731,7 @@ consolidation_model = "gpt-5"
                 min_rollout_idle_hours: 24,
                 extract_model: Some("gpt-5-mini".to_string()),
                 consolidation_model: Some("gpt-5".to_string()),
+                entire_summary_enabled: false,
             }
         );
     }

@@ -3251,24 +3251,33 @@ impl Session {
         {
             developer_sections.push(memory_prompt);
         }
-        if !matches!(turn_context.session_source, SessionSource::SubAgent(_))
-            && let Ok(checkpoints) =
+        if !matches!(turn_context.session_source, SessionSource::SubAgent(_)) {
+            let checkpoints_result = if turn_context.config.memories.entire_summary_enabled {
                 crate::entire_integration::get_recent_entire_checkpoints_with_summaries(
                     turn_context.cwd.as_path(),
                     3,
                 )
                 .await
-            && !checkpoints.is_empty()
-        {
-            let summary = crate::entire_integration::format_checkpoints_summary(&checkpoints);
-            let summary = codex_utils_string::take_last_bytes_at_char_boundary(&summary, 3000)
-                .trim()
-                .to_string();
-            if !summary.is_empty() {
-                developer_sections.push(format!(
-                    "Recent AI Sessions (via Entire):
+            } else {
+                crate::entire_integration::get_recent_entire_checkpoints(
+                    turn_context.cwd.as_path(),
+                    3,
+                )
+                .await
+            };
+            if let Ok(checkpoints) = checkpoints_result
+                && !checkpoints.is_empty()
+            {
+                let summary = crate::entire_integration::format_checkpoints_summary(&checkpoints);
+                let summary = codex_utils_string::take_last_bytes_at_char_boundary(&summary, 3000)
+                    .trim()
+                    .to_string();
+                if !summary.is_empty() {
+                    developer_sections.push(format!(
+                        "Recent AI Sessions (via Entire):
 {summary}"
-                ));
+                    ));
+                }
             }
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
@@ -5488,6 +5497,7 @@ pub(crate) async fn run_turn(
                     last_agent_message = sampling_request_last_agent_message;
                     let mut hook_input_messages = sampling_request_input_messages;
                     if turn_context.config.notify.is_some()
+                        && turn_context.config.memories.entire_summary_enabled
                         && !matches!(turn_context.session_source, SessionSource::SubAgent(_))
                     {
                         let files_changed = turn_context
@@ -5616,7 +5626,9 @@ pub(crate) async fn run_turn(
                         .await;
                         return None;
                     }
-                    if !matches!(turn_context.session_source, SessionSource::SubAgent(_)) {
+                    if turn_context.config.memories.entire_summary_enabled
+                        && !matches!(turn_context.session_source, SessionSource::SubAgent(_))
+                    {
                         crate::entire_integration::backfill_recent_entire_summaries(
                             &sess,
                             &turn_context,
@@ -10292,6 +10304,55 @@ mod tests {
                 "Keep upstream alignment context visible → Future turns reuse prior rationale instead of duplicating work"
             )),
             "expected Entire WHY summary in developer instructions, got {developer_texts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_uses_prompt_summary_when_entire_summaries_disabled() {
+        let repo_root = tempfile::tempdir().expect("create temp dir");
+        init_git_repo_with_entire_checkpoint(repo_root.path());
+        codex_hooks::save_summary(
+            repo_root.path(),
+            "checkpoint-123456789",
+            &codex_hooks::EntireSummary {
+                is_meaningful: true,
+                motivation: Some("Keep upstream alignment context visible".to_string()),
+                approach: None,
+                challenges: None,
+                tradeoffs: None,
+                outcome: Some(
+                    "Future turns reuse prior rationale instead of duplicating work".to_string(),
+                ),
+            },
+        )
+        .await
+        .expect("save summary");
+
+        let (session, mut turn_context) = make_session_and_context().await;
+        turn_context.cwd = repo_root.path().to_path_buf();
+        Arc::make_mut(&mut turn_context.config)
+            .memories
+            .entire_summary_enabled = false;
+
+        let initial_context = session.build_initial_context(&turn_context).await;
+        let developer_texts = developer_input_texts(&initial_context);
+        assert!(
+            developer_texts
+                .iter()
+                .any(|text| text.contains("Recent AI Sessions (via Entire):")),
+            "expected recent Entire sessions in developer instructions, got {developer_texts:?}"
+        );
+        assert!(
+            developer_texts
+                .iter()
+                .any(|text| text.contains("Add Entire history plumbing")),
+            "expected fallback commit summary when Entire summaries are disabled, got {developer_texts:?}"
+        );
+        assert!(
+            !developer_texts.iter().any(|text| text.contains(
+                "Keep upstream alignment context visible → Future turns reuse prior rationale instead of duplicating work"
+            )),
+            "did not expect Entire WHY summary when disabled, got {developer_texts:?}"
         );
     }
 

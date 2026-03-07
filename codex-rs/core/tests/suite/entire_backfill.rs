@@ -188,3 +188,39 @@ async fn does_not_backfill_trivial_recent_entire_summary_after_turn() -> anyhow:
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn does_not_backfill_recent_entire_summary_when_disabled() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "Done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_model("gpt-5.1-codex")
+        .with_config(|cfg| cfg.memories.entire_summary_enabled = false)
+        .build(&server)
+        .await?;
+    let cwd = test.cwd_path().to_path_buf();
+    let checkpoint_id = "checkpoint-disabled-1";
+    seed_entire_checkpoint(&cwd, checkpoint_id, "Add Entire history plumbing", true).await?;
+
+    test.submit_turn("hello world").await?;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let summary_path = cwd
+        .join(".entire")
+        .join("summaries")
+        .join(format!("{checkpoint_id}.json"));
+    assert!(!summary_path.exists());
+    assert_eq!(mock.requests().len(), 1);
+
+    Ok(())
+}

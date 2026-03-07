@@ -392,6 +392,8 @@ pub struct MemoriesToml {
     pub extract_model: Option<String>,
     /// Model used for memory consolidation.
     pub consolidation_model: Option<String>,
+    /// When `false`, skip generating and using AI-authored Entire WHY summaries.
+    pub entire_summary_enabled: Option<bool>,
 }
 
 /// Effective memories settings after defaults are applied.
@@ -407,6 +409,7 @@ pub struct MemoriesConfig {
     pub min_rollout_idle_hours: i64,
     pub extract_model: Option<String>,
     pub consolidation_model: Option<String>,
+    pub entire_summary_enabled: bool,
 }
 
 impl Default for MemoriesConfig {
@@ -422,6 +425,7 @@ impl Default for MemoriesConfig {
             min_rollout_idle_hours: DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS,
             extract_model: None,
             consolidation_model: None,
+            entire_summary_enabled: true,
         }
     }
 }
@@ -457,6 +461,9 @@ impl From<MemoriesToml> for MemoriesConfig {
                 .clamp(1, 48),
             extract_model: toml.extract_model,
             consolidation_model: toml.consolidation_model,
+            entire_summary_enabled: toml
+                .entire_summary_enabled
+                .unwrap_or(defaults.entire_summary_enabled),
         }
     }
 }
