@@ -278,6 +278,19 @@ ON CONFLICT(id) DO NOTHING
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn touch_thread_updated_at(
+        &self,
+        thread_id: ThreadId,
+        updated_at: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE threads SET updated_at = ? WHERE id = ?")
+            .bind(datetime_to_epoch_seconds(updated_at))
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn update_thread_git_info(
         &self,
         thread_id: ThreadId,
@@ -436,6 +449,7 @@ ON CONFLICT(thread_id, position) DO NOTHING
         items: &[RolloutItem],
         otel: Option<&OtelManager>,
         new_thread_memory_mode: Option<&str>,
+        updated_at_override: Option<DateTime<Utc>>,
     ) -> anyhow::Result<()> {
         if items.is_empty() {
             return Ok(());
@@ -451,7 +465,11 @@ ON CONFLICT(thread_id, position) DO NOTHING
         if let Some(existing_metadata) = existing_metadata.as_ref() {
             metadata.prefer_existing_git_info(existing_metadata);
         }
-        if let Some(updated_at) = file_modified_time_utc(builder.rollout_path.as_path()).await {
+        let updated_at = match updated_at_override {
+            Some(updated_at) => Some(updated_at),
+            None => file_modified_time_utc(builder.rollout_path.as_path()).await,
+        };
+        if let Some(updated_at) = updated_at {
             metadata.updated_at = updated_at;
         }
         // Keep the thread upsert before dynamic tools to satisfy the foreign key constraint:
@@ -735,7 +753,7 @@ mod tests {
         })];
 
         runtime
-            .apply_rollout_items(&builder, &items, None, None)
+            .apply_rollout_items(&builder, &items, None, None, None)
             .await
             .expect("apply_rollout_items should succeed");
 
@@ -793,7 +811,7 @@ mod tests {
         })];
 
         runtime
-            .apply_rollout_items(&builder, &items, None, None)
+            .apply_rollout_items(&builder, &items, None, None, None)
             .await
             .expect("apply_rollout_items should succeed");
 
@@ -911,6 +929,46 @@ mod tests {
         assert_eq!(
             datetime_to_epoch_seconds(persisted.updated_at),
             datetime_to_epoch_seconds(existing.updated_at)
+        );
+    }
+
+    #[tokio::test]
+    async fn touch_thread_updated_at_updates_only_timestamp() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000792").expect("valid thread id");
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        metadata.title = "original title".to_string();
+        metadata.first_user_message = Some("original preview".to_string());
+
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("initial upsert should succeed");
+
+        let updated_at = DateTime::<Utc>::from_timestamp(1_700_000_200, 0).expect("timestamp");
+        let updated = runtime
+            .touch_thread_updated_at(thread_id, updated_at)
+            .await
+            .expect("updated_at touch should succeed");
+        assert!(updated, "updated_at touch should affect the thread row");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.title, "original title");
+        assert_eq!(
+            persisted.first_user_message.as_deref(),
+            Some("original preview")
+        );
+        assert_eq!(
+            datetime_to_epoch_seconds(persisted.updated_at),
+            datetime_to_epoch_seconds(updated_at)
         );
     }
 
