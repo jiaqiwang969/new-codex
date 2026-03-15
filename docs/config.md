@@ -37,10 +37,16 @@ account_pool = [
 ]
 ```
 
-When a switch happens, Codex updates
-`model_providers.<provider_id>.base_url` and `.env_key` in `config.toml`.
-The account pool is tried in order, starting after the current account and
-wrapping around until each account has been attempted at most once per turn.
+When `account_pool` is present, pool order is the source of truth for account
+selection. Every new turn starts scanning from the first pool entry. If an
+account fails with an auth/rate-limit style error, Codex cools that account
+down for 10 minutes for the current session, switches to the next pool entry
+for the current turn, and retries the first account again on a later turn once
+its cooldown has expired.
+
+Codex does not rewrite `config.toml` or `config-pool.toml` to persist the last
+successful account. If every account is still cooling down, Codex forces a
+fresh probe from the first pool entry instead of failing immediately.
 
 ## Connecting to MCP servers
 

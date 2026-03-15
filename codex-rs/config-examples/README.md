@@ -57,16 +57,24 @@ memory_tool = true           # Enable memory extraction and consolidation
 
 ## API Key Pooling
 
-For high-volume usage, use `config-pool.toml` and `auth-pool.json` to rotate between multiple API keys:
+For high-volume usage, use `config-pool.toml` and `auth-pool.json` to define an
+ordered account pool per provider. When `account_pool` exists, Codex starts
+each new or resumed turn from `POOL_1`, skips accounts that are still cooling
+down, and retries `POOL_1` again after cooldown expires.
 
 ```toml
 # In config-pool.toml
-[model_providers.openai]
-api_key_pool = [
-    "OPENAI_API_KEY_POOL_1",
-    "OPENAI_API_KEY_POOL_2",
-    "OPENAI_API_KEY_POOL_3"
-]
+[[model_providers.codex.account_pool]]
+base_url = "https://your-openai-proxy.example/v1"
+env_key = "OPENAI_API_KEY_POOL_1"
+
+[[model_providers.codex.account_pool]]
+base_url = "https://your-openai-proxy.example/v1"
+env_key = "OPENAI_API_KEY_POOL_2"
+
+[[model_providers.codex.account_pool]]
+base_url = "https://your-openai-proxy.example/v1"
+env_key = "OPENAI_API_KEY_POOL_3"
 ```
 
 ```json
@@ -94,6 +102,10 @@ name = 'codex'
 requires_openai_auth = true
 wire_api = 'responses'
 ```
+
+`config.toml` keeps the logical provider definition. `config-pool.toml` keeps
+only `account_pool` entries. In pool mode, do not rely on a top-level
+`base_url` or `env_key` inside `config-pool.toml`.
 
 ## Support
 

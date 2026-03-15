@@ -60,62 +60,57 @@ source ~/.bashrc
 
 ### 3. 配置 Account Pool
 
-创建或编辑 `~/.codex/config-pool.toml`：
+先在 `~/.codex/config.toml` 里定义逻辑 provider：
 
 ```toml
-# Antigravity Gemini Provider (Native Gemini API via CLIProxyAPI)
 [model_providers.antigravity-gemini]
 name = "Antigravity Gemini"
 base_url = "http://localhost:8317/v1beta"
-env_key = "ANTIGRAVITY_API_KEY"
 wire_api = "gemini"
 
-[[model_providers.antigravity-gemini.account_pool]]
-base_url = "http://localhost:8317/v1beta"
-env_key = "ANTIGRAVITY_API_KEY"
-
-# Antigravity Anthropic Provider (Native Anthropic API via CLIProxyAPI)
 [model_providers.antigravity-anthropic]
 name = "Antigravity Anthropic"
 base_url = "http://localhost:8317"
-env_key = "ANTIGRAVITY_API_KEY"
 wire_api = "anthropic"
+```
+
+再在 `~/.codex/config-pool.toml` 里定义账户池：
+
+```toml
+[[model_providers.antigravity-gemini.account_pool]]
+base_url = "http://localhost:8317/v1beta"
+env_key = "ANTIGRAVITY_API_KEY_POOL_1"
 
 [[model_providers.antigravity-anthropic.account_pool]]
 base_url = "http://localhost:8317"
-env_key = "ANTIGRAVITY_API_KEY"
+env_key = "ANTIGRAVITY_API_KEY_POOL_1"
 ```
 
 ### 4. （可选）配置多账号池
 
-如果你有多个 CLIProxyAPI API Key，可以配置账号池实现故障转移：
+如果你有多个 CLIProxyAPI API Key，可以配置账号池实现故障转移。`config-pool.toml`
+里只保留 `account_pool` 条目，不要再额外写顶层 `env_key` 作为默认账号：
 
 ```toml
-[model_providers.antigravity-gemini]
-name = "Antigravity Gemini"
+[[model_providers.antigravity-gemini.account_pool]]
 base_url = "http://localhost:8317/v1beta"
-env_key = "ANTIGRAVITY_API_KEY_1"
-wire_api = "gemini"
+env_key = "ANTIGRAVITY_API_KEY_POOL_1"
 
 [[model_providers.antigravity-gemini.account_pool]]
 base_url = "http://localhost:8317/v1beta"
-env_key = "ANTIGRAVITY_API_KEY_1"
+env_key = "ANTIGRAVITY_API_KEY_POOL_2"
 
 [[model_providers.antigravity-gemini.account_pool]]
 base_url = "http://localhost:8317/v1beta"
-env_key = "ANTIGRAVITY_API_KEY_2"
-
-[[model_providers.antigravity-gemini.account_pool]]
-base_url = "http://localhost:8317/v1beta"
-env_key = "ANTIGRAVITY_API_KEY_3"
+env_key = "ANTIGRAVITY_API_KEY_POOL_3"
 ```
 
 然后设置对应的环境变量：
 
 ```bash
-export ANTIGRAVITY_API_KEY_1="sk-key1..."
-export ANTIGRAVITY_API_KEY_2="sk-key2..."
-export ANTIGRAVITY_API_KEY_3="sk-key3..."
+export ANTIGRAVITY_API_KEY_POOL_1="sk-key1..."
+export ANTIGRAVITY_API_KEY_POOL_2="sk-key2..."
+export ANTIGRAVITY_API_KEY_POOL_3="sk-key3..."
 ```
 
 ## 使用方法
