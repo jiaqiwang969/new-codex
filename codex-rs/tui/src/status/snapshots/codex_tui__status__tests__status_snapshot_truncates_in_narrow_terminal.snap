@@ -15,7 +15,7 @@ expression: sanitized
 │  Utility source:      task defaults (parent/role)                  │
 │  Memory scope:        auto (cwd -> user -> global)                 │
 │  Entire tracing:      not configured (set notify=["entire", "hooks │
-│  Memory phase-1:      gpt-5.3-codex-spark (memory default)         │
+│  Memory phase-1:      gpt-5.1-codex-mini (memory default)          │
 │  Memory phase-2:      gpt-5.3-codex (memory default)               │
 │  Entire summary:      claude-sonnet-4-6 (memory default)           │
 │  Directory: [[workspace]]                                          │

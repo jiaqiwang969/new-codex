@@ -1,3 +1,4 @@
+pub(crate) mod agent_jobs;
 pub mod apply_patch;
 mod dynamic;
 mod gemini_web_search;
@@ -13,14 +14,19 @@ mod request_user_input;
 mod search_tool_bm25;
 mod shell;
 mod test_sync;
-mod unified_exec;
+pub(crate) mod unified_exec;
 mod view_image;
 
 pub use plan::PLAN_TOOL;
 use serde::Deserialize;
+use std::path::Path;
 
 use crate::function_tool::FunctionCallError;
+use crate::sandboxing::SandboxPermissions;
+use crate::sandboxing::normalize_additional_permissions;
 pub use apply_patch::ApplyPatchHandler;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 pub use dynamic::DynamicToolHandler;
 pub use gemini_web_search::GeminiWebSearchHandler;
 pub use grep_files::GrepFilesHandler;
@@ -56,3 +62,61 @@ mod ephemeral_sandbox;
 pub use ephemeral_sandbox::EphemeralSandboxHandler;
 
 pub mod request_security_override;
+/// Validates feature/policy constraints for `with_additional_permissions` and
+/// normalizes any path-based permissions. Errors if the request is invalid.
+pub(super) fn normalize_and_validate_additional_permissions(
+    request_permission_enabled: bool,
+    approval_policy: AskForApproval,
+    sandbox_permissions: SandboxPermissions,
+    additional_permissions: Option<PermissionProfile>,
+    cwd: &Path,
+) -> Result<Option<PermissionProfile>, String> {
+    let uses_additional_permissions = matches!(
+        sandbox_permissions,
+        SandboxPermissions::WithAdditionalPermissions
+    );
+
+    if !request_permission_enabled
+        && (uses_additional_permissions || additional_permissions.is_some())
+    {
+        return Err(
+            "additional permissions are disabled; enable `features.request_permission` before using `with_additional_permissions`"
+                .to_string(),
+        );
+    }
+
+    if uses_additional_permissions {
+        if !matches!(approval_policy, AskForApproval::OnRequest) {
+            return Err(format!(
+                "approval policy is {approval_policy:?}; reject command — you cannot request additional permissions unless the approval policy is OnRequest"
+            ));
+        }
+        let Some(additional_permissions) = additional_permissions else {
+            return Err(
+                "missing `additional_permissions`; provide at least one of `network`, `file_system`, or `macos` when using `with_additional_permissions`"
+                    .to_string(),
+            );
+        };
+        #[cfg(not(target_os = "macos"))]
+        if additional_permissions.macos.is_some() {
+            return Err("`additional_permissions.macos` is only supported on macOS".to_string());
+        }
+        let normalized = normalize_additional_permissions(additional_permissions, cwd)?;
+        if normalized.is_empty() {
+            return Err(
+                "`additional_permissions` must include at least one requested permission in `network`, `file_system`, or `macos`"
+                    .to_string(),
+            );
+        }
+        return Ok(Some(normalized));
+    }
+
+    if additional_permissions.is_some() {
+        Err(
+            "`additional_permissions` requires `sandbox_permissions` set to `with_additional_permissions`"
+                .to_string(),
+        )
+    } else {
+        Ok(None)
+    }
+}

@@ -5,11 +5,11 @@ use std::fs;
 use std::time::Duration;
 use std::time::Instant;
 
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::Op;
-use codex_core::protocol::SandboxPolicy;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -153,9 +153,23 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
         "login": false,
         "timeout_ms": 1_000,
     });
+    let warmup_args = serde_json::to_string(&json!({
+        "command": "sleep 0.01",
+        "login": false,
+        "timeout_ms": 1_000,
+    }))?;
     let args_one = serde_json::to_string(&shell_args)?;
     let args_two = serde_json::to_string(&shell_args)?;
 
+    let warmup_first = sse(vec![
+        json!({"type": "response.created", "response": {"id": "resp-warm-1"}}),
+        ev_function_call("warm-call-1", "shell_command", &warmup_args),
+        ev_completed("resp-warm-1"),
+    ]);
+    let warmup_second = sse(vec![
+        ev_assistant_message("warm-msg-1", "warmup complete"),
+        ev_completed("resp-warm-2"),
+    ]);
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
         ev_function_call("call-1", "shell_command", &args_one),
@@ -166,7 +180,13 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(&server, vec![first_response, second_response]).await;
+    mount_sse_sequence(
+        &server,
+        vec![warmup_first, warmup_second, first_response, second_response],
+    )
+    .await;
+
+    run_turn(&test, "warm up shell_command").await?;
 
     let duration = run_turn_and_measure(&test, "run shell_command twice").await?;
     assert_parallel_duration(duration);
@@ -185,13 +205,32 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
         "sleep_after_ms": 300
     })
     .to_string();
+    let warmup_sync_args = json!({
+        "sleep_after_ms": 10
+    })
+    .to_string();
     let shell_args = serde_json::to_string(&json!({
         "command": "sleep 0.25",
         // Avoid user-specific shell startup cost in timing assertions.
         "login": false,
         "timeout_ms": 1_000,
     }))?;
+    let warmup_shell_args = serde_json::to_string(&json!({
+        "command": "sleep 0.01",
+        "login": false,
+        "timeout_ms": 1_000,
+    }))?;
 
+    let warmup_first = sse(vec![
+        json!({"type": "response.created", "response": {"id": "resp-warm-1"}}),
+        ev_function_call("warm-call-1", "test_sync_tool", &warmup_sync_args),
+        ev_function_call("warm-call-2", "shell_command", &warmup_shell_args),
+        ev_completed("resp-warm-1"),
+    ]);
+    let warmup_second = sse(vec![
+        ev_assistant_message("warm-msg-1", "warmup complete"),
+        ev_completed("resp-warm-2"),
+    ]);
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
         ev_function_call("call-1", "test_sync_tool", &sync_args),
@@ -202,7 +241,13 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(&server, vec![first_response, second_response]).await;
+    mount_sse_sequence(
+        &server,
+        vec![warmup_first, warmup_second, first_response, second_response],
+    )
+    .await;
+
+    run_turn(&test, "warm up shell_command").await?;
 
     let duration = run_turn_and_measure(&test, "mix tools").await?;
     assert_parallel_duration(duration);

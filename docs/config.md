@@ -37,10 +37,16 @@ account_pool = [
 ]
 ```
 
-When a switch happens, Codex updates
-`model_providers.<provider_id>.base_url` and `.env_key` in `config.toml`.
-The account pool is tried in order, starting after the current account and
-wrapping around until each account has been attempted at most once per turn.
+When `account_pool` is present, pool order is the source of truth for account
+selection. Every new turn starts scanning from the first pool entry. If an
+account fails with an auth/rate-limit style error, Codex cools that account
+down for 10 minutes for the current session, switches to the next pool entry
+for the current turn, and retries the first account again on a later turn once
+its cooldown has expired.
+
+Codex does not rewrite `config.toml` or `config-pool.toml` to persist the last
+successful account. If every account is still cooling down, Codex forces a
+fresh probe from the first pool entry instead of failing immediately.
 
 ## Connecting to MCP servers
 
@@ -110,8 +116,23 @@ For `mcp-tool-call-complete`, `status` can be one of:
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
 
+## SQLite State DB
+
+Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the
+`CODEX_SQLITE_HOME` environment variable. When unset, WorkspaceWrite sandbox
+sessions default to a temp directory; other modes default to `CODEX_HOME`.
+
 ## Notices
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
+
+## Plan mode defaults
+
+`plan_mode_reasoning_effort` lets you set a Plan-mode-specific default reasoning
+effort override. When unset, Plan mode uses the built-in Plan preset default
+(currently `medium`). When explicitly set (including `none`), it overrides the
+Plan preset. The string value `none` means "no reasoning" (an explicit Plan
+override), not "inherit the global default". There is currently no separate
+config value for "follow the global default in Plan mode".
 
 Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).

@@ -3,16 +3,51 @@
 use codex_protocol::models::ResponseItem;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
+use tokio::task::JoinHandle;
 
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
+use crate::error::Result as CodexResult;
 use crate::gemini_types::GeminiAspectRatio;
 use crate::gemini_types::GeminiImageSize;
+use crate::model_provider_info::ModelProviderAccount;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::tasks::RegularTask;
 use crate::truncate::TruncationPolicy;
+use codex_protocol::protocol::TurnContextItem;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProviderPoolRuntimeState {
+    cooldowns: HashMap<ModelProviderAccount, Instant>,
+}
+
+impl ProviderPoolRuntimeState {
+    fn cooldown_until(&mut self, account: &ModelProviderAccount, now: Instant) -> Option<Instant> {
+        match self.cooldowns.get(account).copied() {
+            Some(until) if until > now => Some(until),
+            Some(_) => {
+                self.cooldowns.remove(account);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn mark_cooling(
+        &mut self,
+        account: ModelProviderAccount,
+        now: Instant,
+        cooldown: Duration,
+    ) -> Instant {
+        let until = now + cooldown;
+        self.cooldowns.insert(account, until);
+        until
+    }
+}
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
@@ -22,20 +57,18 @@ pub(crate) struct SessionState {
     pub(crate) server_reasoning_included: bool,
     pub(crate) dependency_env: HashMap<String, String>,
     pub(crate) mcp_dependency_prompted: HashSet<String>,
-    /// Whether the session's initial context has been seeded into history.
-    ///
-    /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
-    /// timestamp when resuming a session. Remove this once SQLite is in place.
-    pub(crate) initial_context_seeded: bool,
-    /// Previous model seen by the session, used for model-switch handling on task start.
+    /// Model used by the latest regular user turn, used for model-switch handling
+    /// on subsequent regular turns (including full-context reinjection after
+    /// resume or `/compact`).
     previous_model: Option<String>,
     /// Startup regular task pre-created during session initialization.
-    pub(crate) startup_regular_task: Option<RegularTask>,
+    pub(crate) startup_regular_task: Option<JoinHandle<CodexResult<RegularTask>>>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
     auto_model_sub_selection: Option<String>,
     auto_model_sub_calibration_attempted: bool,
     last_model_sub_calibration_models: Vec<String>,
     last_model_sub_calibration_recommended_for_session: Option<String>,
+    provider_pool_runtime: HashMap<String, ProviderPoolRuntimeState>,
     active_reference_images: Vec<String>,
     image_size: Option<GeminiImageSize>,
     aspect_ratio: Option<GeminiAspectRatio>,
@@ -53,7 +86,6 @@ impl SessionState {
             server_reasoning_included: false,
             dependency_env: HashMap::new(),
             mcp_dependency_prompted: HashSet::new(),
-            initial_context_seeded: false,
             previous_model: None,
             startup_regular_task: None,
             active_mcp_tool_selection: None,
@@ -61,6 +93,7 @@ impl SessionState {
             auto_model_sub_calibration_attempted: false,
             last_model_sub_calibration_models: Vec::new(),
             last_model_sub_calibration_recommended_for_session: None,
+            provider_pool_runtime: HashMap::new(),
             active_reference_images: Vec::new(),
             image_size: None,
             aspect_ratio: None,
@@ -88,12 +121,26 @@ impl SessionState {
         self.history.clone()
     }
 
-    pub(crate) fn replace_history(&mut self, items: Vec<ResponseItem>) {
+    pub(crate) fn replace_history(
+        &mut self,
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+    ) {
         self.history.replace(items);
+        self.history
+            .set_reference_context_item(reference_context_item);
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         self.history.set_token_info(info);
+    }
+
+    pub(crate) fn set_reference_context_item(&mut self, item: Option<TurnContextItem>) {
+        self.history.set_reference_context_item(item);
+    }
+
+    pub(crate) fn reference_context_item(&self) -> Option<TurnContextItem> {
+        self.history.reference_context_item()
     }
 
     // Token/rate limit helpers
@@ -150,6 +197,31 @@ impl SessionState {
         self.mcp_dependency_prompted.clone()
     }
 
+    pub(crate) fn pool_cooldown_until(
+        &mut self,
+        provider_id: &str,
+        account: &ModelProviderAccount,
+        now: Instant,
+    ) -> Option<Instant> {
+        self.provider_pool_runtime
+            .entry(provider_id.to_string())
+            .or_default()
+            .cooldown_until(account, now)
+    }
+
+    pub(crate) fn mark_pool_account_cooling(
+        &mut self,
+        provider_id: &str,
+        account: ModelProviderAccount,
+        now: Instant,
+        cooldown: Duration,
+    ) -> Instant {
+        self.provider_pool_runtime
+            .entry(provider_id.to_string())
+            .or_default()
+            .mark_cooling(account, now, cooldown)
+    }
+
     pub(crate) fn set_dependency_env(&mut self, values: HashMap<String, String>) {
         for (key, value) in values {
             self.dependency_env.insert(key, value);
@@ -192,11 +264,13 @@ impl SessionState {
         self.aspect_ratio
     }
 
-    pub(crate) fn set_startup_regular_task(&mut self, task: RegularTask) {
+    pub(crate) fn set_startup_regular_task(&mut self, task: JoinHandle<CodexResult<RegularTask>>) {
         self.startup_regular_task = Some(task);
     }
 
-    pub(crate) fn take_startup_regular_task(&mut self) -> Option<RegularTask> {
+    pub(crate) fn take_startup_regular_task(
+        &mut self,
+    ) -> Option<JoinHandle<CodexResult<RegularTask>>> {
         self.startup_regular_task.take()
     }
 

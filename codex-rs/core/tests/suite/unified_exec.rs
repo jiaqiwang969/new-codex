@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::features::Feature;
-use codex_core::protocol::AskForApproval;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::ExecCommandSource;
-use codex_core::protocol::Op;
-use codex_core::protocol::SandboxPolicy;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use core_test_support::assert_regex_match;
 use core_test_support::process::process_is_alive;
@@ -39,6 +41,27 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::time::Duration;
 use which::which;
+
+fn find_test_python() -> Option<PathBuf> {
+    let python = which("python").ok().or_else(|| which("python3").ok())?;
+
+    #[cfg(target_os = "macos")]
+    if python == Path::new("/usr/bin/python3") {
+        // /usr/bin/python3 is an xcrun shim on macOS and can fail under seatbelt.
+        if let Ok(output) = std::process::Command::new("xcrun")
+            .args(["--find", "python3"])
+            .output()
+            && output.status.success()
+        {
+            let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !resolved.is_empty() {
+                return Some(PathBuf::from(resolved));
+            }
+        }
+    }
+
+    Some(python)
+}
 
 fn extract_output_text(item: &Value) -> Option<&str> {
     item.get("output").and_then(|value| match value {
@@ -1330,12 +1353,9 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
-    let python = match which("python").or_else(|_| which("python3")) {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!("python not found in PATH, skipping tty default test.");
-            return Ok(());
-        }
+    let Some(python) = find_test_python() else {
+        eprintln!("python not found in PATH, skipping tty default test.");
+        return Ok(());
     };
 
     let server = start_mock_server().await;
@@ -1419,12 +1439,9 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
-    let python = match which("python").or_else(|_| which("python3")) {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!("python not found in PATH, skipping tty enable test.");
-            return Ok(());
-        }
+    let Some(python) = find_test_python() else {
+        eprintln!("python not found in PATH, skipping tty enable test.");
+        return Ok(());
     };
 
     let server = start_mock_server().await;
@@ -2571,12 +2588,9 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
 async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let python = match which::which("python").or_else(|_| which::which("python3")) {
-        Ok(path) => path,
-        Err(_) => {
-            eprintln!("python not found in PATH, skipping test.");
-            return Ok(());
-        }
+    let Some(python) = find_test_python() else {
+        eprintln!("python not found in PATH, skipping test.");
+        return Ok(());
     };
 
     let server = start_mock_server().await;

@@ -11,7 +11,6 @@ use crate::memories::phase_one;
 use crate::memories::prompts::build_stage_one_input_message;
 use crate::rollout::INTERACTIVE_SESSION_SOURCES;
 use crate::rollout::policy::should_persist_response_item_for_memories;
-use crate::utility_model;
 use codex_api::ResponseEvent;
 use codex_otel::OtelManager;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -22,7 +21,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::TokenUsage;
-use codex_utils_sanitizer::redact_secrets;
+use codex_secrets::redact_secrets;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
@@ -83,6 +82,12 @@ struct StageOneOutput {
 /// 3) run stage-1 extraction jobs in parallel
 /// 4) emit metrics and logs
 pub(in crate::memories) async fn run(session: &Arc<Session>, config: &Config) {
+    let _phase_one_e2e_timer = session
+        .services
+        .otel_manager
+        .start_timer(metrics::MEMORY_PHASE_ONE_E2E_MS, &[])
+        .ok();
+
     // 1. Claim startup job.
     let Some(claimed_candidates) = claim_startup_jobs(session, &config.memories).await else {
         return;
@@ -141,7 +146,7 @@ impl RequestContext {
             model_info,
             turn_metadata_header,
             otel_manager: turn_context.otel_manager.clone(),
-            reasoning_effort: turn_context.reasoning_effort,
+            reasoning_effort: Some(phase_one::REASONING_EFFORT),
             reasoning_summary: turn_context.reasoning_summary,
         }
     }
@@ -195,13 +200,8 @@ async fn build_request_context(session: &Arc<Session>, config: &Config) -> Reque
         .phase_1_model
         .clone()
         .unwrap_or_else(|| crate::memories::DEFAULT_MEMORY_PHASE_ONE_MODEL.to_string());
-    let (model_client, model) = if let Some((model_client, model, provider_id)) =
-        utility_model::client_and_model_for_slug(
-            &session.services.model_client,
-            &session.services.models_manager,
-            config,
-            &model_name,
-        )
+    let (model_client, model) = if let Some((model_client, model, provider_id)) = session
+        .utility_client_and_model_for_slug(config, &model_name)
         .await
     {
         info!(

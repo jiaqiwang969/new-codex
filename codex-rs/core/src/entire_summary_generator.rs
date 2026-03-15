@@ -17,6 +17,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::SessionSource;
 use futures::StreamExt;
 use serde_json::json;
@@ -30,26 +31,21 @@ use std::sync::Arc;
 /// 2. Gets the appropriate model client and provider
 /// 3. Calls the model with a structured JSON schema
 /// 4. Parses and returns the summary
-pub async fn generate_entire_summary(
-    input: &EntireSummaryInput,
-    base_client: &ModelClient,
-    models_manager: &Arc<ModelsManager>,
-    config: &Config,
-) -> Result<EntireSummary> {
-    // Resolve model slug with fallback chain
-    let model_slug = config
+pub(crate) fn model_slug(config: &Config) -> &str {
+    config
         .memories
         .entire_summary_model
         .as_deref()
         .or(config.model_sub.as_deref())
-        .unwrap_or(crate::DEFAULT_ENTIRE_SUMMARY_MODEL);
+        .unwrap_or(crate::DEFAULT_ENTIRE_SUMMARY_MODEL)
+}
 
-    // Get model client and info
-    let (model_client, model_info, _provider_id) =
-        utility_model::client_and_model_for_slug(base_client, models_manager, config, model_slug)
-            .await
-            .context("Failed to get model client for entire_summary_model")?;
-
+pub(crate) async fn generate_entire_summary_with_client_and_model(
+    input: &EntireSummaryInput,
+    model_client: &ModelClient,
+    model_info: &ModelInfo,
+    model_slug: &str,
+) -> Result<EntireSummary> {
     // Build prompt and schema
     let prompt = codex_hooks::build_why_prompt(input);
     let schema = output_schema();
@@ -80,7 +76,7 @@ pub async fn generate_entire_summary(
     let mut stream = client_session
         .stream(
             &prompt_struct,
-            &model_info,
+            model_info,
             &codex_otel::OtelManager::new(
                 ThreadId::new(),
                 model_slug,
@@ -130,6 +126,24 @@ pub async fn generate_entire_summary(
         .context("Failed to parse model response as EntireSummary")?;
 
     Ok(summary)
+}
+
+pub async fn generate_entire_summary(
+    input: &EntireSummaryInput,
+    base_client: &ModelClient,
+    models_manager: &Arc<ModelsManager>,
+    config: &Config,
+) -> Result<EntireSummary> {
+    let model_slug = model_slug(config);
+
+    // Get model client and info
+    let (model_client, model_info, _provider_id) =
+        utility_model::client_and_model_for_slug(base_client, models_manager, config, model_slug)
+            .await
+            .context("Failed to get model client for entire_summary_model")?;
+
+    generate_entire_summary_with_client_and_model(input, &model_client, &model_info, model_slug)
+        .await
 }
 
 /// Generates and saves an Entire summary asynchronously.

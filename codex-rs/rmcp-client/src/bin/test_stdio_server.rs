@@ -11,6 +11,7 @@ use rmcp::model::JsonObject;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
+use rmcp::model::Meta;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::RawResource;
 use rmcp::model::RawResourceTemplate;
@@ -39,6 +40,8 @@ const MEMO_CONTENT: &str = "This is a sample MCP resource served by the rmcp tes
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const SOFT_ERROR_TOOL_ENV_VAR: &str = "MCP_TEST_ENABLE_SOFT_ERROR_TOOL";
 const APPROVAL_TOOL_ENV_VAR: &str = "MCP_TEST_ENABLE_APPROVAL_TOOL";
+const APPROVAL_TOOL_CONNECTOR_ID: &str = "approval-test-app";
+const APPROVAL_TOOL_CONNECTOR_NAME: &str = "Approval Test";
 
 pub fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
     (tokio::io::stdin(), tokio::io::stdout())
@@ -130,7 +133,7 @@ impl TestToolServer {
         }))
         .expect("dangerous_write tool schema should deserialize");
 
-        Tool::new(
+        let mut tool = Tool::new(
             Cow::Borrowed("dangerous_write"),
             Cow::Borrowed("Synthetic tool marked as destructive/open-world for approval tests."),
             Arc::new(schema),
@@ -140,7 +143,18 @@ impl TestToolServer {
                 .read_only(false)
                 .destructive(true)
                 .open_world(true),
-        )
+        );
+        let mut meta = Meta::new();
+        meta.0.insert(
+            "connector_id".to_string(),
+            json!(APPROVAL_TOOL_CONNECTOR_ID),
+        );
+        meta.0.insert(
+            "connector_name".to_string(),
+            json!(APPROVAL_TOOL_CONNECTOR_NAME),
+        );
+        tool.meta = Some(meta);
+        tool
     }
 
     /// Tool intended for manual testing of Codex TUI rendering for MCP image tool results.

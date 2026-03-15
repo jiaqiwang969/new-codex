@@ -5,6 +5,7 @@ use chrono::Utc;
 use codex_api::RawMemory;
 use codex_api::RawMemoryMetadata;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SessionSource;
 use codex_utils_string::take_bytes_at_char_boundary;
 use serde_json::Value;
 use tracing::warn;
@@ -29,10 +30,7 @@ pub(crate) fn maybe_spawn_thread_memory_update_after_compaction(
     compaction_summary: String,
     trace_items: Vec<Value>,
 ) {
-    if sess.state_db().is_none() {
-        return;
-    }
-    if !turn_context.features.enabled(Feature::MemoryTool) {
+    if !thread_memory_updates_enabled(&sess, &turn_context) {
         return;
     }
     if compaction_summary.trim().is_empty() && trace_items.is_empty() {
@@ -50,16 +48,21 @@ pub(crate) fn maybe_spawn_thread_memory_update_after_turn(
     turn_context: Arc<TurnContext>,
     last_agent_message: Option<String>,
 ) {
-    if sess.state_db().is_none() {
-        return;
-    }
-    if !turn_context.features.enabled(Feature::MemoryTool) {
+    if !thread_memory_updates_enabled(&sess, &turn_context) {
         return;
     }
 
     tokio::spawn(async move {
         update_thread_memory_after_turn(sess, turn_context, last_agent_message).await;
     });
+}
+
+fn thread_memory_updates_enabled(sess: &Session, turn_context: &TurnContext) -> bool {
+    if sess.state_db().is_none() || !turn_context.features.enabled(Feature::MemoryTool) {
+        return false;
+    }
+
+    !matches!(turn_context.session_source, SessionSource::SubAgent(_))
 }
 
 pub fn build_thread_memory_trace_items(history: &[ResponseItem]) -> Vec<Value> {
@@ -318,10 +321,8 @@ async fn summarize_trace_items(
             let fallback_model_slug =
                 utility_model::responses_utility_model_slug(turn_context.config.as_ref());
 
-            let Some((utility_client, utility_model_info, provider_id)) =
-                utility_model::client_and_model_for_slug(
-                    &sess.services.model_client,
-                    &sess.services.models_manager,
+            let Some((utility_client, utility_model_info, provider_id)) = sess
+                .utility_client_and_model_for_slug(
                     turn_context.config.as_ref(),
                     fallback_model_slug,
                 )

@@ -1,15 +1,12 @@
 # Account pool configuration - isolated from main config.toml
-# Each provider can have multiple accounts for failover/rotation.
-# On failure (400/401/403/429/quota), codex automatically switches to the next account.
-#
-# Test setup: first accounts use invalid keys to verify failover,
-# the LAST account in each pool holds the real working key.
+# `account_pool` is the source of truth when present.
+# Every new or resumed session starts probing from key 1.
+# If a key fails with 400/401/403/429/quota, Codex cools it down for 10 minutes
+# and switches to the next key for the current turn.
+# After 10 minutes, the next turn retries key 1 first again.
+# If all keys are cooling down, Codex still forces a fresh probe from key 1.
 
 # ── Codex (OpenAI-compatible) provider pool ─────────────────────────
-[model_providers.codex]
-base_url = "https://code.ppchat.vip/v1"
-env_key = "OPENAI_API_KEY_POOL_3"
-
 [[model_providers.codex.account_pool]]
 base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_1"
@@ -23,10 +20,6 @@ base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_3"
 
 # ── Gemini provider pool ─────────────────────────────────────────────
-[model_providers.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta"
-env_key = "GEMINI_API_KEY_POOL_3"
-
 [[model_providers.gemini.account_pool]]
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_1"
@@ -40,10 +33,6 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_3"
 
 # ── Grok provider pool ───────────────────────────────────────────────
-[model_providers.grok]
-base_url = "https://api.x.ai/v1"
-env_key = "XAI_API_KEY_POOL_3"
-
 [[model_providers.grok.account_pool]]
 base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_1"
@@ -57,10 +46,6 @@ base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_3"
 
 # ── Anthropic provider pool ──────────────────────────────────────────
-[model_providers.anthropic]
-base_url = "https://code.ppchat.vip"
-env_key = "ANTHROPIC_API_KEY_POOL_3"
-
 [[model_providers.anthropic.account_pool]]
 base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_1"

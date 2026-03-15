@@ -7,6 +7,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
+use codex_protocol::approvals::NetworkPolicyRuleAction;
 use codex_protocol::models::FunctionCallOutputBody;
 use serde::Deserialize;
 use serde::Serialize;
@@ -136,10 +137,10 @@ impl ToolHandler for RequestSecurityOverrideHandler {
         }
 
         if !matches!(
-            turn.approval_policy,
+            turn.approval_policy.value(),
             codex_protocol::protocol::AskForApproval::OnRequest
         ) {
-            let approval_policy = turn.approval_policy;
+            let approval_policy = turn.approval_policy.value();
             return Err(FunctionCallError::RespondToModel(format!(
                 "approval policy is {approval_policy:?}; reject request — you cannot ask for escalated permissions if the approval policy is {approval_policy:?}"
             )));
@@ -210,6 +211,8 @@ impl ToolHandler for RequestSecurityOverrideHandler {
                 Some(approval_reason),
                 None,
                 None,
+                None,
+                None,
             )
             .await;
 
@@ -217,6 +220,18 @@ impl ToolHandler for RequestSecurityOverrideHandler {
             ReviewDecision::Approved
             | ReviewDecision::ApprovedForSession
             | ReviewDecision::ApprovedExecpolicyAmendment { .. } => {}
+            ReviewDecision::NetworkPolicyAmendment {
+                network_policy_amendment,
+            } => {
+                if matches!(
+                    network_policy_amendment.action,
+                    NetworkPolicyRuleAction::Deny
+                ) {
+                    return Err(FunctionCallError::RespondToModel(
+                        "security override request was denied by the user".to_string(),
+                    ));
+                }
+            }
             ReviewDecision::Denied => {
                 return Err(FunctionCallError::RespondToModel(
                     "security override request was denied by the user".to_string(),
@@ -302,7 +317,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_relative_path() {
         let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy = AskForApproval::OnRequest;
+        turn.approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should allow OnRequest in tests");
         let invocation = invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -328,7 +345,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_empty_reason() {
         let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy = AskForApproval::OnRequest;
+        turn.approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should allow OnRequest in tests");
         let target_path = turn.cwd.join("target-dir");
         let invocation = invocation(
             Arc::new(session),
@@ -357,7 +376,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_path_outside_protected_zone() {
         let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy = AskForApproval::OnRequest;
+        turn.approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should allow OnRequest in tests");
         let outside_root = tempfile::tempdir().expect("create tempdir");
         let target_path = outside_root.path().join("outside-target");
         let invocation = invocation(
@@ -385,7 +406,9 @@ mod tests {
     #[tokio::test]
     async fn returns_denied_when_user_rejects_approval() {
         let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy = AskForApproval::OnRequest;
+        turn.approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should allow OnRequest in tests");
         let target_path = turn.cwd.join("target-dir");
         let session = Arc::new(session);
         *session.active_turn.lock().await = Some(ActiveTurn::default());
@@ -433,7 +456,9 @@ mod tests {
     #[tokio::test]
     async fn writes_temporary_override_after_approval() {
         let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy = AskForApproval::OnRequest;
+        turn.approval_policy
+            .set(AskForApproval::OnRequest)
+            .expect("approval policy should allow OnRequest in tests");
         let target_path = turn.cwd.join("target-dir");
         let target_path = normalize_path_for_policy(&target_path);
         let target_path_string = target_path.to_string_lossy().to_string();

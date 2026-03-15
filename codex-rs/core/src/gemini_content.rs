@@ -89,8 +89,8 @@ pub(crate) fn strip_model_suffix(model: &str) -> &str {
     let m = m.strip_prefix("google/").unwrap_or(m);
     // Strip antigravity prefix for CLIProxyAPI models
     let m = m.strip_prefix("antigravity/").unwrap_or(m);
-    let m = m.strip_prefix("antigravity-gemini/").unwrap_or(m);
-    m
+
+    (m.strip_prefix("antigravity-gemini/").unwrap_or(m)) as _
 }
 
 // ── Thinking config ──────────────────────────────────────────────────

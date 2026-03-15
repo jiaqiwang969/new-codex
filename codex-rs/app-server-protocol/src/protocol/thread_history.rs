@@ -3,6 +3,8 @@ use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandAction;
 use crate::protocol::v2::CommandExecutionStatus;
+use crate::protocol::v2::DynamicToolCallOutputContentItem;
+use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileUpdateChange;
 use crate::protocol::v2::McpToolCallError;
 use crate::protocol::v2::McpToolCallResult;
@@ -17,16 +19,22 @@ use crate::protocol::v2::TurnError;
 use crate::protocol::v2::TurnStatus;
 use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentReasoningEvent;
 use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ContextCompactedEvent;
+use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::McpToolCallEndEvent;
+use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -36,8 +44,10 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::ViewImageToolCallEvent;
+use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
 use std::collections::HashMap;
+use tracing::warn;
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -57,7 +67,7 @@ pub fn build_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
     builder.finish()
 }
 
-struct ThreadHistoryBuilder {
+pub struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
     next_item_index: i64,
@@ -75,8 +85,14 @@ fn has_agent_metadata(state: &CollabAgentState) -> bool {
     state.agent_type.is_some() || state.model.is_some() || state.model_provider_id.is_some()
 }
 
+impl Default for ThreadHistoryBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThreadHistoryBuilder {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             turns: Vec::new(),
             current_turn: None,
@@ -85,36 +101,76 @@ impl ThreadHistoryBuilder {
         }
     }
 
-    fn finish(mut self) -> Vec<Turn> {
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn finish(mut self) -> Vec<Turn> {
         self.finish_current_turn();
         self.turns
     }
 
+    pub fn active_turn_snapshot(&self) -> Option<Turn> {
+        self.current_turn
+            .as_ref()
+            .map(Turn::from)
+            .or_else(|| self.turns.last().cloned())
+    }
+
+    pub fn has_active_turn(&self) -> bool {
+        self.current_turn.is_some()
+    }
+
+    /// Shared reducer for persisted rollout replay and in-memory current-turn
+    /// tracking used by running thread resume/rejoin.
+    ///
     /// This function should handle all EventMsg variants that can be persisted in a rollout file.
     /// See `should_persist_event_msg` in `codex-rs/core/rollout/policy.rs`.
-    fn handle_event(&mut self, event: &EventMsg) {
+    pub fn handle_event(&mut self, event: &EventMsg) {
         match event {
             EventMsg::UserMessage(payload) => self.handle_user_message(payload),
-            EventMsg::AgentMessage(payload) => self.handle_agent_message(payload.message.clone()),
+            EventMsg::AgentMessage(payload) => {
+                self.handle_agent_message(payload.message.clone(), payload.phase.clone())
+            }
             EventMsg::AgentReasoning(payload) => self.handle_agent_reasoning(payload),
             EventMsg::AgentReasoningRawContent(payload) => {
                 self.handle_agent_reasoning_raw_content(payload)
             }
+            EventMsg::WebSearchBegin(payload) => self.handle_web_search_begin(payload),
             EventMsg::WebSearchEnd(payload) => self.handle_web_search_end(payload),
+            EventMsg::ExecCommandBegin(payload) => self.handle_exec_command_begin(payload),
             EventMsg::ExecCommandEnd(payload) => self.handle_exec_command_end(payload),
+            EventMsg::PatchApplyBegin(payload) => self.handle_patch_apply_begin(payload),
             EventMsg::PatchApplyEnd(payload) => self.handle_patch_apply_end(payload),
+            EventMsg::DynamicToolCallRequest(payload) => {
+                self.handle_dynamic_tool_call_request(payload)
+            }
+            EventMsg::DynamicToolCallResponse(payload) => {
+                self.handle_dynamic_tool_call_response(payload)
+            }
+            EventMsg::McpToolCallBegin(payload) => self.handle_mcp_tool_call_begin(payload),
             EventMsg::McpToolCallEnd(payload) => self.handle_mcp_tool_call_end(payload),
             EventMsg::ViewImageToolCall(payload) => self.handle_view_image_tool_call(payload),
+            EventMsg::CollabAgentSpawnBegin(payload) => {
+                self.handle_collab_agent_spawn_begin(payload)
+            }
             EventMsg::CollabAgentSpawnEnd(payload) => self.handle_collab_agent_spawn_end(payload),
+            EventMsg::CollabAgentInteractionBegin(payload) => {
+                self.handle_collab_agent_interaction_begin(payload)
+            }
             EventMsg::CollabAgentInteractionEnd(payload) => {
                 self.handle_collab_agent_interaction_end(payload)
             }
+            EventMsg::CollabWaitingBegin(payload) => self.handle_collab_waiting_begin(payload),
             EventMsg::CollabWaitingEnd(payload) => self.handle_collab_waiting_end(payload),
+            EventMsg::CollabCloseBegin(payload) => self.handle_collab_close_begin(payload),
             EventMsg::CollabCloseEnd(payload) => self.handle_collab_close_end(payload),
+            EventMsg::CollabResumeBegin(payload) => self.handle_collab_resume_begin(payload),
             EventMsg::CollabResumeEnd(payload) => self.handle_collab_resume_end(payload),
             EventMsg::ContextCompacted(payload) => self.handle_context_compacted(payload),
             EventMsg::EnteredReviewMode(payload) => self.handle_entered_review_mode(payload),
             EventMsg::ExitedReviewMode(payload) => self.handle_exited_review_mode(payload),
+            EventMsg::ItemStarted(payload) => self.handle_item_started(payload),
             EventMsg::ItemCompleted(payload) => self.handle_item_completed(payload),
             EventMsg::Error(payload) => self.handle_error(payload),
             EventMsg::TokenCount(_) => {}
@@ -127,7 +183,7 @@ impl ThreadHistoryBuilder {
         }
     }
 
-    fn handle_rollout_item(&mut self, item: &RolloutItem) {
+    pub fn handle_rollout_item(&mut self, item: &RolloutItem) {
         match item {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
@@ -157,7 +213,7 @@ impl ThreadHistoryBuilder {
         self.current_turn = Some(turn);
     }
 
-    fn handle_agent_message(&mut self, text: String) {
+    fn handle_agent_message(&mut self, text: String, phase: Option<MessagePhase>) {
         if text.is_empty() {
             return;
         }
@@ -165,7 +221,7 @@ impl ThreadHistoryBuilder {
         let id = self.next_item_id();
         self.ensure_turn()
             .items
-            .push(ThreadItem::AgentMessage { id, text });
+            .push(ThreadItem::AgentMessage { id, text, phase });
     }
 
     fn handle_agent_reasoning(&mut self, payload: &AgentReasoningEvent) {
@@ -208,15 +264,51 @@ impl ThreadHistoryBuilder {
         });
     }
 
-    fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
-        if let codex_protocol::items::TurnItem::Plan(plan) = &payload.item
-            && plan.text.is_empty()
-        {
-            return;
+    fn handle_item_started(&mut self, payload: &ItemStartedEvent) {
+        match &payload.item {
+            codex_protocol::items::TurnItem::Plan(plan) => {
+                if plan.text.is_empty() {
+                    return;
+                }
+                self.upsert_item_in_turn_id(
+                    &payload.turn_id,
+                    ThreadItem::from(payload.item.clone()),
+                );
+            }
+            codex_protocol::items::TurnItem::UserMessage(_)
+            | codex_protocol::items::TurnItem::AgentMessage(_)
+            | codex_protocol::items::TurnItem::Reasoning(_)
+            | codex_protocol::items::TurnItem::WebSearch(_)
+            | codex_protocol::items::TurnItem::ContextCompaction(_) => {}
         }
+    }
 
-        let item = ThreadItem::from(payload.item.clone());
-        self.ensure_turn().items.push(item);
+    fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
+        match &payload.item {
+            codex_protocol::items::TurnItem::Plan(plan) => {
+                if plan.text.is_empty() {
+                    return;
+                }
+                self.upsert_item_in_turn_id(
+                    &payload.turn_id,
+                    ThreadItem::from(payload.item.clone()),
+                );
+            }
+            codex_protocol::items::TurnItem::UserMessage(_)
+            | codex_protocol::items::TurnItem::AgentMessage(_)
+            | codex_protocol::items::TurnItem::Reasoning(_)
+            | codex_protocol::items::TurnItem::WebSearch(_)
+            | codex_protocol::items::TurnItem::ContextCompaction(_) => {}
+        }
+    }
+
+    fn handle_web_search_begin(&mut self, payload: &WebSearchBeginEvent) {
+        let item = ThreadItem::WebSearch {
+            id: payload.call_id.clone(),
+            query: String::new(),
+            action: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_web_search_end(&mut self, payload: &WebSearchEndEvent) {
@@ -225,7 +317,30 @@ impl ThreadHistoryBuilder {
             query: payload.query.clone(),
             action: Some(WebSearchAction::from(payload.action.clone())),
         };
-        self.ensure_turn().items.push(item);
+        self.upsert_item_in_current_turn(item);
+    }
+
+    fn handle_exec_command_begin(&mut self, payload: &ExecCommandBeginEvent) {
+        let command = shlex::try_join(payload.command.iter().map(String::as_str))
+            .unwrap_or_else(|_| payload.command.join(" "));
+        let command_actions = payload
+            .parsed_cmd
+            .iter()
+            .cloned()
+            .map(CommandAction::from)
+            .collect();
+        let item = ThreadItem::CommandExecution {
+            id: payload.call_id.clone(),
+            command,
+            cwd: payload.cwd.clone(),
+            process_id: payload.process_id.clone(),
+            status: CommandExecutionStatus::InProgress,
+            command_actions,
+            aggregated_output: None,
+            exit_code: None,
+            duration_ms: None,
+        };
+        self.upsert_item_in_turn_id(&payload.turn_id, item);
     }
 
     fn handle_exec_command_end(&mut self, payload: &ExecCommandEndEvent) {
@@ -255,33 +370,25 @@ impl ThreadHistoryBuilder {
             exit_code: Some(payload.exit_code),
             duration_ms: Some(duration_ms),
         };
-
         // Command completions can arrive out of order. Unified exec may return
         // while a PTY is still running, then emit ExecCommandEnd later from a
         // background exit watcher when that process finally exits. By then, a
         // newer user turn may already have started. Route by event turn_id so
         // replay preserves the original turn association.
-        if let Some(turn) = self.current_turn.as_mut()
-            && turn.id == payload.turn_id
-        {
-            turn.items.push(item);
-            return;
-        }
+        self.upsert_item_in_turn_id(&payload.turn_id, item);
+    }
 
-        // If the originating turn is already finalized, append there instead
-        // of attaching to whichever turn is currently active during replay.
-        if let Some(turn) = self
-            .turns
-            .iter_mut()
-            .find(|turn| turn.id == payload.turn_id)
-        {
-            turn.items.push(item);
-            return;
+    fn handle_patch_apply_begin(&mut self, payload: &PatchApplyBeginEvent) {
+        let item = ThreadItem::FileChange {
+            id: payload.call_id.clone(),
+            changes: convert_patch_changes(&payload.changes),
+            status: PatchApplyStatus::InProgress,
+        };
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
         }
-
-        // Backward-compatibility fallback for partial/legacy streams where the
-        // event turn_id does not match any known replay turn.
-        self.ensure_turn().items.push(item);
     }
 
     fn handle_patch_apply_end(&mut self, payload: &PatchApplyEndEvent) {
@@ -291,7 +398,73 @@ impl ThreadHistoryBuilder {
             changes: convert_patch_changes(&payload.changes),
             status,
         };
-        self.ensure_turn().items.push(item);
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
+        }
+    }
+
+    fn handle_dynamic_tool_call_request(
+        &mut self,
+        payload: &codex_protocol::dynamic_tools::DynamicToolCallRequest,
+    ) {
+        let item = ThreadItem::DynamicToolCall {
+            id: payload.call_id.clone(),
+            tool: payload.tool.clone(),
+            arguments: payload.arguments.clone(),
+            status: DynamicToolCallStatus::InProgress,
+            content_items: None,
+            success: None,
+            duration_ms: None,
+        };
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
+        }
+    }
+
+    fn handle_dynamic_tool_call_response(&mut self, payload: &DynamicToolCallResponseEvent) {
+        let status = if payload.success {
+            DynamicToolCallStatus::Completed
+        } else {
+            DynamicToolCallStatus::Failed
+        };
+        let duration_ms = i64::try_from(payload.duration.as_millis()).ok();
+        let item = ThreadItem::DynamicToolCall {
+            id: payload.call_id.clone(),
+            tool: payload.tool.clone(),
+            arguments: payload.arguments.clone(),
+            status,
+            content_items: Some(convert_dynamic_tool_content_items(&payload.content_items)),
+            success: Some(payload.success),
+            duration_ms,
+        };
+        if payload.turn_id.is_empty() {
+            self.upsert_item_in_current_turn(item);
+        } else {
+            self.upsert_item_in_turn_id(&payload.turn_id, item);
+        }
+    }
+
+    fn handle_mcp_tool_call_begin(&mut self, payload: &McpToolCallBeginEvent) {
+        let item = ThreadItem::McpToolCall {
+            id: payload.call_id.clone(),
+            server: payload.invocation.server.clone(),
+            tool: payload.invocation.tool.clone(),
+            status: McpToolCallStatus::InProgress,
+            arguments: payload
+                .invocation
+                .arguments
+                .clone()
+                .unwrap_or(serde_json::Value::Null),
+            result: None,
+            error: None,
+            duration_ms: None,
+            memory: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_mcp_tool_call_end(&mut self, payload: &McpToolCallEndEvent) {
@@ -331,7 +504,7 @@ impl ThreadHistoryBuilder {
             memory: None,
             duration_ms,
         };
-        self.ensure_turn().items.push(item);
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_view_image_tool_call(&mut self, payload: &ViewImageToolCallEvent) {
@@ -339,7 +512,24 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             path: payload.path.to_string_lossy().into_owned(),
         };
-        self.ensure_turn().items.push(item);
+        self.upsert_item_in_current_turn(item);
+    }
+
+    fn handle_collab_agent_spawn_begin(
+        &mut self,
+        payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
+    ) {
+        let item = ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some(payload.prompt.clone()),
+            agents_states: HashMap::new(),
+            memory: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_collab_agent_spawn_end(
@@ -368,18 +558,33 @@ impl ThreadHistoryBuilder {
             }
             None => (Vec::new(), HashMap::new()),
         };
-        self.ensure_turn()
-            .items
-            .push(ThreadItem::CollabAgentToolCall {
-                id: payload.call_id.clone(),
-                tool: CollabAgentTool::SpawnAgent,
-                status,
-                sender_thread_id: payload.sender_thread_id.to_string(),
-                receiver_thread_ids,
-                prompt: Some(payload.prompt.clone()),
-                agents_states,
-                memory,
-            });
+        self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::SpawnAgent,
+            status,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids,
+            prompt: Some(payload.prompt.clone()),
+            agents_states,
+            memory,
+        });
+    }
+
+    fn handle_collab_agent_interaction_begin(
+        &mut self,
+        payload: &codex_protocol::protocol::CollabAgentInteractionBeginEvent,
+    ) {
+        let item = ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::SendInput,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            prompt: Some(payload.prompt.clone()),
+            agents_states: HashMap::new(),
+            memory: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_collab_agent_interaction_end(
@@ -394,18 +599,37 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let mut received_status = CollabAgentState::from(payload.status.clone());
         self.apply_known_agent_metadata(&receiver_id, &mut received_status);
-        self.ensure_turn()
-            .items
-            .push(ThreadItem::CollabAgentToolCall {
-                id: payload.call_id.clone(),
-                tool: CollabAgentTool::SendInput,
-                status,
-                sender_thread_id: payload.sender_thread_id.to_string(),
-                receiver_thread_ids: vec![receiver_id.clone()],
-                prompt: Some(payload.prompt.clone()),
-                agents_states: [(receiver_id, received_status)].into_iter().collect(),
-                memory,
-            });
+        self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::SendInput,
+            status,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_id.clone()],
+            prompt: Some(payload.prompt.clone()),
+            agents_states: [(receiver_id, received_status)].into_iter().collect(),
+            memory,
+        });
+    }
+
+    fn handle_collab_waiting_begin(
+        &mut self,
+        payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
+    ) {
+        let item = ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: payload
+                .receiver_thread_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            prompt: None,
+            agents_states: HashMap::new(),
+            memory: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_collab_waiting_end(
@@ -435,18 +659,33 @@ impl ThreadHistoryBuilder {
                 (thread_id, state)
             })
             .collect();
-        self.ensure_turn()
-            .items
-            .push(ThreadItem::CollabAgentToolCall {
-                id: payload.call_id.clone(),
-                tool: CollabAgentTool::Wait,
-                status,
-                sender_thread_id: payload.sender_thread_id.to_string(),
-                receiver_thread_ids,
-                prompt: None,
-                agents_states,
-                memory,
-            });
+        self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::Wait,
+            status,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids,
+            prompt: None,
+            agents_states,
+            memory,
+        });
+    }
+
+    fn handle_collab_close_begin(
+        &mut self,
+        payload: &codex_protocol::protocol::CollabCloseBeginEvent,
+    ) {
+        let item = ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::CloseAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            prompt: None,
+            agents_states: HashMap::new(),
+            memory: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_collab_close_end(&mut self, payload: &codex_protocol::protocol::CollabCloseEndEvent) {
@@ -459,18 +698,33 @@ impl ThreadHistoryBuilder {
         let mut state = CollabAgentState::from(payload.status.clone());
         self.apply_known_agent_metadata(&receiver_id, &mut state);
         let agents_states = [(receiver_id.clone(), state)].into_iter().collect();
-        self.ensure_turn()
-            .items
-            .push(ThreadItem::CollabAgentToolCall {
-                id: payload.call_id.clone(),
-                tool: CollabAgentTool::CloseAgent,
-                status,
-                sender_thread_id: payload.sender_thread_id.to_string(),
-                receiver_thread_ids: vec![receiver_id],
-                prompt: None,
-                agents_states,
-                memory,
-            });
+        self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::CloseAgent,
+            status,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_id],
+            prompt: None,
+            agents_states,
+            memory,
+        });
+    }
+
+    fn handle_collab_resume_begin(
+        &mut self,
+        payload: &codex_protocol::protocol::CollabResumeBeginEvent,
+    ) {
+        let item = ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::ResumeAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            prompt: None,
+            agents_states: HashMap::new(),
+            memory: None,
+        };
+        self.upsert_item_in_current_turn(item);
     }
 
     fn handle_collab_resume_end(
@@ -486,18 +740,16 @@ impl ThreadHistoryBuilder {
         let mut state = CollabAgentState::from(payload.status.clone());
         self.apply_known_agent_metadata(&receiver_id, &mut state);
         let agents_states = [(receiver_id.clone(), state)].into_iter().collect();
-        self.ensure_turn()
-            .items
-            .push(ThreadItem::CollabAgentToolCall {
-                id: payload.call_id.clone(),
-                tool: CollabAgentTool::ResumeAgent,
-                status,
-                sender_thread_id: payload.sender_thread_id.to_string(),
-                receiver_thread_ids: vec![receiver_id],
-                prompt: None,
-                agents_states,
-                memory,
-            });
+        self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
+            id: payload.call_id.clone(),
+            tool: CollabAgentTool::ResumeAgent,
+            status,
+            sender_thread_id: payload.sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_id],
+            prompt: None,
+            agents_states,
+            memory,
+        });
     }
 
     fn remember_agent_metadata(&mut self, thread_id: &str, state: &CollabAgentState) {
@@ -618,6 +870,7 @@ impl ThreadHistoryBuilder {
         self.finish_current_turn();
         let mut turn = self
             .new_turn(Some(payload.turn_id.clone()))
+            .with_status(TurnStatus::InProgress)
             .opened_explicitly();
         turn.memory = payload.memory.clone().map(Into::into);
         self.current_turn = Some(turn);
@@ -732,6 +985,30 @@ impl ThreadHistoryBuilder {
         unreachable!("current turn must exist after initialization");
     }
 
+    fn upsert_item_in_turn_id(&mut self, turn_id: &str, item: ThreadItem) {
+        if let Some(turn) = self.current_turn.as_mut()
+            && turn.id == turn_id
+        {
+            upsert_turn_item(&mut turn.items, item);
+            return;
+        }
+
+        if let Some(turn) = self.turns.iter_mut().find(|turn| turn.id == turn_id) {
+            upsert_turn_item(&mut turn.items, item);
+            return;
+        }
+
+        warn!(
+            item_id = item.id(),
+            "dropping turn-scoped item for unknown turn id `{turn_id}`"
+        );
+    }
+
+    fn upsert_item_in_current_turn(&mut self, item: ThreadItem) {
+        let turn = self.ensure_turn();
+        upsert_turn_item(&mut turn.items, item);
+    }
+
     fn next_item_id(&mut self) -> String {
         let id = format!("item-{}", self.next_item_index);
         self.next_item_index += 1;
@@ -774,7 +1051,7 @@ fn render_review_output_text(output: &ReviewOutputEvent) -> String {
     }
 }
 
-fn convert_patch_changes(
+pub fn convert_patch_changes(
     changes: &HashMap<std::path::PathBuf, codex_protocol::protocol::FileChange>,
 ) -> Vec<FileUpdateChange> {
     let mut converted: Vec<FileUpdateChange> = changes
@@ -787,6 +1064,23 @@ fn convert_patch_changes(
         .collect();
     converted.sort_by(|a, b| a.path.cmp(&b.path));
     converted
+}
+
+fn convert_dynamic_tool_content_items(
+    items: &[codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem],
+) -> Vec<DynamicToolCallOutputContentItem> {
+    items
+        .iter()
+        .cloned()
+        .map(|item| match item {
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
+                DynamicToolCallOutputContentItem::InputText { text }
+            }
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
+                image_url,
+            } => DynamicToolCallOutputContentItem::InputImage { image_url },
+        })
+        .collect()
 }
 
 fn map_patch_change_kind(change: &codex_protocol::protocol::FileChange) -> PatchChangeKind {
@@ -816,6 +1110,17 @@ fn format_file_change_diff(change: &codex_protocol::protocol::FileChange) -> Str
     }
 }
 
+fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) {
+    if let Some(existing_item) = items
+        .iter_mut()
+        .find(|existing_item| existing_item.id() == item.id())
+    {
+        *existing_item = item;
+        return;
+    }
+    items.push(item);
+}
+
 struct PendingTurn {
     id: String,
     memory: Option<MemoryLink>,
@@ -835,6 +1140,11 @@ impl PendingTurn {
         self.opened_explicitly = true;
         self
     }
+
+    fn with_status(mut self, status: TurnStatus) -> Self {
+        self.status = status;
+        self
+    }
 }
 
 impl From<PendingTurn> for Turn {
@@ -849,10 +1159,26 @@ impl From<PendingTurn> for Turn {
     }
 }
 
+impl From<&PendingTurn> for Turn {
+    fn from(value: &PendingTurn) -> Self {
+        Self {
+            id: value.id.clone(),
+            items: value.items.clone(),
+            error: value.error.clone(),
+            status: value.status.clone(),
+            memory: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use codex_protocol::ThreadId;
+    use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
+    use codex_protocol::items::TurnItem as CoreTurnItem;
+    use codex_protocol::items::UserMessageItem as CoreUserMessageItem;
+    use codex_protocol::models::MessagePhase as CoreMessagePhase;
     use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
     use codex_protocol::parse_command::ParsedCommand;
     use codex_protocol::protocol::AgentMessageEvent;
@@ -860,8 +1186,10 @@ mod tests {
     use codex_protocol::protocol::AgentReasoningRawContentEvent;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::CompactedItem;
+    use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
+    use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
@@ -887,6 +1215,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Hi there".into(),
+                phase: None,
             }),
             EventMsg::AgentReasoning(AgentReasoningEvent {
                 text: "thinking".into(),
@@ -902,14 +1231,15 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Reply two".into(),
+                phase: None,
             }),
         ];
 
-        let items = events
-            .into_iter()
-            .map(RolloutItem::EventMsg)
-            .collect::<Vec<_>>();
-        let turns = build_turns_from_rollout_items(&items);
+        let mut builder = ThreadHistoryBuilder::new();
+        for event in &events {
+            builder.handle_event(event);
+        }
+        let turns = builder.finish();
         assert_eq!(turns.len(), 2);
 
         let first = &turns[0];
@@ -936,6 +1266,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-2".into(),
                 text: "Hi there".into(),
+                phase: None,
             }
         );
         assert_eq!(
@@ -966,6 +1297,81 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-5".into(),
                 text: "Reply two".into(),
+                phase: None,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_non_plan_item_lifecycle_events() {
+        let turn_id = "turn-1";
+        let thread_id = ThreadId::new();
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
+                turn_id: turn_id.to_string(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "hello".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: CoreTurnItem::UserMessage(CoreUserMessageItem {
+                    id: "user-item-id".to_string(),
+                    content: Vec::new(),
+                }),
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                memory: None,
+                turn_id: turn_id.to_string(),
+                last_agent_message: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::UserMessage {
+                id: "item-1".into(),
+                content: vec![UserInput::Text {
+                    text: "hello".into(),
+                    text_elements: Vec::new(),
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_agent_message_phase_in_history() {
+        let events = vec![EventMsg::AgentMessage(AgentMessageEvent {
+            message: "Final reply".into(),
+            phase: Some(CoreMessagePhase::FinalAnswer),
+        })];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items[0],
+            ThreadItem::AgentMessage {
+                id: "item-1".into(),
+                text: "Final reply".into(),
+                phase: Some(MessagePhase::FinalAnswer),
             }
         );
     }
@@ -987,6 +1393,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "interlude".into(),
+                phase: None,
             }),
             EventMsg::AgentReasoning(AgentReasoningEvent {
                 text: "second summary".into(),
@@ -1031,6 +1438,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Working...".into(),
+                phase: None,
             }),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-1".into()),
@@ -1044,6 +1452,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Second attempt complete.".into(),
+                phase: None,
             }),
         ];
 
@@ -1072,6 +1481,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-2".into(),
                 text: "Working...".into(),
+                phase: None,
             }
         );
 
@@ -1093,6 +1503,7 @@ mod tests {
             ThreadItem::AgentMessage {
                 id: "item-4".into(),
                 text: "Second attempt complete.".into(),
+                phase: None,
             }
         );
     }
@@ -1108,6 +1519,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A1".into(),
+                phase: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Second".into(),
@@ -1117,6 +1529,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A2".into(),
+                phase: None,
             }),
             EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
             EventMsg::UserMessage(UserMessageEvent {
@@ -1127,6 +1540,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A3".into(),
+                phase: None,
             }),
         ];
 
@@ -1154,6 +1568,7 @@ mod tests {
                 ThreadItem::AgentMessage {
                     id: "item-2".into(),
                     text: "A1".into(),
+                    phase: None,
                 },
             ]
         );
@@ -1170,6 +1585,7 @@ mod tests {
                 ThreadItem::AgentMessage {
                     id: "item-4".into(),
                     text: "A3".into(),
+                    phase: None,
                 },
             ]
         );
@@ -1186,6 +1602,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A1".into(),
+                phase: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Two".into(),
@@ -1195,6 +1612,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "A2".into(),
+                phase: None,
             }),
             EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 99 }),
         ];
@@ -1266,6 +1684,12 @@ mod tests {
     #[test]
     fn reconstructs_tool_items_from_persisted_completion_events() {
         let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run tools".into(),
                 images: None,
@@ -1364,8 +1788,74 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_dynamic_tool_items_from_request_and_response_events() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "run dynamic tool".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::DynamicToolCallRequest(
+                codex_protocol::dynamic_tools::DynamicToolCallRequest {
+                    call_id: "dyn-1".into(),
+                    turn_id: "turn-1".into(),
+                    tool: "lookup_ticket".into(),
+                    arguments: serde_json::json!({"id":"ABC-123"}),
+                },
+            ),
+            EventMsg::DynamicToolCallResponse(DynamicToolCallResponseEvent {
+                call_id: "dyn-1".into(),
+                turn_id: "turn-1".into(),
+                tool: "lookup_ticket".into(),
+                arguments: serde_json::json!({"id":"ABC-123"}),
+                content_items: vec![CoreDynamicToolCallOutputContentItem::InputText {
+                    text: "Ticket is open".into(),
+                }],
+                success: true,
+                error: None,
+                duration: Duration::from_millis(42),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::DynamicToolCall {
+                id: "dyn-1".into(),
+                tool: "lookup_ticket".into(),
+                arguments: serde_json::json!({"id":"ABC-123"}),
+                status: DynamicToolCallStatus::Completed,
+                content_items: Some(vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "Ticket is open".into(),
+                }]),
+                success: Some(true),
+                duration_ms: Some(42),
+            }
+        );
+    }
+
+    #[test]
     fn reconstructs_declined_exec_and_patch_items() {
         let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
+                turn_id: "turn-1".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "run tools".into(),
                 images: None,
@@ -1531,6 +2021,86 @@ mod tests {
     }
 
     #[test]
+    fn drops_late_turn_scoped_item_for_unknown_turn_id() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
+                turn_id: "turn-a".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "first".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                memory: None,
+                turn_id: "turn-a".into(),
+                last_agent_message: None,
+            }),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                memory: None,
+                turn_id: "turn-b".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "second".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "exec-unknown-turn".into(),
+                process_id: Some("pid-42".into()),
+                turn_id: "turn-missing".into(),
+                command: vec!["echo".into(), "done".into()],
+                cwd: PathBuf::from("/tmp"),
+                parsed_cmd: vec![ParsedCommand::Unknown {
+                    cmd: "echo done".into(),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: "done\n".into(),
+                stderr: String::new(),
+                aggregated_output: "done\n".into(),
+                exit_code: 0,
+                duration: Duration::from_millis(5),
+                formatted_output: "done\n".into(),
+                status: CoreExecCommandStatus::Completed,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                memory: None,
+                turn_id: "turn-b".into(),
+                last_agent_message: None,
+            }),
+        ];
+
+        let mut builder = ThreadHistoryBuilder::new();
+        for event in &events {
+            builder.handle_event(event);
+        }
+        let turns = builder.finish();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].id, "turn-a");
+        assert_eq!(turns[1].id, "turn-b");
+        assert_eq!(turns[0].items.len(), 1);
+        assert_eq!(turns[1].items.len(), 1);
+        assert_eq!(
+            turns[1].items[0],
+            ThreadItem::UserMessage {
+                id: "item-2".into(),
+                content: vec![UserInput::Text {
+                    text: "second".into(),
+                    text_elements: Vec::new(),
+                }],
+            }
+        );
+    }
+
+    #[test]
     fn late_turn_complete_does_not_close_active_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
@@ -1569,6 +2139,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
+                phase: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
@@ -1626,6 +2197,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "still in b".into(),
+                phase: None,
             }),
         ];
 
@@ -1637,7 +2209,7 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].id, "turn-a");
         assert_eq!(turns[1].id, "turn-b");
-        assert_eq!(turns[1].status, TurnStatus::Completed);
+        assert_eq!(turns[1].status, TurnStatus::InProgress);
         assert_eq!(turns[1].items.len(), 2);
     }
 
@@ -1689,6 +2261,8 @@ mod tests {
                     .expect("valid sender thread id"),
                 receiver_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000002")
                     .expect("valid receiver thread id"),
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
                 status: AgentStatus::Completed(None),
                 memory: None,
             }),
@@ -1752,6 +2326,8 @@ mod tests {
                 ),
                 prompt: "analyze repository".into(),
                 status: AgentStatus::Running,
+                new_agent_nickname: None,
+                new_agent_role: None,
             }),
         ];
 
@@ -1813,6 +2389,8 @@ mod tests {
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
+                new_agent_nickname: None,
+                new_agent_role: None,
             }),
             EventMsg::CollabCloseEnd(codex_protocol::protocol::CollabCloseEndEvent {
                 call_id: "close-1".into(),
@@ -1820,6 +2398,8 @@ mod tests {
                 receiver_thread_id,
                 status: AgentStatus::Shutdown,
                 memory: None,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
             }),
         ];
 
@@ -1887,6 +2467,8 @@ mod tests {
                 new_thread_id: Some(receiver_thread_id.clone()),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
+                new_agent_nickname: None,
+                new_agent_role: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -1912,6 +2494,8 @@ mod tests {
                 receiver_thread_id,
                 status: AgentStatus::Shutdown,
                 memory: None,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".into(),
@@ -1964,6 +2548,7 @@ mod tests {
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
                 message: "done".into(),
+                phase: None,
             }),
             EventMsg::Error(ErrorEvent {
                 message: "rollback failed".into(),
