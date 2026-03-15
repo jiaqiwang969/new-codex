@@ -106,7 +106,17 @@ entire doctor                # 修复卡住的 session
 
 ### API Account Pool (多账户故障转移)
 
-Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个账户遇到认证失败 (400/401/403) 或限流 (429) 时，自动切换到下一个账户。支持多轮循环（默认 2 轮），所有账户都失败后才报错退出。
+Account Pool 系统支持为每个 provider 配置多个 API 账户。`account_pool` 一旦存在，就以池子顺序为唯一真源，不再把“当前成功账户”写回 `config-pool.toml`。
+
+行为规则：
+- 每个新 session 都从 `POOL_1` 开始探测
+- `resume` 进入旧 session 后，也会重新从 `POOL_1` 开始
+- 当前 turn 内如果 `POOL_1` 失败，会继续切到 `POOL_2`、`POOL_3`...
+- 失败账户会进入 10 分钟冷却
+- 后续新 turn 仍然会从 `POOL_1` 开始扫描；如果它还在冷却，就按顺序跳过，找到第一个可用 key
+- 10 分钟后，下一个 turn 会再次优先尝试 `POOL_1`
+- 如果全部 key 都还在冷却，Codex 不会直接报错，而是会强制从 `POOL_1` 再探测一轮
+- TUI 会显示当前正在尝试、跳过、冷却、强制重试的 key
 
 配置文件与主配置隔离，存放在 `~/.codex/` 目录下：
 
@@ -114,10 +124,6 @@ Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个�
 
 ```toml
 # ── OpenAI-compatible provider pool ─────────────────────────────────
-[model_providers.codex]
-base_url = "https://your-openai-proxy.example.com/v1"
-env_key = "OPENAI_API_KEY_POOL_1"
-
 [[model_providers.codex.account_pool]]
 base_url = "https://your-openai-proxy.example.com/v1"
 env_key = "OPENAI_API_KEY_POOL_1"
@@ -131,10 +137,6 @@ base_url = "https://your-openai-proxy.example.com/v1"
 env_key = "OPENAI_API_KEY_POOL_3"
 
 # ── Gemini provider pool ───────────────────────────────────────────
-[model_providers.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta"
-env_key = "GEMINI_API_KEY_POOL_1"
-
 [[model_providers.gemini.account_pool]]
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_1"
@@ -148,10 +150,6 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_3"
 
 # ── Grok provider pool ─────────────────────────────────────────────
-[model_providers.grok]
-base_url = "https://api.x.ai/v1"
-env_key = "XAI_API_KEY_POOL_1"
-
 [[model_providers.grok.account_pool]]
 base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_1"
@@ -165,10 +163,6 @@ base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_3"
 
 # ── Anthropic provider pool ───────────────────────────────────────
-[model_providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
-env_key = "ANTHROPIC_API_KEY_POOL_1"
-
 [[model_providers.anthropic.account_pool]]
 base_url = "https://api.anthropic.com/v1"
 env_key = "ANTHROPIC_API_KEY_POOL_1"
@@ -181,6 +175,11 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
 base_url = "https://api.anthropic.com/v1"
 env_key = "ANTHROPIC_API_KEY_POOL_3"
 ```
+
+说明：
+- pool 模式下可以完全省略 `[model_providers.<id>]` 这一排顶层 `base_url` / `env_key`
+- 即使你保留了顶层 `base_url` / `env_key`，在 pool 模式下也会被忽略
+- 不同 pool 条目可以指向不同代理、不同区域、不同 API key
 
 `~/.codex/auth-pool.json` — Pool API 密钥（与主 `auth.json` 隔离）：
 
@@ -207,7 +206,8 @@ env_key = "ANTHROPIC_API_KEY_POOL_3"
 - 限流 (429) 也立即切换
 - 可重试错误 (5xx) 先重试到上限，再切换账户
 - 默认循环 2 轮（3 账户 × 2 轮 = 最多 6 次切换），全部失败后报错退出
-- 成功的账户会持久化到 `config-pool.toml`，下次启动直接使用
+- 失败账户冷却 10 分钟；冷却过后，下一个 turn 会重新优先尝试 `POOL_1`
+- 如果全部账户都处于冷却中，会强制从 `POOL_1` 再试一轮，而不是直接失败
 
 #### MCP client
 

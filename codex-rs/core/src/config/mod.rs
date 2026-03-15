@@ -1699,53 +1699,6 @@ pub(crate) fn resolve_web_search_mode_for_turn(
     WebSearchMode::Disabled
 }
 
-fn normalize_provider_account(account: &ModelProviderAccount) -> Option<ModelProviderAccount> {
-    let base_url = account
-        .base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let env_key = account
-        .env_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    if base_url.is_none() || env_key.is_none() {
-        return None;
-    }
-
-    Some(ModelProviderAccount { base_url, env_key })
-}
-
-pub(crate) fn apply_primary_account_pool_selection(provider: &mut ModelProviderInfo) {
-    // If we have an explicitly set base_url AND env_key, we might consider it fully configured.
-    // However, if the user defines an account pool in config-pool.toml but leaves the top-level
-    // base_url empty, or we want to allow the pool to be the source of truth, we should prefer
-    // the primary account in the pool if it exists.
-    // To allow proper pool rotation later, we don't return early just because the top-level is set.
-
-    // In our case, the pool's top level definition HAS a base_url, so current_account().is_some()
-    // is true. Let's make sure we still pick up the base_url/env_key from the pool or let the
-    // existing one be. Actually, if we just want to ensure the pool's default is respected,
-    // maybe we shouldn't early return if the top level has a value but we are switching.
-
-    if provider.current_account().is_some() && provider.account_pool.is_empty() {
-        return;
-    }
-
-    if let Some(primary_account) = provider
-        .account_pool
-        .iter()
-        .find_map(normalize_provider_account)
-    {
-        provider.base_url = primary_account.base_url;
-        provider.env_key = primary_account.env_key;
-    }
-}
-
 fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
     // Check for antigravity prefix first
     if model_slug.starts_with("antigravity/claude-")
@@ -1974,11 +1927,10 @@ impl Config {
                 if let Some(existing) = model_providers.get_mut(&key) {
                     if !pool_entry.account_pool.is_empty() {
                         existing.account_pool = pool_entry.account_pool;
-                    }
-                    if pool_entry.base_url.is_some() {
+                    } else if pool_entry.base_url.is_some() {
                         existing.base_url = pool_entry.base_url;
                     }
-                    if pool_entry.env_key.is_some() {
+                    if existing.account_pool.is_empty() && pool_entry.env_key.is_some() {
                         existing.env_key = pool_entry.env_key;
                     }
                 } else {
@@ -2005,7 +1957,6 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
-        apply_primary_account_pool_selection(&mut model_provider);
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -2167,7 +2118,6 @@ impl Config {
         {
             model_provider_id = target_provider_id.to_string();
             model_provider = target_provider.clone();
-            apply_primary_account_pool_selection(&mut model_provider);
         }
 
         // If the selected model is an OpenAI slug but the configured provider is not
@@ -2181,7 +2131,6 @@ impl Config {
         {
             model_provider_id = "openai".to_string();
             model_provider = target_provider.clone();
-            apply_primary_account_pool_selection(&mut model_provider);
         }
 
         let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
@@ -5996,7 +5945,7 @@ trust_level = "trusted"
     }
 
     #[test]
-    fn account_pool_primary_entry_is_selected_on_config_load() -> std::io::Result<()> {
+    fn account_pool_primary_entry_is_not_selected_on_config_load() -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
 
         let provider_id = "openai-main".to_string();
@@ -6041,28 +5990,19 @@ trust_level = "trusted"
             codex_home.path().to_path_buf(),
         )?;
 
-        assert_eq!(
-            config.model_provider.base_url.as_deref(),
-            Some("https://preferred.example/v1")
-        );
-        assert_eq!(
-            config.model_provider.env_key.as_deref(),
-            Some("KEY_PREFERRED")
-        );
-        assert_eq!(
-            config.user_configured_provider.base_url.as_deref(),
-            Some("https://preferred.example/v1")
-        );
-        assert_eq!(
-            config.user_configured_provider.env_key.as_deref(),
-            Some("KEY_PREFERRED")
-        );
+        assert_eq!(config.model_provider.base_url, None);
+        assert_eq!(config.model_provider.env_key, None);
+        assert_eq!(config.user_configured_provider.base_url, None);
+        assert_eq!(config.user_configured_provider.env_key, None);
+        assert_eq!(config.model_provider.account_pool.len(), 2);
+        assert_eq!(config.user_configured_provider.account_pool.len(), 2);
 
         Ok(())
     }
 
     #[test]
-    fn account_pool_ignores_invalid_entries_and_uses_first_valid_entry() -> std::io::Result<()> {
+    fn account_pool_ignores_invalid_entries_without_selecting_first_valid_entry()
+    -> std::io::Result<()> {
         let codex_home = TempDir::new()?;
 
         let provider_id = "openai-main".to_string();
@@ -6107,14 +6047,9 @@ trust_level = "trusted"
             codex_home.path().to_path_buf(),
         )?;
 
-        assert_eq!(
-            config.model_provider.base_url.as_deref(),
-            Some("https://preferred.example/v1")
-        );
-        assert_eq!(
-            config.model_provider.env_key.as_deref(),
-            Some("KEY_PREFERRED")
-        );
+        assert_eq!(config.model_provider.base_url, None);
+        assert_eq!(config.model_provider.env_key, None);
+        assert_eq!(config.model_provider.account_pool.len(), 2);
 
         Ok(())
     }
@@ -6151,13 +6086,64 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
         assert_eq!(config.model_provider_id, "anthropic");
         assert_eq!(
             config.model_provider.base_url.as_deref(),
-            Some("https://pool.example")
+            Some("https://api.anthropic.com")
         );
         assert_eq!(
             config.model_provider.env_key.as_deref(),
-            Some("ANTHROPIC_API_KEY_POOL_1")
+            Some("ANTHROPIC_API_KEY")
         );
         assert_eq!(config.model_provider.account_pool.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_pool_accepts_account_pool_without_top_level_provider_row() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let pool_toml = r#"
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_1"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+"#;
+        std::fs::write(codex_home.path().join(CONFIG_POOL_TOML_FILE), pool_toml)?;
+
+        let cfg = ConfigToml {
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, "anthropic");
+        assert_eq!(
+            config.model_provider.base_url.as_deref(),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(
+            config.model_provider.account_pool,
+            vec![
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_1".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_2".to_string()),
+                },
+            ]
+        );
 
         Ok(())
     }

@@ -1,6 +1,5 @@
 use crate::client::ModelClient;
 use crate::config::Config;
-use crate::config::apply_primary_account_pool_selection;
 use crate::model_compat::is_anthropic_model_slug;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
@@ -67,21 +66,21 @@ pub(crate) fn provider_for_model_slug(
                 })
                 .min()
                 .unwrap_or_else(|| "openai".to_string());
-            let mut provider = config.user_configured_provider.clone();
-            apply_primary_account_pool_selection(&mut provider);
-            return Some((provider_id, provider));
+            return Some((provider_id, config.user_configured_provider.clone()));
         }
 
-        let mut provider = config.model_providers.get("openai")?.clone();
-        apply_primary_account_pool_selection(&mut provider);
-        return Some(("openai".to_string(), provider));
+        return Some((
+            "openai".to_string(),
+            config.model_providers.get("openai")?.clone(),
+        ));
     }
 
     if let Some(provider_id) = provider_id_for_model_slug(model_slug) {
         if provider_matches_builtin_family(&config.model_provider, provider_id) {
-            let mut provider = config.model_provider.clone();
-            apply_primary_account_pool_selection(&mut provider);
-            return Some((config.model_provider_id.clone(), provider));
+            return Some((
+                config.model_provider_id.clone(),
+                config.model_provider.clone(),
+            ));
         }
 
         if provider_matches_builtin_family(&config.user_configured_provider, provider_id) {
@@ -93,14 +92,13 @@ pub(crate) fn provider_for_model_slug(
                 })
                 .min()
                 .unwrap_or_else(|| provider_id.to_string());
-            let mut provider = config.user_configured_provider.clone();
-            apply_primary_account_pool_selection(&mut provider);
-            return Some((provider_id, provider));
+            return Some((provider_id, config.user_configured_provider.clone()));
         }
 
-        let mut provider = config.model_providers.get(provider_id)?.clone();
-        apply_primary_account_pool_selection(&mut provider);
-        return Some((provider_id.to_string(), provider));
+        return Some((
+            provider_id.to_string(),
+            config.model_providers.get(provider_id)?.clone(),
+        ));
     }
 
     None
@@ -159,6 +157,7 @@ fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &s
 mod tests {
     use super::*;
     use crate::config::test_config;
+    use crate::model_provider_info::ModelProviderAccount;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -219,6 +218,49 @@ mod tests {
             provider.wire_api,
             crate::model_provider_info::WireApi::Responses
         );
+    }
+
+    #[test]
+    fn provider_for_model_slug_keeps_logical_pool_provider_when_auto_switched() {
+        let mut config = test_config();
+
+        let mut openai_custom_provider = config
+            .model_providers
+            .get("openai")
+            .expect("openai provider should exist")
+            .clone();
+        openai_custom_provider.name = "OpenAI custom".to_string();
+        openai_custom_provider.base_url = None;
+        openai_custom_provider.env_key = None;
+        openai_custom_provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://preferred.example/v1".to_string()),
+                env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://fallback.example/v1".to_string()),
+                env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+            },
+        ];
+
+        config
+            .model_providers
+            .insert("openai-custom".to_string(), openai_custom_provider.clone());
+        config.user_configured_provider = openai_custom_provider;
+
+        config.model_provider_id = "anthropic".to_string();
+        config.model_provider = config
+            .model_providers
+            .get("anthropic")
+            .expect("anthropic provider should exist")
+            .clone();
+
+        let (provider_id, provider) = provider_for_model_slug(&config, "gpt-5.1-codex-mini")
+            .expect("utility provider for OpenAI slug should exist");
+        assert_eq!(provider_id, "openai-custom");
+        assert_eq!(provider.base_url, None);
+        assert_eq!(provider.env_key, None);
+        assert_eq!(provider.account_pool.len(), 2);
     }
 
     #[test]

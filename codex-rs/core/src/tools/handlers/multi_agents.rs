@@ -2559,7 +2559,6 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
     config.model = Some(turn.model_info.slug.clone());
-    config.model_provider = turn.provider.clone();
     config.model_reasoning_effort = turn.reasoning_effort;
     config.model_reasoning_summary = turn.reasoning_summary;
     config.developer_instructions = turn.developer_instructions.clone();
@@ -4778,6 +4777,27 @@ mod tests {
         };
         turn.developer_instructions = Some("dev".to_string());
         turn.compact_prompt = Some("compact".to_string());
+        let logical_provider = crate::model_provider_info::ModelProviderInfo {
+            base_url: None,
+            env_key: None,
+            account_pool: vec![
+                crate::model_provider_info::ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+                },
+                crate::model_provider_info::ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+                },
+            ],
+            ..turn.provider.clone()
+        };
+        let active_provider = logical_provider.with_account(&logical_provider.account_pool[1]);
+        let mut base_config = (*turn.config).clone();
+        base_config.model_provider = logical_provider.clone();
+        base_config.user_configured_provider = logical_provider.clone();
+        turn.config = Arc::new(base_config);
+        turn.provider = active_provider;
         turn.shell_environment_policy = ShellEnvironmentPolicy {
             use_profile: true,
             ..ShellEnvironmentPolicy::default()
@@ -4800,7 +4820,7 @@ mod tests {
         let mut expected = (*turn.config).clone();
         expected.base_instructions = Some(base_instructions.text);
         expected.model = Some(turn.model_info.slug.clone());
-        expected.model_provider = turn.provider.clone();
+        expected.model_provider = logical_provider;
         expected.model_reasoning_effort = turn.reasoning_effort;
         expected.model_reasoning_summary = turn.reasoning_summary;
         expected.developer_instructions = turn.developer_instructions.clone();
@@ -4842,7 +4862,25 @@ mod tests {
         let (_session, mut turn) = make_session_and_context().await;
         let mut base_config = (*turn.config).clone();
         base_config.base_instructions = Some("caller-base".to_string());
+        let logical_provider = crate::model_provider_info::ModelProviderInfo {
+            base_url: None,
+            env_key: None,
+            account_pool: vec![
+                crate::model_provider_info::ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+                },
+                crate::model_provider_info::ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+                },
+            ],
+            ..turn.provider.clone()
+        };
+        base_config.model_provider = logical_provider.clone();
+        base_config.user_configured_provider = logical_provider.clone();
         turn.config = Arc::new(base_config);
+        turn.provider = logical_provider.with_account(&logical_provider.account_pool[1]);
         turn.approval_policy
             .set(AskForApproval::OnRequest)
             .expect("approval policy set");
@@ -4852,7 +4890,7 @@ mod tests {
         let mut expected = (*turn.config).clone();
         expected.base_instructions = None;
         expected.model = Some(turn.model_info.slug.clone());
-        expected.model_provider = turn.provider.clone();
+        expected.model_provider = logical_provider;
         expected.model_reasoning_effort = turn.reasoning_effort;
         expected.model_reasoning_summary = turn.reasoning_summary;
         expected.developer_instructions = turn.developer_instructions.clone();

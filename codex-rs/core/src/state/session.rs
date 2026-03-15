@@ -3,6 +3,8 @@
 use codex_protocol::models::ResponseItem;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::task::JoinHandle;
 
 use crate::codex::SessionConfiguration;
@@ -10,12 +12,42 @@ use crate::context_manager::ContextManager;
 use crate::error::Result as CodexResult;
 use crate::gemini_types::GeminiAspectRatio;
 use crate::gemini_types::GeminiImageSize;
+use crate::model_provider_info::ModelProviderAccount;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::tasks::RegularTask;
 use crate::truncate::TruncationPolicy;
 use codex_protocol::protocol::TurnContextItem;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProviderPoolRuntimeState {
+    cooldowns: HashMap<ModelProviderAccount, Instant>,
+}
+
+impl ProviderPoolRuntimeState {
+    fn cooldown_until(&mut self, account: &ModelProviderAccount, now: Instant) -> Option<Instant> {
+        match self.cooldowns.get(account).copied() {
+            Some(until) if until > now => Some(until),
+            Some(_) => {
+                self.cooldowns.remove(account);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn mark_cooling(
+        &mut self,
+        account: ModelProviderAccount,
+        now: Instant,
+        cooldown: Duration,
+    ) -> Instant {
+        let until = now + cooldown;
+        self.cooldowns.insert(account, until);
+        until
+    }
+}
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
@@ -36,6 +68,7 @@ pub(crate) struct SessionState {
     auto_model_sub_calibration_attempted: bool,
     last_model_sub_calibration_models: Vec<String>,
     last_model_sub_calibration_recommended_for_session: Option<String>,
+    provider_pool_runtime: HashMap<String, ProviderPoolRuntimeState>,
     active_reference_images: Vec<String>,
     image_size: Option<GeminiImageSize>,
     aspect_ratio: Option<GeminiAspectRatio>,
@@ -60,6 +93,7 @@ impl SessionState {
             auto_model_sub_calibration_attempted: false,
             last_model_sub_calibration_models: Vec::new(),
             last_model_sub_calibration_recommended_for_session: None,
+            provider_pool_runtime: HashMap::new(),
             active_reference_images: Vec::new(),
             image_size: None,
             aspect_ratio: None,
@@ -161,6 +195,31 @@ impl SessionState {
 
     pub(crate) fn mcp_dependency_prompted(&self) -> HashSet<String> {
         self.mcp_dependency_prompted.clone()
+    }
+
+    pub(crate) fn pool_cooldown_until(
+        &mut self,
+        provider_id: &str,
+        account: &ModelProviderAccount,
+        now: Instant,
+    ) -> Option<Instant> {
+        self.provider_pool_runtime
+            .entry(provider_id.to_string())
+            .or_default()
+            .cooldown_until(account, now)
+    }
+
+    pub(crate) fn mark_pool_account_cooling(
+        &mut self,
+        provider_id: &str,
+        account: ModelProviderAccount,
+        now: Instant,
+        cooldown: Duration,
+    ) -> Instant {
+        self.provider_pool_runtime
+            .entry(provider_id.to_string())
+            .or_default()
+            .mark_cooling(account, now, cooldown)
     }
 
     pub(crate) fn set_dependency_env(&mut self, values: HashMap<String, String>) {
