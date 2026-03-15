@@ -4300,7 +4300,7 @@ dependencies = [
  "clap",
  "crossterm 0.25.0",
  "git2",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "lazy_static",
  "platform-dirs",
  "regex",
