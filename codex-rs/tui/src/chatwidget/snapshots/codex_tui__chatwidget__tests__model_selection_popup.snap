@@ -18,7 +18,5 @@ expression: popup
                                   latency edits (text only, Pro, 128K
                                   context).
   8. gemini-3.1-pro-preview       Google Gemini 3.1 Pro with enhanced
-                                  reasoning and 1M context.
-  9. gemini-3-pro-preview         Google Gemini 3 Pro with deep reasoning and
 
   Press enter to select reasoning effort, or esc to dismiss.
