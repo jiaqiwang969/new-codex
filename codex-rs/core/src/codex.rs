@@ -2648,15 +2648,16 @@ impl Session {
             )
         };
         let background_message = resolved_provider.background_message.clone();
-        let turn_context = self
-            .new_turn_from_resolved_provider(
-                sub_id,
-                session_configuration,
-                resolved_provider.provider,
-                final_output_json_schema,
-                sandbox_policy_changed,
-            )
-            .await;
+        // Box this nested async call so startup/resume turn creation does not
+        // inline the full future chain onto a small test-thread stack.
+        let turn_context = Box::pin(self.new_turn_from_resolved_provider(
+            sub_id,
+            session_configuration,
+            resolved_provider.provider,
+            final_output_json_schema,
+            sandbox_policy_changed,
+        ))
+        .await;
         if let Some(message) = background_message {
             self.notify_background_event(&turn_context, message).await;
         }
@@ -2847,6 +2848,76 @@ impl Session {
         .provider
     }
 
+    pub(crate) async fn utility_client_and_model_for_slug(
+        &self,
+        config: &Config,
+        model_slug: &str,
+    ) -> Option<(ModelClient, ModelInfo, String)> {
+        let (provider_id, logical_provider) =
+            crate::utility_model::provider_for_model_slug(config, model_slug)?;
+        let model_info = self
+            .services
+            .models_manager
+            .get_model_info(model_slug, config)
+            .await;
+        let resolved_provider = {
+            let mut state = self.state.lock().await;
+            resolve_turn_provider_from_pool(
+                &mut state,
+                &provider_id,
+                &logical_provider,
+                std::time::Instant::now(),
+            )
+        };
+        let model_client = self
+            .services
+            .model_client
+            .clone_with_provider(resolved_provider.provider);
+        Some((model_client, model_info, provider_id))
+    }
+
+    async fn entire_summary_client_and_model_for_turn(
+        &self,
+        turn_context: &TurnContext,
+    ) -> (ModelClient, ModelInfo, String, Option<String>) {
+        let model_slug =
+            crate::entire_summary_generator::model_slug(turn_context.config.as_ref()).to_string();
+        let (summary_turn_context, background_message) = self
+            .turn_context_with_model_resolved_from_pool(turn_context, model_slug.clone())
+            .await;
+        let model_client = self
+            .services
+            .model_client
+            .clone_with_provider(summary_turn_context.provider.clone());
+        (
+            model_client,
+            summary_turn_context.model_info,
+            model_slug,
+            background_message,
+        )
+    }
+
+    async fn turn_context_with_model_resolved_from_pool(
+        &self,
+        turn_context: &TurnContext,
+        model: String,
+    ) -> (TurnContext, Option<String>) {
+        let mut next_turn_context = turn_context
+            .with_model(model, &self.services.models_manager)
+            .await;
+        let resolved_provider = {
+            let mut state = self.state.lock().await;
+            resolve_turn_provider_from_pool(
+                &mut state,
+                &next_turn_context.config.model_provider_id,
+                &next_turn_context.config.model_provider,
+                std::time::Instant::now(),
+            )
+        };
+        next_turn_context.provider = resolved_provider.provider;
+        (next_turn_context, resolved_provider.background_message)
+    }
+
     pub(crate) async fn reload_user_config_layer(&self) {
         let config_toml_path = {
             let state = self.state.lock().await;
@@ -2930,8 +3001,7 @@ impl Session {
             let state = self.state.lock().await;
             state.session_configuration.clone()
         };
-        self.new_turn_from_configuration(sub_id, session_configuration, None, false)
-            .await
+        Box::pin(self.new_turn_from_configuration(sub_id, session_configuration, None, false)).await
     }
 
     fn build_settings_update_items(
@@ -5934,13 +6004,25 @@ pub(crate) async fn run_turn(
                             ai_response,
                             files_changed,
                         };
+                        let (
+                            summary_model_client,
+                            summary_model_info,
+                            summary_model_slug,
+                            background_message,
+                        ) = sess
+                            .entire_summary_client_and_model_for_turn(turn_context.as_ref())
+                            .await;
+                        if let Some(message) = background_message {
+                            sess.notify_background_event(turn_context.as_ref(), message)
+                                .await;
+                        }
 
                         if let Ok(summary) =
-                            crate::entire_summary_generator::generate_entire_summary(
+                            crate::entire_summary_generator::generate_entire_summary_with_client_and_model(
                                 &input,
-                                &sess.services.model_client,
-                                &sess.services.models_manager,
-                                &turn_context.config,
+                                &summary_model_client,
+                                &summary_model_info,
+                                &summary_model_slug,
                             )
                             .await
                         {
@@ -6189,11 +6271,14 @@ async fn maybe_run_previous_model_inline_compact(
     let Some(previous_model) = sess.previous_model().await else {
         return Ok(false);
     };
-    let previous_model_turn_context = Arc::new(
-        turn_context
-            .with_model(previous_model, &sess.services.models_manager)
-            .await,
-    );
+    let (previous_model_turn_context, background_message) = sess
+        .turn_context_with_model_resolved_from_pool(turn_context.as_ref(), previous_model)
+        .await;
+    let previous_model_turn_context = Arc::new(previous_model_turn_context);
+    if let Some(message) = background_message {
+        sess.notify_background_event(&previous_model_turn_context, message)
+            .await;
+    }
 
     let Some(old_context_window) = previous_model_turn_context.model_context_window() else {
         return Ok(false);
@@ -6498,12 +6583,9 @@ async fn maybe_switch_provider_account(
     }
 
     let current_account = turn_context.provider.current_account()?;
-    let provider_id = {
-        let state = sess.state.lock().await;
-        state.session_configuration.provider_id.clone()
-    };
+    let provider_id = turn_context.config.model_provider_id.clone();
     let now = std::time::Instant::now();
-    let session_configuration = {
+    let mut session_configuration = {
         let mut state = sess.state.lock().await;
         state.mark_pool_account_cooling(
             provider_id.as_str(),
@@ -6513,6 +6595,21 @@ async fn maybe_switch_provider_account(
         );
         state.session_configuration.clone()
     };
+    session_configuration.provider_id = turn_context.config.model_provider_id.clone();
+    session_configuration.provider = turn_context.config.model_provider.clone();
+    session_configuration.collaboration_mode = turn_context.collaboration_mode.clone();
+    session_configuration.model_reasoning_summary = turn_context.reasoning_summary;
+    session_configuration.developer_instructions = turn_context.developer_instructions.clone();
+    session_configuration.user_instructions = turn_context.user_instructions.clone();
+    session_configuration.personality = turn_context.personality;
+    session_configuration.compact_prompt = turn_context.compact_prompt.clone();
+    session_configuration.approval_policy = turn_context.approval_policy.clone();
+    session_configuration.sandbox_policy = turn_context.sandbox_policy.clone();
+    session_configuration.windows_sandbox_level = turn_context.windows_sandbox_level;
+    session_configuration.cwd = turn_context.cwd.clone();
+    session_configuration.original_config_do_not_use = Arc::clone(&turn_context.config);
+    session_configuration.session_source = turn_context.session_source.clone();
+    session_configuration.dynamic_tools = turn_context.dynamic_tools.clone();
     let next_account = next_account_from_pool(
         provider_id.as_str(),
         &turn_context.provider,
@@ -8657,6 +8754,201 @@ mod tests {
             Some("https://preferred.example/v1")
         );
         assert_eq!(resolved.env_key.as_deref(), Some("OPENAI_API_KEY_POOL_1"));
+    }
+
+    #[tokio::test]
+    async fn maybe_switch_provider_account_preserves_turn_local_provider_configuration() {
+        let (session, turn_context) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let mut anthropic_turn_context = turn_context
+            .with_model(
+                "claude-opus-4-6".to_string(),
+                &session.services.models_manager,
+            )
+            .await;
+        let mut config = (*anthropic_turn_context.config).clone();
+        let mut anthropic_provider = config
+            .model_providers
+            .get("anthropic")
+            .expect("anthropic provider should exist")
+            .clone();
+        anthropic_provider.base_url = None;
+        anthropic_provider.env_key = None;
+        anthropic_provider.account_pool = vec![
+            ModelProviderAccount {
+                base_url: Some("https://preferred.anthropic.example".to_string()),
+                env_key: Some("ANTHROPIC_API_KEY_POOL_1".to_string()),
+            },
+            ModelProviderAccount {
+                base_url: Some("https://fallback.anthropic.example".to_string()),
+                env_key: Some("ANTHROPIC_API_KEY_POOL_2".to_string()),
+            },
+        ];
+        config.model_providers.insert(
+            crate::model_provider_info::ANTHROPIC_PROVIDER_ID.to_string(),
+            anthropic_provider.clone(),
+        );
+        config.model_provider_id = crate::model_provider_info::ANTHROPIC_PROVIDER_ID.to_string();
+        config.model_provider = anthropic_provider.clone();
+        anthropic_turn_context.config = Arc::new(config);
+        anthropic_turn_context.provider =
+            anthropic_provider.with_account(&anthropic_provider.account_pool[0]);
+        let anthropic_turn_context = Arc::new(anthropic_turn_context);
+
+        let mut attempted_accounts = HashSet::from([anthropic_provider.account_pool[0].clone()]);
+        let switched = maybe_switch_provider_account(
+            &session,
+            &anthropic_turn_context,
+            &mut attempted_accounts,
+            false,
+            &CodexErr::UsageLimitReached(crate::error::UsageLimitReachedError {
+                plan_type: None,
+                resets_at: None,
+                rate_limits: None,
+                promo_message: None,
+            }),
+            0,
+            0,
+        )
+        .await
+        .expect("turn should switch to fallback account");
+
+        assert_eq!(switched.config.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(
+            switched.config.model_provider_id,
+            crate::model_provider_info::ANTHROPIC_PROVIDER_ID
+        );
+        assert_eq!(
+            switched.provider.current_account(),
+            Some(anthropic_provider.account_pool[1].clone())
+        );
+
+        let now = std::time::Instant::now();
+        let mut state = session.state.lock().await;
+        assert!(
+            state
+                .pool_cooldown_until(
+                    crate::model_provider_info::ANTHROPIC_PROVIDER_ID,
+                    &anthropic_provider.account_pool[0],
+                    now
+                )
+                .is_some()
+        );
+        assert_eq!(
+            state.pool_cooldown_until("openai", &anthropic_provider.account_pool[0], now),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn utility_client_and_model_for_slug_respects_session_pool_cooldown() {
+        let (session, _) = make_session_and_context().await;
+        let provider = ModelProviderInfo {
+            base_url: None,
+            env_key: None,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+                },
+            ],
+            ..ModelProviderInfo::create_openai_provider()
+        };
+
+        let config = {
+            let mut state = session.state.lock().await;
+            state.session_configuration.provider_id = "openai".to_string();
+            state.session_configuration.provider = provider.clone();
+            let now = std::time::Instant::now();
+            state.mark_pool_account_cooling(
+                "openai",
+                provider.account_pool[0].clone(),
+                now,
+                Duration::from_secs(10 * 60),
+            );
+
+            let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+            config.model_provider_id = "openai".to_string();
+            config.model_provider = provider.clone();
+            config.user_configured_provider = provider.clone();
+            state.session_configuration.original_config_do_not_use = Arc::new(config.clone());
+            config
+        };
+
+        let (model_client, _model_info, provider_id) = session
+            .utility_client_and_model_for_slug(&config, "gpt-5.1-codex-mini")
+            .await
+            .expect("utility provider should resolve");
+
+        assert_eq!(provider_id, "openai");
+        assert_eq!(
+            model_client.provider_for_test().current_account(),
+            Some(provider.account_pool[1].clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn entire_summary_client_and_model_for_turn_respects_session_pool_cooldown() {
+        let (session, mut turn_context) = make_session_and_context().await;
+        let provider = ModelProviderInfo {
+            base_url: None,
+            env_key: None,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_1".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("OPENAI_API_KEY_POOL_2".to_string()),
+                },
+            ],
+            ..ModelProviderInfo::create_openai_provider()
+        };
+
+        let config = {
+            let mut state = session.state.lock().await;
+            state.session_configuration.provider_id = "openai".to_string();
+            state.session_configuration.provider = provider.clone();
+            let now = std::time::Instant::now();
+            state.mark_pool_account_cooling(
+                "openai",
+                provider.account_pool[0].clone(),
+                now,
+                Duration::from_secs(10 * 60),
+            );
+
+            let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+            config.model_provider_id = "openai".to_string();
+            config.model_provider = provider.clone();
+            config.user_configured_provider = provider.clone();
+            config.memories.entire_summary_model = Some("gpt-5.1-codex-mini".to_string());
+            config
+                .model_providers
+                .insert("openai".to_string(), provider.clone());
+            state.session_configuration.original_config_do_not_use = Arc::new(config.clone());
+            config
+        };
+        turn_context.config = Arc::new(config);
+
+        let (model_client, model_info, model_slug, background_message) = session
+            .entire_summary_client_and_model_for_turn(&turn_context)
+            .await;
+
+        assert_eq!(model_slug, "gpt-5.1-codex-mini");
+        assert_eq!(model_info.slug, "gpt-5.1-codex-mini");
+        assert_eq!(
+            model_client.provider_for_test().current_account(),
+            Some(provider.account_pool[1].clone())
+        );
+        assert_eq!(
+            background_message.as_deref(),
+            Some("Provider pool openai: key 1/2 cooling down; trying key 2/2")
+        );
     }
 
     #[tokio::test]

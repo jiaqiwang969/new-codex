@@ -246,9 +246,12 @@ mod job {
             1,
             &[("status", reason)],
         );
-        let _ = db
+        if let Err(err) = db
             .mark_global_phase2_job_succeeded(&claim.token, completion_watermark, selected_outputs)
-            .await;
+            .await
+        {
+            warn!("failed to mark global memory consolidation job succeeded: {err}");
+        }
     }
 }
 

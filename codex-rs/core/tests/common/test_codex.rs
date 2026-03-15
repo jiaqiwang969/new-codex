@@ -231,6 +231,12 @@ impl TestCodexBuilder {
             mutator(&mut config);
         }
 
+        let provider_id = config.model_provider_id.clone();
+        config.user_configured_provider = config.model_provider.clone();
+        config
+            .model_providers
+            .insert(provider_id, config.model_provider.clone());
+
         if config.include_apply_patch_tool {
             config.features.enable(Feature::ApplyPatchFreeform);
         } else {

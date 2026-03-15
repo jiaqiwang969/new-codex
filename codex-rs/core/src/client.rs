@@ -479,6 +479,11 @@ impl ModelClient {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn provider_for_test(&self) -> ModelProviderInfo {
+        self.state.provider.clone()
+    }
+
     fn take_cached_websocket_session(&self) -> WebsocketSession {
         let mut cached_websocket_session = self
             .state

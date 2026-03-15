@@ -11,7 +11,6 @@ use crate::memories::phase_one;
 use crate::memories::prompts::build_stage_one_input_message;
 use crate::rollout::INTERACTIVE_SESSION_SOURCES;
 use crate::rollout::policy::should_persist_response_item_for_memories;
-use crate::utility_model;
 use codex_api::ResponseEvent;
 use codex_otel::OtelManager;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -201,13 +200,8 @@ async fn build_request_context(session: &Arc<Session>, config: &Config) -> Reque
         .phase_1_model
         .clone()
         .unwrap_or_else(|| crate::memories::DEFAULT_MEMORY_PHASE_ONE_MODEL.to_string());
-    let (model_client, model) = if let Some((model_client, model, provider_id)) =
-        utility_model::client_and_model_for_slug(
-            &session.services.model_client,
-            &session.services.models_manager,
-            config,
-            &model_name,
-        )
+    let (model_client, model) = if let Some((model_client, model, provider_id)) = session
+        .utility_client_and_model_for_slug(config, &model_name)
         .await
     {
         info!(
