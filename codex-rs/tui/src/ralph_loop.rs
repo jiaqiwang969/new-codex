@@ -271,7 +271,11 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len])
+        let mut safe_len = max_len;
+        while !s.is_char_boundary(safe_len) {
+            safe_len -= 1;
+        }
+        format!("{}...", &s[..safe_len])
     }
 }
 
@@ -397,5 +401,15 @@ mod tests {
     fn test_unlimited_iterations() {
         let state = RalphLoopState::new(0, "COMPLETE".into(), "test".into(), 0);
         assert!(state.should_continue()); // max_iterations 0 = unlimited
+    }
+
+    #[test]
+    fn test_truncate_string_handles_unicode_char_boundaries() {
+        let prompt = "非常好，4k已经有了；接下来，重点就是优化算法，让4k也能稳定30fps；好好分析一下硬件底层和算法的匹配，继续";
+
+        let truncated = truncate_string(prompt, 100);
+
+        assert!(truncated.ends_with("..."));
+        assert!(prompt.starts_with(truncated.trim_end_matches("...")));
     }
 }

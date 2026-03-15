@@ -35,7 +35,7 @@ pub fn install_freeze_panic_hook(config: &crate::config::Config) {
 
         // Write the panic info to a log file so the sandbox Codex knows what happened
         if let Some(ref root) = repo_root {
-            let panic_msg = format!("{:#?}", panic_info);
+            let panic_msg = format!("{panic_info:#?}");
             let _ = std::fs::write(root.join("last_panic.log"), panic_msg);
         }
 

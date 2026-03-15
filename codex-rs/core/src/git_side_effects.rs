@@ -76,30 +76,30 @@ pub async fn capture_git_state(cwd: &Path) -> Option<GitState> {
     let status_output =
         run_git_command_with_timeout(&["status", "--porcelain", "-z"], &repo_root).await;
     let mut uncommitted_files = BTreeMap::new();
-    if let Some(out) = status_output {
-        if out.status.success() {
-            let status_str = String::from_utf8_lossy(&out.stdout);
-            let parts: Vec<&str> = status_str.split('\0').collect();
-            let mut i = 0;
-            while i < parts.len() {
-                let part = parts[i];
-                if part.is_empty() {
-                    i += 1;
-                    continue;
-                }
-                let status = &part[0..2];
-                let path_str = &part[3..];
-                let abs_path = repo_root.join(path_str);
+    if let Some(out) = status_output
+        && out.status.success()
+    {
+        let status_str = String::from_utf8_lossy(&out.stdout);
+        let parts: Vec<&str> = status_str.split('\0').collect();
+        let mut i = 0;
+        while i < parts.len() {
+            let part = parts[i];
+            if part.is_empty() {
+                i += 1;
+                continue;
+            }
+            let status = &part[0..2];
+            let path_str = &part[3..];
+            let abs_path = repo_root.join(path_str);
 
-                let mtime = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
+            let mtime = std::fs::metadata(&abs_path).and_then(|m| m.modified()).ok();
 
-                uncommitted_files.insert(abs_path, mtime);
+            uncommitted_files.insert(abs_path, mtime);
 
-                if status.starts_with('R') || status.starts_with('C') {
-                    i += 1;
-                }
+            if status.starts_with('R') || status.starts_with('C') {
                 i += 1;
             }
+            i += 1;
         }
     }
 
@@ -137,13 +137,13 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
                 &before.repo_root,
             )
             .await;
-            if let Some(out) = diff_out {
-                if out.status.success() {
-                    let diff_str = String::from_utf8_lossy(&out.stdout);
-                    for path_str in diff_str.split('\0') {
-                        if !path_str.is_empty() {
-                            changed_files.insert(before.repo_root.join(path_str));
-                        }
+            if let Some(out) = diff_out
+                && out.status.success()
+            {
+                let diff_str = String::from_utf8_lossy(&out.stdout);
+                for path_str in diff_str.split('\0') {
+                    if !path_str.is_empty() {
+                        changed_files.insert(before.repo_root.join(path_str));
                     }
                 }
             }
@@ -155,13 +155,13 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
                 &before.repo_root,
             )
             .await;
-            if let Some(out) = diff_out {
-                if out.status.success() {
-                    let diff_str = String::from_utf8_lossy(&out.stdout);
-                    for path_str in diff_str.split('\0') {
-                        if !path_str.is_empty() {
-                            changed_files.insert(before.repo_root.join(path_str));
-                        }
+            if let Some(out) = diff_out
+                && out.status.success()
+            {
+                let diff_str = String::from_utf8_lossy(&out.stdout);
+                for path_str in diff_str.split('\0') {
+                    if !path_str.is_empty() {
+                        changed_files.insert(before.repo_root.join(path_str));
                     }
                 }
             }
