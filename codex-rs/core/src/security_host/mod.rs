@@ -238,9 +238,7 @@ impl SecurityHost {
     }
 
     fn validate_delete_scope(&self, mut scope: SecurityPermitScope) -> Option<SecurityPermitScope> {
-        if scope.target_path.is_none() {
-            return None;
-        }
+        scope.target_path.as_ref()?;
         if scope.recursive {
             scope.recursive = false;
         }
