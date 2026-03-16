@@ -1909,6 +1909,7 @@ impl Session {
                 thread_name: session_configuration.thread_name.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
+                security_mode: config.security_mode,
                 approval_policy: session_configuration.approval_policy.value(),
                 approvals_reviewer: session_configuration.approvals_reviewer,
                 sandbox_policy: session_configuration.sandbox_policy.get().clone(),
