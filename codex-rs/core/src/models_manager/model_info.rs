@@ -660,9 +660,9 @@ mod tests {
 
     #[test]
     fn antigravity_gemini_models_reuse_gemini_metadata_without_fallback() {
-        let model = find_model_info_for_slug("antigravity/gemini-3.1-pro-high");
+        let model = find_model_info_for_slug("antigravity/gemini-3.1-pro-preview");
 
-        assert_eq!(model.slug, "antigravity/gemini-3.1-pro-high".to_string());
+        assert_eq!(model.slug, "antigravity/gemini-3.1-pro-preview".to_string());
         assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
         assert!(!model.used_fallback_model_metadata);
         assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));

@@ -6425,7 +6425,7 @@ fn should_switch_provider_account(err: &CodexErr, retries: u64, max_retries: u64
     err.is_retryable() && retries >= max_retries
 }
 
-const PROVIDER_POOL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const PROVIDER_POOL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
 struct ResolvedTurnProvider {
@@ -8430,7 +8430,7 @@ mod tests {
             "openai",
             provider.account_pool[0].clone(),
             now,
-            Duration::from_secs(10 * 60),
+            PROVIDER_POOL_COOLDOWN,
         );
 
         let resolved = resolve_turn_provider_from_pool(&mut state, "openai", &provider, now);
@@ -8472,14 +8472,14 @@ mod tests {
             "openai",
             provider.account_pool[0].clone(),
             now,
-            Duration::from_secs(10 * 60),
+            PROVIDER_POOL_COOLDOWN,
         );
 
         let resolved = resolve_turn_provider_from_pool(
             &mut state,
             "openai",
             &provider,
-            now + Duration::from_secs(10 * 60 + 1),
+            now + PROVIDER_POOL_COOLDOWN + Duration::from_secs(1),
         );
         assert_eq!(
             resolved.provider.env_key.as_deref(),
@@ -8516,7 +8516,7 @@ mod tests {
         let mut state = SessionState::new(session_configuration);
         let now = std::time::Instant::now();
         for account in provider.account_pool.clone() {
-            state.mark_pool_account_cooling("openai", account, now, Duration::from_secs(600));
+            state.mark_pool_account_cooling("openai", account, now, PROVIDER_POOL_COOLDOWN);
         }
 
         let resolved = resolve_turn_provider_from_pool(&mut state, "openai", &provider, now);
@@ -8573,7 +8573,7 @@ mod tests {
                 "openai",
                 openai_provider.account_pool[0].clone(),
                 now,
-                Duration::from_secs(10 * 60),
+                PROVIDER_POOL_COOLDOWN,
             );
         }
 
@@ -8661,8 +8661,8 @@ mod tests {
         assert!(
             !Session::should_warn_on_server_model_mismatch(
                 crate::model_provider_info::WireApi::Gemini,
-                "antigravity/gemini-3.1-pro-high",
-                "gemini-3.1-pro-high",
+                "antigravity/gemini-3.1-pro-preview",
+                "gemini-3.1-pro-preview",
             ),
             "gemini wire API should not trigger cyber fallback warning",
         );
@@ -8910,6 +8910,14 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
+            state.pool_cooldown_until(
+                crate::model_provider_info::ANTHROPIC_PROVIDER_ID,
+                &anthropic_provider.account_pool[0],
+                now + Duration::from_secs(61)
+            ),
+            None
+        );
+        assert_eq!(
             state.pool_cooldown_until("openai", &anthropic_provider.account_pool[0], now),
             None
         );
@@ -8943,7 +8951,7 @@ mod tests {
                 "openai",
                 provider.account_pool[0].clone(),
                 now,
-                Duration::from_secs(10 * 60),
+                PROVIDER_POOL_COOLDOWN,
             );
 
             let mut config = (*state.session_configuration.original_config_do_not_use).clone();
@@ -8994,7 +9002,7 @@ mod tests {
                 "openai",
                 provider.account_pool[0].clone(),
                 now,
-                Duration::from_secs(10 * 60),
+                PROVIDER_POOL_COOLDOWN,
             );
 
             let mut config = (*state.session_configuration.original_config_do_not_use).clone();

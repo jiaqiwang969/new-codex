@@ -32,7 +32,7 @@ That design causes behavior that conflicts with the approved requirements:
 - A new session always probes from `POOL_1`.
 - A resumed session also probes from `POOL_1`.
 - Within one active session, failures move to the next pool account.
-- Failed accounts cool down for 10 minutes.
+- Failed accounts cool down for 1 minute.
 - After cooldown expires, the next turn should retry `POOL_1` first because it
   is preferred and cheaper.
 - If every account is still cooling down, do not fail immediately. Force a new
@@ -84,7 +84,7 @@ keeps only the logical provider.
 
 When a request fails with an account-switch-eligible error:
 
-1. Mark the failed account as cooling down for 10 minutes in session-local
+1. Mark the failed account as cooling down for 1 minute in session-local
    runtime state.
 2. Select the next account in pool order for the same turn.
 3. Rebuild the turn-local provider/client only.
@@ -103,7 +103,7 @@ Cooldown applies per account, not per provider:
 - On the next turn, selection scans from `POOL_1` again.
 - If `POOL_1` is still cooling down, it is skipped and the turn starts from the
   first available later account.
-- Once 10 minutes have passed, the next turn retries `POOL_1` first.
+- Once 1 minute has passed, the next turn retries `POOL_1` first.
 
 This preserves preference for the cheapest account without thrashing mid-turn.
 

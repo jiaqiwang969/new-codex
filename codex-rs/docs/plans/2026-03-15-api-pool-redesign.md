@@ -64,7 +64,7 @@ Expected: config-pool semantics tests pass.
 Add tests that describe:
 
 - a fresh session has no pool cooldown state
-- failed accounts are marked cooling until `now + 10 minutes`
+- failed accounts are marked cooling until `now + 1 minute`
 - a later turn chooses the first non-cooled account in config order
 - when every account is cooled, selection reports that a forced reprobe is
   required
@@ -210,7 +210,7 @@ Expected: core tests pass and any intended snapshot diffs are ready for review.
 Document that:
 
 - pool order is always preferred from key 1
-- cooldown lasts 10 minutes
+- cooldown lasts 1 minute
 - later turns retry key 1 after cooldown
 - resume starts from key 1 again
 - all-cooled state triggers a forced reprobe from key 1

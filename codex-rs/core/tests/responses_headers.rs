@@ -432,7 +432,18 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
         .expect("git rev-parse output should be valid UTF-8")
         .trim()
         .to_string();
-    let expected_origin = String::from_utf8(run_git(&["remote", "get-url", "origin"]).stdout)
+    let expected_origin_output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(cwd)
+        .output()
+        .expect("git remote get-url should run");
+    assert!(
+        expected_origin_output.status.success(),
+        "git remote get-url failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&expected_origin_output.stdout),
+        String::from_utf8_lossy(&expected_origin_output.stderr)
+    );
+    let expected_origin = String::from_utf8(expected_origin_output.stdout)
         .expect("git remote get-url output should be valid UTF-8")
         .trim()
         .to_string();

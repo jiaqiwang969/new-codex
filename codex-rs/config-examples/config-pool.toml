@@ -1,9 +1,9 @@
 # Account pool configuration - isolated from main config.toml
 # `account_pool` is the source of truth when present.
 # Every new or resumed session starts probing from key 1.
-# If a key fails with 400/401/403/429/quota, Codex cools it down for 10 minutes
+# If a key fails with 400/401/403/429/quota, Codex cools it down for 1 minute
 # and switches to the next key for the current turn.
-# After 10 minutes, the next turn retries key 1 first again.
+# After 1 minute, the next turn retries key 1 first again.
 # If all keys are cooling down, Codex still forces a fresh probe from key 1.
 
 # ── Codex (OpenAI-compatible) provider pool ─────────────────────────

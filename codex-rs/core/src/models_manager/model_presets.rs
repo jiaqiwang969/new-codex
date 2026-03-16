@@ -450,10 +450,10 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
         },
         // Antigravity Gemini models
         ModelPreset {
-            id: "antigravity/gemini-3.1-pro-high".to_string(),
-            model: "antigravity/gemini-3.1-pro-high".to_string(),
-            display_name: "Antigravity Gemini 3.1 Pro High".to_string(),
-            description: "Gemini 3.1 Pro High via CLIProxyAPI with full thoughtSignature support and 1M context.".to_string(),
+            id: "antigravity/gemini-3.1-pro-preview".to_string(),
+            model: "antigravity/gemini-3.1-pro-preview".to_string(),
+            display_name: "Antigravity Gemini 3.1 Pro".to_string(),
+            description: "Gemini 3.1 Pro via CLIProxyAPI with full thoughtSignature support and 1M context.".to_string(),
             default_reasoning_effort: ReasoningEffort::High,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -477,34 +477,10 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             input_modalities: default_input_modalities(),
         },
         ModelPreset {
-            id: "antigravity/gemini-3.1-pro-low".to_string(),
-            model: "antigravity/gemini-3.1-pro-low".to_string(),
-            display_name: "Antigravity Gemini 3.1 Pro Low".to_string(),
-            description: "Gemini 3.1 Pro Low via CLIProxyAPI — cost-efficient pro variant with 1M context."
-                .to_string(),
-            default_reasoning_effort: ReasoningEffort::Low,
-            supported_reasoning_efforts: vec![
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::Low,
-                    description: "Fast responses with lighter reasoning".to_string(),
-                },
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::Medium,
-                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-                },
-            ],
-            supports_personality: false,
-            is_default: false,
-            upgrade: None,
-            show_in_picker: true,
-            supported_in_api: true,
-            input_modalities: default_input_modalities(),
-        },
-        ModelPreset {
-            id: "antigravity/gemini-3-pro-high".to_string(),
-            model: "antigravity/gemini-3-pro-high".to_string(),
-            display_name: "Antigravity Gemini 3 Pro High".to_string(),
-            description: "Gemini 3 Pro High via CLIProxyAPI with deep reasoning and 1M context.".to_string(),
+            id: "antigravity/gemini-3-pro-preview".to_string(),
+            model: "antigravity/gemini-3-pro-preview".to_string(),
+            display_name: "Antigravity Gemini 3 Pro".to_string(),
+            description: "Gemini 3 Pro via CLIProxyAPI with deep reasoning and 1M context.".to_string(),
             default_reasoning_effort: ReasoningEffort::High,
             supported_reasoning_efforts: vec![
                 ReasoningEffortPreset {
@@ -528,8 +504,8 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             input_modalities: default_input_modalities(),
         },
         ModelPreset {
-            id: "antigravity/gemini-3-flash".to_string(),
-            model: "antigravity/gemini-3-flash".to_string(),
+            id: "antigravity/gemini-3-flash-preview".to_string(),
+            model: "antigravity/gemini-3-flash-preview".to_string(),
             display_name: "Antigravity Gemini 3 Flash".to_string(),
             description: "Gemini 3 Flash via CLIProxyAPI — fast and efficient with 1M context.".to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
@@ -985,5 +961,84 @@ mod tests {
         assert_eq!(sonnet.default_reasoning_effort, ReasoningEffort::Medium);
         assert!(haiku.show_in_picker);
         assert_eq!(haiku.default_reasoning_effort, ReasoningEffort::Low);
+    }
+
+    #[test]
+    fn antigravity_gemini_models_use_public_slugs_and_reasoning_effort() {
+        let gemini_31_pro = PRESETS
+            .iter()
+            .find(|preset| preset.model == "antigravity/gemini-3.1-pro-preview")
+            .expect("antigravity gemini 3.1 pro preset should exist");
+        let gemini_3_pro = PRESETS
+            .iter()
+            .find(|preset| preset.model == "antigravity/gemini-3-pro-preview")
+            .expect("antigravity gemini 3 pro preset should exist");
+        let gemini_3_flash = PRESETS
+            .iter()
+            .find(|preset| preset.model == "antigravity/gemini-3-flash-preview")
+            .expect("antigravity gemini 3 flash preset should exist");
+
+        for removed_slug in [
+            "antigravity/gemini-3.1-pro-high",
+            "antigravity/gemini-3.1-pro-low",
+            "antigravity/gemini-3-pro-high",
+            "antigravity/gemini-3-flash",
+        ] {
+            assert!(
+                PRESETS.iter().all(|preset| preset.model != removed_slug),
+                "{removed_slug} should not remain in presets",
+            );
+        }
+
+        assert!(gemini_31_pro.show_in_picker);
+        assert_eq!(
+            gemini_31_pro.default_reasoning_effort,
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            gemini_31_pro
+                .supported_reasoning_efforts
+                .iter()
+                .map(|preset| preset.effort)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+        );
+
+        assert!(gemini_3_pro.show_in_picker);
+        assert_eq!(gemini_3_pro.default_reasoning_effort, ReasoningEffort::High);
+        assert_eq!(
+            gemini_3_pro
+                .supported_reasoning_efforts
+                .iter()
+                .map(|preset| preset.effort)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+        );
+
+        assert!(gemini_3_flash.show_in_picker);
+        assert_eq!(
+            gemini_3_flash.default_reasoning_effort,
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            gemini_3_flash
+                .supported_reasoning_efforts
+                .iter()
+                .map(|preset| preset.effort)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+        );
     }
 }
