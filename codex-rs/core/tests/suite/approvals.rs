@@ -2026,6 +2026,7 @@ async fn smart_access_auto_approves_low_risk_delete_without_user_prompt() -> Res
         vec![
             GuardianAssessmentStatus::InProgress,
             GuardianAssessmentStatus::Approved,
+            GuardianAssessmentStatus::Approved,
         ]
     );
 

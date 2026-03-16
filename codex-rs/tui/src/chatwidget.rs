@@ -2010,6 +2010,60 @@ impl ChatWidget {
                 _ => None,
             }
         };
+        let smart_access_trace_message = |action: &serde_json::Value,
+                                          summary: &str,
+                                          rationale: Option<&str>|
+         -> Option<(String, bool)> {
+            let trace = action.get("smart_access")?;
+            let decision = trace.get("decision").and_then(serde_json::Value::as_str)?;
+            let risk_score = trace
+                .get("risk_score")
+                .and_then(serde_json::Value::as_u64)
+                .map(|score| score.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let predicted_effects = trace
+                .get("predicted_effects")
+                .and_then(serde_json::Value::as_array)
+                .map(|effects| {
+                    effects
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|effects| !effects.is_empty())
+                .unwrap_or_else(|| "none".to_string());
+            let permit_summary = trace
+                .get("permit_summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let mismatch_summary = trace
+                .get("mismatch_summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let prefix = match decision {
+                "allow_with_permit" => "Smart Access permit issued",
+                "allow_with_amended_permit" => "Smart Access narrowed and permitted",
+                "deny" => "Smart Access denied",
+                "escalate_to_human" | "fallback_to_human" => {
+                    "Smart Access deferred to manual approval"
+                }
+                "downgrade_to_default" => "Smart Access downgraded to Default approval",
+                _ => "Smart Access recorded",
+            };
+            let mut message = format!(
+                "{prefix}: {summary} (risk {risk_score}; effects {predicted_effects}; permit {permit_summary}; mismatch {mismatch_summary})"
+            );
+            if let Some(rationale) = rationale.filter(|rationale| !rationale.trim().is_empty()) {
+                message.push_str(". ");
+                message.push_str(rationale);
+            }
+            let warning = matches!(
+                decision,
+                "deny" | "escalate_to_human" | "fallback_to_human" | "downgrade_to_default"
+            );
+            Some((message, warning))
+        };
 
         if ev.status == GuardianAssessmentStatus::InProgress
             && let Some(action) = ev.action.as_ref()
@@ -2051,6 +2105,17 @@ impl ChatWidget {
             serde_json::to_string(&action)
                 .unwrap_or_else(|_| "<unrenderable guardian action>".to_string())
         });
+        if let Some((message, warning)) =
+            smart_access_trace_message(&action, &summary, ev.rationale.as_deref())
+        {
+            if warning {
+                self.add_to_history(history_cell::new_warning_event(message));
+            } else {
+                self.add_to_history(history_cell::new_info_event(message, None));
+            }
+            self.request_redraw();
+            return;
+        }
 
         match ev.status {
             GuardianAssessmentStatus::Approved => {

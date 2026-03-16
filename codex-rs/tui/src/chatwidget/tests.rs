@@ -6845,6 +6845,75 @@ async fn guardian_approved_exec_renders_approved_request() {
 }
 
 #[tokio::test]
+async fn guardian_smart_access_trace_renders_permit_summary() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.show_welcome_banner = false;
+    let action = serde_json::json!({
+        "tool": "shell",
+        "command": "rm -f /tmp/guardian-approved.sqlite",
+    });
+
+    chat.handle_codex_event(Event {
+        id: "guardian-assessment".into(),
+        msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+            id: "thread:child-thread:guardian-1".into(),
+            turn_id: "turn-1".into(),
+            status: GuardianAssessmentStatus::Approved,
+            risk_score: Some(14),
+            risk_level: Some(GuardianRiskLevel::Low),
+            rationale: Some("Narrowly scoped to the requested file.".into()),
+            action: Some(action),
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "smart-access-trace".into(),
+        msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+            id: "thread:child-thread:guardian-1:smart-access".into(),
+            turn_id: "turn-1".into(),
+            status: GuardianAssessmentStatus::Approved,
+            risk_score: Some(14),
+            risk_level: Some(GuardianRiskLevel::Low),
+            rationale: None,
+            action: Some(serde_json::json!({
+                "tool": "shell",
+                "command": "rm -f /tmp/guardian-approved.sqlite",
+                "smart_access": {
+                    "risk_score": 14,
+                    "predicted_effects": ["protected_delete:/tmp/guardian-approved.sqlite"],
+                    "decision": "allow_with_permit",
+                    "permit_summary": "protected_delete:/tmp/guardian-approved.sqlite ttl=120s",
+                    "mismatch_summary": null,
+                }
+            })),
+        }),
+    });
+
+    let width: u16 = 120;
+    let ui_height: u16 = chat.desired_height(width);
+    let vt_height: u16 = 14;
+    let viewport = Rect::new(0, vt_height - ui_height - 1, width, ui_height);
+
+    let backend = VT100Backend::new(width, vt_height);
+    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    term.set_viewport_area(viewport);
+
+    for lines in drain_insert_history(&mut rx) {
+        crate::insert_history::insert_history_lines(&mut term, lines)
+            .expect("Failed to insert history lines in test");
+    }
+
+    term.draw(|f| {
+        chat.render(f.area(), f.buffer_mut());
+    })
+    .expect("draw smart access trace history");
+
+    assert_snapshot!(
+        "guardian_smart_access_trace_renders_permit_summary",
+        term.backend().vt100().screen().contents()
+    );
+}
+
+#[tokio::test]
 async fn permissions_full_access_history_cell_emitted_only_after_confirmation() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     #[cfg(target_os = "windows")]

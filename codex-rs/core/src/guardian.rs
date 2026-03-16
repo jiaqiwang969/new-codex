@@ -926,7 +926,7 @@ pub(crate) fn guardian_approval_request_to_json(action: &GuardianApprovalRequest
     }
 }
 
-fn guardian_assessment_action_value(action: &GuardianApprovalRequest) -> Value {
+pub(crate) fn guardian_assessment_action_value(action: &GuardianApprovalRequest) -> Value {
     match action {
         GuardianApprovalRequest::Shell { command, cwd, .. } => serde_json::json!({
             "tool": "shell",
@@ -985,7 +985,7 @@ fn guardian_assessment_action_value(action: &GuardianApprovalRequest) -> Value {
     }
 }
 
-fn guardian_request_id(request: &GuardianApprovalRequest) -> &str {
+pub(crate) fn guardian_request_id(request: &GuardianApprovalRequest) -> &str {
     match request {
         GuardianApprovalRequest::Shell { id, .. }
         | GuardianApprovalRequest::ExecCommand { id, .. }
@@ -997,7 +997,7 @@ fn guardian_request_id(request: &GuardianApprovalRequest) -> &str {
     }
 }
 
-fn guardian_request_turn_id<'a>(
+pub(crate) fn guardian_request_turn_id<'a>(
     request: &'a GuardianApprovalRequest,
     default_turn_id: &'a str,
 ) -> &'a str {
