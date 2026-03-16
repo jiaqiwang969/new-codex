@@ -7,6 +7,7 @@ use crate::file_watcher::WatchRegistration;
 use crate::protocol::Event;
 use crate::protocol::Op;
 use crate::protocol::Submission;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::Personality;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
@@ -28,6 +29,7 @@ pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
     pub approval_policy: AskForApproval,
+    pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox_policy: SandboxPolicy,
     pub cwd: PathBuf,
     pub reasoning_effort: Option<ReasoningEffort>,

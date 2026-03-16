@@ -69,6 +69,7 @@ use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
 use codex_protocol::config_types::AltScreenMode;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
@@ -270,6 +271,9 @@ pub struct Config {
 
     /// Effective permission configuration for shell tool execution.
     pub permissions: Permissions,
+
+    /// Configures who approval requests are routed to for review.
+    pub approvals_reviewer: ApprovalsReviewer,
 
     /// enforce_residency means web traffic cannot be routed outside of a
     /// particular geography. HTTP clients should direct their requests
@@ -617,6 +621,9 @@ impl ConfigBuilder {
             fallback_cwd,
         } = self;
         let codex_home = codex_home.map_or_else(find_codex_home, std::io::Result::Ok)?;
+        if let Err(err) = maybe_migrate_guardian_approval_alias(&codex_home).await {
+            tracing::warn!(error = %err, "failed to migrate guardian_approval feature alias");
+        }
         let cli_overrides = cli_overrides.unwrap_or_default();
         let mut harness_overrides = harness_overrides.unwrap_or_default();
         let loader_overrides = loader_overrides.unwrap_or_default();
@@ -662,6 +669,91 @@ impl ConfigBuilder {
             config_layer_stack,
         )
     }
+}
+
+async fn maybe_migrate_guardian_approval_alias(codex_home: &Path) -> std::io::Result<bool> {
+    use toml_edit::value;
+
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    if !tokio::fs::try_exists(&config_path).await? {
+        return Ok(false);
+    }
+
+    let config_contents = tokio::fs::read_to_string(&config_path).await?;
+    let Ok(config_toml) = toml::from_str::<ConfigToml>(&config_contents) else {
+        return Ok(false);
+    };
+
+    let mut edits = Vec::new();
+
+    if let Some(features) = config_toml.features.as_ref()
+        && let Some(enabled) = features.entries.get("guardian_approval").copied()
+    {
+        if enabled && !features.entries.contains_key("smart_approvals") {
+            edits.push(ConfigEdit::SetPath {
+                segments: vec!["features".to_string(), "smart_approvals".to_string()],
+                value: value(true),
+            });
+        }
+        if enabled && config_toml.approvals_reviewer.is_none() {
+            edits.push(ConfigEdit::SetPath {
+                segments: vec!["approvals_reviewer".to_string()],
+                value: value(ApprovalsReviewer::GuardianSubagent.to_string()),
+            });
+        }
+        edits.push(ConfigEdit::ClearPath {
+            segments: vec!["features".to_string(), "guardian_approval".to_string()],
+        });
+    }
+
+    for (profile_name, profile) in &config_toml.profiles {
+        if let Some(features) = profile.features.as_ref()
+            && let Some(enabled) = features.entries.get("guardian_approval").copied()
+        {
+            if enabled && !features.entries.contains_key("smart_approvals") {
+                edits.push(ConfigEdit::SetPath {
+                    segments: vec![
+                        "profiles".to_string(),
+                        profile_name.clone(),
+                        "features".to_string(),
+                        "smart_approvals".to_string(),
+                    ],
+                    value: value(true),
+                });
+            }
+            if enabled && profile.approvals_reviewer.is_none() {
+                edits.push(ConfigEdit::SetPath {
+                    segments: vec![
+                        "profiles".to_string(),
+                        profile_name.clone(),
+                        "approvals_reviewer".to_string(),
+                    ],
+                    value: value(ApprovalsReviewer::GuardianSubagent.to_string()),
+                });
+            }
+            edits.push(ConfigEdit::ClearPath {
+                segments: vec![
+                    "profiles".to_string(),
+                    profile_name.clone(),
+                    "features".to_string(),
+                    "guardian_approval".to_string(),
+                ],
+            });
+        }
+    }
+
+    if edits.is_empty() {
+        return Ok(false);
+    }
+
+    ConfigEditsBuilder::new(codex_home)
+        .with_edits(edits)
+        .apply()
+        .await
+        .map_err(|err| {
+            std::io::Error::other(format!("failed to migrate smart_approvals alias: {err}"))
+        })?;
+    Ok(true)
 }
 
 impl Config {
@@ -725,6 +817,9 @@ pub async fn load_config_as_toml_with_cli_overrides(
     cwd: &AbsolutePathBuf,
     cli_overrides: Vec<(String, TomlValue)>,
 ) -> std::io::Result<ConfigToml> {
+    if let Err(err) = maybe_migrate_guardian_approval_alias(codex_home).await {
+        tracing::warn!(error = %err, "failed to migrate guardian_approval feature alias");
+    }
     let config_layer_stack = load_config_layers_state(
         codex_home,
         Some(cwd.clone()),
@@ -1082,6 +1177,10 @@ pub struct ConfigToml {
 
     /// Default approval policy for executing commands.
     pub approval_policy: Option<AskForApproval>,
+
+    /// Configures who approval requests are routed to for review once they
+    /// have been escalated.
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
 
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
@@ -1599,6 +1698,7 @@ pub struct ConfigOverrides {
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_mode: Option<SandboxMode>,
     pub model_provider: Option<String>,
     pub config_profile: Option<String>,
@@ -1776,6 +1876,7 @@ impl Config {
             review_model: override_review_model,
             cwd,
             approval_policy: approval_policy_override,
+            approvals_reviewer: approvals_reviewer_override,
             sandbox_mode,
             model_provider,
             config_profile: config_profile_key,
@@ -1894,6 +1995,10 @@ impl Config {
             );
             approval_policy = requirements.approval_policy.value();
         }
+        let approvals_reviewer = approvals_reviewer_override
+            .or(config_profile.approvals_reviewer)
+            .or(cfg.approvals_reviewer)
+            .unwrap_or(ApprovalsReviewer::User);
         let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
             .unwrap_or(WebSearchMode::Cached);
         // TODO(dylan): We should be able to leverage ConfigLayerStack so that
@@ -2300,6 +2405,7 @@ impl Config {
                 windows_sandbox_mode,
                 macos_seatbelt_profile_extensions: None,
             },
+            approvals_reviewer,
             enforce_residency: enforce_residency.value,
             did_user_set_custom_approval_policy_or_sandbox_mode,
             notify: cfg.notify,
@@ -4959,6 +5065,7 @@ model_verbosity = "high"
                     windows_sandbox_mode: None,
                     macos_seatbelt_profile_extensions: None,
                 },
+                approvals_reviewer: ApprovalsReviewer::User,
                 enforce_residency: Constrained::allow_any(None),
                 did_user_set_custom_approval_policy_or_sandbox_mode: true,
                 user_instructions: None,
@@ -5089,6 +5196,7 @@ model_verbosity = "high"
                 windows_sandbox_mode: None,
                 macos_seatbelt_profile_extensions: None,
             },
+            approvals_reviewer: ApprovalsReviewer::User,
             enforce_residency: Constrained::allow_any(None),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             user_instructions: None,
@@ -5217,6 +5325,7 @@ model_verbosity = "high"
                 windows_sandbox_mode: None,
                 macos_seatbelt_profile_extensions: None,
             },
+            approvals_reviewer: ApprovalsReviewer::User,
             enforce_residency: Constrained::allow_any(None),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             user_instructions: None,
@@ -5331,6 +5440,7 @@ model_verbosity = "high"
                 windows_sandbox_mode: None,
                 macos_seatbelt_profile_extensions: None,
             },
+            approvals_reviewer: ApprovalsReviewer::User,
             enforce_residency: Constrained::allow_any(None),
             did_user_set_custom_approval_policy_or_sandbox_mode: true,
             user_instructions: None,
@@ -6769,6 +6879,116 @@ trust_level = "untrusted"
         );
         Ok(())
     }
+
+    #[tokio::test]
+    async fn approvals_reviewer_defaults_to_user_even_when_smart_approvals_is_enabled()
+    -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            r#"[features]
+smart_approvals = true
+"#,
+        )?;
+
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await?;
+
+        assert_eq!(config.approvals_reviewer, ApprovalsReviewer::User);
+        assert!(config.features.enabled(Feature::GuardianApproval));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn approvals_reviewer_can_be_set_in_profile_without_smart_approvals()
+    -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            r#"profile = "guardian"
+
+[profiles.guardian]
+approvals_reviewer = "guardian_subagent"
+"#,
+        )?;
+
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await?;
+
+        assert_eq!(
+            config.approvals_reviewer,
+            ApprovalsReviewer::GuardianSubagent
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn guardian_approval_alias_migration_backfills_reviewer_when_missing()
+    -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            r#"[features]
+guardian_approval = true
+"#,
+        )?;
+
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await?;
+
+        assert_eq!(
+            config.approvals_reviewer,
+            ApprovalsReviewer::GuardianSubagent
+        );
+
+        let serialized = std::fs::read_to_string(codex_home.path().join(CONFIG_TOML_FILE))?;
+        assert!(serialized.contains("smart_approvals = true"));
+        assert!(serialized.contains("approvals_reviewer = \"guardian_subagent\""));
+        assert!(!serialized.contains("guardian_approval"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn guardian_approval_alias_migration_preserves_existing_reviewer() -> std::io::Result<()>
+    {
+        let codex_home = TempDir::new()?;
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            r#"approvals_reviewer = "user"
+
+[features]
+guardian_approval = true
+"#,
+        )?;
+
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await?;
+
+        assert_eq!(config.approvals_reviewer, ApprovalsReviewer::User);
+
+        let serialized = std::fs::read_to_string(codex_home.path().join(CONFIG_TOML_FILE))?;
+        assert!(serialized.contains("smart_approvals = true"));
+        assert!(serialized.contains("approvals_reviewer = \"user\""));
+        assert!(!serialized.contains("guardian_approval"));
+
+        Ok(())
+    }
+
     #[test]
     fn experimental_realtime_ws_base_url_loads_from_config_toml() -> std::io::Result<()> {
         let cfg: ConfigToml = toml::from_str(

@@ -6,6 +6,20 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Approvals reviewer
+
+Approval handling now has two separate configuration axes:
+
+- `approval_policy`: when Codex must escalate an action for approval
+- `approvals_reviewer`: who reviews escalated actions (`user` or `guardian_subagent`)
+
+The `smart_approvals` feature flag is only a rollout and UI gate. It does not
+silently replace `approval_policy`.
+
+Older configs that still use the deprecated `guardian_approval = true` alias are
+migrated to `approvals_reviewer = "guardian_subagent"` when no explicit reviewer
+is already set in the same scope.
+
 ## Provider account pool
 
 Codex can automatically fail over to another account within the *same* provider

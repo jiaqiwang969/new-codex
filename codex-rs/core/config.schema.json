@@ -169,6 +169,13 @@
       "description": "Tool settings for a single app.",
       "type": "object"
     },
+    "ApprovalsReviewer": {
+      "enum": [
+        "user",
+        "guardian_subagent"
+      ],
+      "type": "string"
+    },
     "AppsConfigToml": {
       "additionalProperties": {
         "$ref": "#/definitions/AppConfig"
@@ -294,6 +301,9 @@
         },
         "approval_policy": {
           "$ref": "#/definitions/AskForApproval"
+        },
+        "approvals_reviewer": {
+          "$ref": "#/definitions/ApprovalsReviewer"
         },
         "chatgpt_base_url": {
           "type": "string"
@@ -436,6 +446,9 @@
               "type": "boolean"
             },
             "skill_mcp_dependency_install": {
+              "type": "boolean"
+            },
+            "smart_approvals": {
               "type": "boolean"
             },
             "sqlite": {
@@ -1602,6 +1615,14 @@
       ],
       "description": "Default approval policy for executing commands."
     },
+    "approvals_reviewer": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ApprovalsReviewer"
+        }
+      ],
+      "description": "Configures who approval requests are routed to for review once they have been escalated."
+    },
     "apps": {
       "allOf": [
         {
@@ -1800,6 +1821,9 @@
           "type": "boolean"
         },
         "skill_mcp_dependency_install": {
+          "type": "boolean"
+        },
+        "smart_approvals": {
           "type": "boolean"
         },
         "sqlite": {

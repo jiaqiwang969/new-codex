@@ -338,6 +338,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         .submit(Op::OverrideTurnContext {
             cwd: None,
             approval_policy: None,
+            approvals_reviewer: None,
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: Some(REMOTE_MODEL_SLUG.to_string()),
@@ -568,6 +569,7 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
         .submit(Op::OverrideTurnContext {
             cwd: None,
             approval_policy: None,
+            approvals_reviewer: None,
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: Some(model.to_string()),

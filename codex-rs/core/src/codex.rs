@@ -276,6 +276,7 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_async_utils::OrCancelExt;
 use codex_otel::OtelManager;
 use codex_otel::TelemetryAuthMode;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -475,6 +476,7 @@ impl Codex {
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -896,6 +898,7 @@ pub(crate) struct SessionConfiguration {
 
     /// When to escalate for approval for execution
     approval_policy: Constrained<AskForApproval>,
+    approvals_reviewer: ApprovalsReviewer,
     /// How to sandbox commands executed in the system
     sandbox_policy: Constrained<SandboxPolicy>,
     windows_sandbox_level: WindowsSandboxLevel,
@@ -933,6 +936,7 @@ impl SessionConfiguration {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.provider_id.clone(),
             approval_policy: self.approval_policy.value(),
+            approvals_reviewer: self.approvals_reviewer,
             sandbox_policy: self.sandbox_policy.get().clone(),
             cwd: self.cwd.clone(),
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
@@ -960,6 +964,9 @@ impl SessionConfiguration {
         }
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
+        }
+        if let Some(approvals_reviewer) = updates.approvals_reviewer {
+            next_configuration.approvals_reviewer = approvals_reviewer;
         }
         if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
             next_configuration.sandbox_policy.set(sandbox_policy)?;
@@ -1284,6 +1291,7 @@ fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> u
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) approval_policy: Option<AskForApproval>,
+    pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) model_provider_id: Option<String>,
@@ -1363,6 +1371,7 @@ impl Session {
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
         per_turn_config.personality = session_configuration.personality;
+        per_turn_config.approvals_reviewer = session_configuration.approvals_reviewer;
         let resolved_web_search_mode = resolve_web_search_mode_for_turn(
             &per_turn_config.web_search_mode,
             session_configuration.sandbox_policy.get(),
@@ -1895,6 +1904,7 @@ impl Session {
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
                 approval_policy: session_configuration.approval_policy.value(),
+                approvals_reviewer: session_configuration.approvals_reviewer,
                 sandbox_policy: session_configuration.sandbox_policy.get().clone(),
                 cwd: session_configuration.cwd.clone(),
                 reasoning_effort: session_configuration.collaboration_mode.reasoning_effort(),
@@ -4456,6 +4466,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::OverrideTurnContext {
                 cwd,
                 approval_policy,
+                approvals_reviewer,
                 sandbox_policy,
                 windows_sandbox_level,
                 model,
@@ -4480,6 +4491,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     SessionSettingsUpdate {
                         cwd,
                         approval_policy,
+                        approvals_reviewer,
                         sandbox_policy,
                         windows_sandbox_level,
                         collaboration_mode: Some(collaboration_mode),
@@ -9370,6 +9382,7 @@ mod tests {
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -10836,6 +10849,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -10929,6 +10943,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -11250,6 +11265,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -11304,6 +11320,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -11386,6 +11403,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),
@@ -11546,6 +11564,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
             windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
             cwd: config.cwd.clone(),

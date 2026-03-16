@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
+use crate::config_types::ApprovalsReviewer;
 use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
 use crate::config_types::Personality;
@@ -213,6 +214,10 @@ pub enum Op {
         /// Updated command approval policy.
         #[serde(skip_serializing_if = "Option::is_none")]
         approval_policy: Option<AskForApproval>,
+
+        /// Updated approval reviewer for future approval prompts.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approvals_reviewer: Option<ApprovalsReviewer>,
 
         /// Updated sandbox policy for tool calls.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -2770,6 +2775,10 @@ pub struct SessionConfiguredEvent {
     /// When to escalate for approval for execution
     pub approval_policy: AskForApproval,
 
+    /// Who reviews approval requests once they have been escalated.
+    #[serde(default)]
+    pub approvals_reviewer: ApprovalsReviewer,
+
     /// How to sandbox commands executed in the system
     pub sandbox_policy: SandboxPolicy,
 
@@ -3561,6 +3570,7 @@ mod tests {
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
@@ -3580,6 +3590,7 @@ mod tests {
                 "model": "codex-mini-latest",
                 "model_provider_id": "openai",
                 "approval_policy": "never",
+                "approvals_reviewer": "user",
                 "sandbox_policy": {
                     "type": "read-only"
                 },

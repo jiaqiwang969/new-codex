@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::config::types::ApprovalsReviewer;
 use crate::config::types::Personality;
 use crate::config::types::WindowsToml;
 use crate::protocol::AskForApproval;
@@ -28,6 +29,7 @@ pub struct ConfigProfile {
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
     pub approval_policy: Option<AskForApproval>,
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_mode: Option<SandboxMode>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,

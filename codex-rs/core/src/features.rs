@@ -144,6 +144,8 @@ pub enum Feature {
     Steer,
     /// Allow request_user_input in Default collaboration mode.
     DefaultModeRequestUserInput,
+    /// Enable automatic review for approval prompts.
+    GuardianApproval,
     /// Enable collaboration modes (Plan, Default).
     /// Kept for config backward compatibility; behavior is always collaboration-modes-enabled.
     CollaborationModes,
@@ -670,6 +672,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::DefaultModeRequestUserInput,
         key: "default_mode_request_user_input",
         stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::GuardianApproval,
+        key: "smart_approvals",
+        stage: Stage::Experimental {
+            name: "Smart Approvals",
+            menu_description: "When Codex needs approval for higher-risk actions, route eligible approval requests to a carefully prompted reviewer subagent instead of always blocking on manual input.",
+            announcement: "NEW: Smart Approvals is now available in /experimental.",
+        },
         default_enabled: false,
     },
     FeatureSpec {
