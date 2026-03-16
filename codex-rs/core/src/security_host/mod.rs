@@ -40,6 +40,15 @@ pub struct SecurityHost {
     permit_ttl_seconds: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDeniedEffect {
+    pub actual_kind: PredictedEffectKind,
+    pub actual_scope: SecurityPermitScope,
+    pub process_name: Option<String>,
+    pub ancestor_name: Option<String>,
+    pub summary: String,
+}
+
 impl SecurityHost {
     pub fn new(capability_snapshot: SecurityCapabilitySnapshot) -> Self {
         Self {
@@ -207,6 +216,31 @@ impl SecurityHost {
         }
     }
 
+    pub fn runtime_mismatch_for_denial(
+        &self,
+        permit: Option<&SecurityPermit>,
+        predicted_effects: Vec<PredictedEffect>,
+        denied_effect: RuntimeDeniedEffect,
+    ) -> SecurityMismatch {
+        let mut mismatch = SecurityMismatch {
+            permit_id: permit.map(|permit| permit.id.clone()),
+            predicted_effects,
+            actual_kind: denied_effect.actual_kind,
+            actual_reason_code: runtime_denial_reason_code(
+                denied_effect.actual_kind,
+                permit.is_some(),
+            )
+            .to_string(),
+            actual_scope: denied_effect.actual_scope,
+            classification: SecurityMismatchClassification::Underpredicted,
+            process_name: denied_effect.process_name,
+            ancestor_name: denied_effect.ancestor_name,
+            summary: denied_effect.summary,
+        };
+        mismatch.classification = self.classify_mismatch(&mismatch);
+        mismatch
+    }
+
     fn requires_trust_downgrade(&self, predicted_effects: &[PredictedEffect]) -> bool {
         predicted_effects
             .iter()
@@ -253,6 +287,27 @@ impl SecurityHost {
             scope.recursive = false;
         }
         Some(scope)
+    }
+}
+
+fn runtime_denial_reason_code(kind: PredictedEffectKind, permit_present: bool) -> &'static str {
+    match (permit_present, kind) {
+        (true, PredictedEffectKind::ProtectedDelete) => "permit_miss_protected_delete",
+        (true, PredictedEffectKind::ProtectedMoveOut) => "permit_miss_protected_move_out",
+        (true, PredictedEffectKind::SensitiveRead) => "permit_miss_sensitive_read",
+        (true, PredictedEffectKind::SensitiveTransferOut) => "permit_miss_sensitive_transfer_out",
+        (true, PredictedEffectKind::TaintWriteOut) => "permit_miss_taint_write_out",
+        (true, PredictedEffectKind::ExecExfilTool) => "permit_miss_exec_exfil_tool",
+        (true, PredictedEffectKind::TrustedIdentityMismatch) => {
+            "permit_miss_trusted_identity_mismatch"
+        }
+        (false, PredictedEffectKind::ProtectedDelete) => "es_protected_delete",
+        (false, PredictedEffectKind::ProtectedMoveOut) => "es_protected_move_out",
+        (false, PredictedEffectKind::SensitiveRead) => "es_sensitive_read",
+        (false, PredictedEffectKind::SensitiveTransferOut) => "es_sensitive_transfer_out",
+        (false, PredictedEffectKind::TaintWriteOut) => "es_taint_write_out",
+        (false, PredictedEffectKind::ExecExfilTool) => "es_exec_exfil_tool",
+        (false, PredictedEffectKind::TrustedIdentityMismatch) => "es_trusted_identity_mismatch",
     }
 }
 

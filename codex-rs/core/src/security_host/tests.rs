@@ -1,3 +1,4 @@
+use super::RuntimeDeniedEffect;
 use super::SecurityArbitrationContext;
 use super::SecurityHost;
 use crate::security_types::PredictedEffect;
@@ -197,6 +198,142 @@ fn security_host_explicit_high_risk_mismatch_is_true_risk() {
     assert_eq!(
         host.classify_mismatch(&mismatch),
         SecurityMismatchClassification::TrueRisk
+    );
+}
+
+#[test]
+fn security_host_runtime_mismatch_tracks_permit_miss_as_underpredicted() {
+    let host = SecurityHost::new(base_snapshot());
+    let permit = SecurityPermit {
+        id: "permit-1".to_string(),
+        kind: PredictedEffectKind::ProtectedMoveOut,
+        scope: SecurityPermitScope {
+            target_path: None,
+            source_path: Some(
+                AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
+            ),
+            destination_path: Some(AbsolutePathBuf::try_from("/tmp/report.txt").unwrap()),
+            tool_name: Some("shell".to_string()),
+            process_name: Some("mv".to_string()),
+            trusted_identity: Some("apple.codesign:Terminal".to_string()),
+            recursive: false,
+        },
+        issued_at: 1_710_000_000,
+        expires_at: 1_710_000_120,
+        issuer: "security-host".to_string(),
+        risk_score: 18,
+        justification: "Low-risk narrow smart-access permit.".to_string(),
+        thread_id: "thread-123".to_string(),
+        turn_id: "turn-456".to_string(),
+    };
+    let predicted_effect = PredictedEffect {
+        kind: PredictedEffectKind::ProtectedMoveOut,
+        scope: permit.scope.clone(),
+        confidence: 90,
+        why: "Moves one protected file into the temporary export zone.".to_string(),
+    };
+
+    let mismatch = host.runtime_mismatch_for_denial(
+        Some(&permit),
+        vec![predicted_effect.clone()],
+        RuntimeDeniedEffect {
+            actual_kind: PredictedEffectKind::ProtectedMoveOut,
+            actual_scope: SecurityPermitScope {
+                target_path: None,
+                source_path: Some(
+                    AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
+                ),
+                destination_path: Some(
+                    AbsolutePathBuf::try_from("/Users/demo/Desktop/report.txt").unwrap(),
+                ),
+                tool_name: Some("shell".to_string()),
+                process_name: Some("mv".to_string()),
+                trusted_identity: Some("apple.codesign:Terminal".to_string()),
+                recursive: false,
+            },
+            process_name: Some("mv".to_string()),
+            ancestor_name: Some("python".to_string()),
+            summary: "Protected data left the approved export zone.".to_string(),
+        },
+    );
+
+    assert_eq!(
+        mismatch,
+        SecurityMismatch {
+            permit_id: Some("permit-1".to_string()),
+            predicted_effects: vec![predicted_effect],
+            actual_kind: PredictedEffectKind::ProtectedMoveOut,
+            actual_reason_code: "permit_miss_protected_move_out".to_string(),
+            actual_scope: SecurityPermitScope {
+                target_path: None,
+                source_path: Some(
+                    AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
+                ),
+                destination_path: Some(
+                    AbsolutePathBuf::try_from("/Users/demo/Desktop/report.txt").unwrap(),
+                ),
+                tool_name: Some("shell".to_string()),
+                process_name: Some("mv".to_string()),
+                trusted_identity: Some("apple.codesign:Terminal".to_string()),
+                recursive: false,
+            },
+            classification: SecurityMismatchClassification::Underpredicted,
+            process_name: Some("mv".to_string()),
+            ancestor_name: Some("python".to_string()),
+            summary: "Protected data left the approved export zone.".to_string(),
+        }
+    );
+}
+
+#[test]
+fn security_host_runtime_mismatch_without_permit_is_true_risk() {
+    let host = SecurityHost::new(base_snapshot());
+
+    let mismatch = host.runtime_mismatch_for_denial(
+        None,
+        Vec::new(),
+        RuntimeDeniedEffect {
+            actual_kind: PredictedEffectKind::ProtectedDelete,
+            actual_scope: SecurityPermitScope {
+                target_path: Some(
+                    AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
+                ),
+                source_path: None,
+                destination_path: None,
+                tool_name: Some("shell".to_string()),
+                process_name: Some("rm".to_string()),
+                trusted_identity: Some("unsigned:python".to_string()),
+                recursive: false,
+            },
+            process_name: Some("rm".to_string()),
+            ancestor_name: Some("python".to_string()),
+            summary: "Protected file deletion was denied before any permit existed.".to_string(),
+        },
+    );
+
+    assert_eq!(
+        mismatch,
+        SecurityMismatch {
+            permit_id: None,
+            predicted_effects: Vec::new(),
+            actual_kind: PredictedEffectKind::ProtectedDelete,
+            actual_reason_code: "es_protected_delete".to_string(),
+            actual_scope: SecurityPermitScope {
+                target_path: Some(
+                    AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
+                ),
+                source_path: None,
+                destination_path: None,
+                tool_name: Some("shell".to_string()),
+                process_name: Some("rm".to_string()),
+                trusted_identity: Some("unsigned:python".to_string()),
+                recursive: false,
+            },
+            classification: SecurityMismatchClassification::TrueRisk,
+            process_name: Some("rm".to_string()),
+            ancestor_name: Some("python".to_string()),
+            summary: "Protected file deletion was denied before any permit existed.".to_string(),
+        }
     );
 }
 
