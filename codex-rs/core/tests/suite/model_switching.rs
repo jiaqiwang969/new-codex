@@ -68,6 +68,7 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
+            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -157,6 +158,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
+            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -503,6 +505,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
+            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,

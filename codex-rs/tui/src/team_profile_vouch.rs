@@ -10,16 +10,11 @@ const TEAM_PROFILE_VOUCH_REL_PATH: &str = "memories/team_profile_vouch.json";
 const MAX_STORED_RECENT_EVENTS: usize = 200;
 const RECENT_EVENT_WINDOW: usize = 20;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub(crate) enum TeamProfileVouchVerdict {
+    #[default]
     Win,
     Loss,
-}
-
-impl Default for TeamProfileVouchVerdict {
-    fn default() -> Self {
-        Self::Win
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

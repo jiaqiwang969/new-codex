@@ -11,6 +11,7 @@ use codex_core::config::Config;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::SecurityMode;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::NetworkAccess;
@@ -260,13 +261,18 @@ impl StatusHistoryCell {
             && *config.permissions.sandbox_policy.get()
                 == SandboxPolicy::new_workspace_write_policy()
         {
-            if config.approvals_reviewer == ApprovalsReviewer::GuardianSubagent {
-                "Smart Approvals".to_string()
-            } else {
+            if config.security_mode == SecurityMode::SmartAccess {
+                "Smart Access".to_string()
+            } else if config.security_mode == SecurityMode::Default
+                && config.approvals_reviewer == ApprovalsReviewer::User
+            {
                 "Default".to_string()
+            } else {
+                format!("Custom ({sandbox}, {approval})")
             }
         } else if config.permissions.approval_policy.value() == AskForApproval::Never
             && *config.permissions.sandbox_policy.get() == SandboxPolicy::DangerFullAccess
+            && config.security_mode == SecurityMode::FullAccess
         {
             "Full Access".to_string()
         } else {
