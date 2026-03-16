@@ -400,9 +400,15 @@ impl Codex {
         )
         .await;
 
-        let exec_policy = ExecPolicyManager::load(&config.config_layer_stack)
-            .await
-            .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?;
+        let exec_policy = if crate::guardian::is_guardian_subagent_source(&session_source) {
+            // Guardian review should rely on built-in shell safety checks rather than
+            // caller-provided exec policy rules that could bias the reviewer.
+            ExecPolicyManager::default()
+        } else {
+            ExecPolicyManager::load(&config.config_layer_stack)
+                .await
+                .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?
+        };
 
         let config = Arc::new(config);
         let _ = models_manager
@@ -3784,7 +3790,15 @@ impl Session {
             )
             .into_text(),
         );
-        if let Some(developer_instructions) = turn_context.developer_instructions.as_deref() {
+        let separate_guardian_developer_message = {
+            let state = self.state.lock().await;
+            crate::guardian::is_guardian_subagent_source(
+                &state.session_configuration.session_source,
+            )
+        };
+        if !separate_guardian_developer_message
+            && let Some(developer_instructions) = turn_context.developer_instructions.as_deref()
+        {
             developer_sections.push(developer_instructions.to_string());
         }
         // Add developer instructions for memories.
@@ -3901,6 +3915,15 @@ impl Session {
             crate::context_manager::updates::build_contextual_user_message(contextual_user_sections)
         {
             items.push(contextual_user_message);
+        }
+        if separate_guardian_developer_message
+            && let Some(developer_instructions) = turn_context.developer_instructions.as_deref()
+            && let Some(guardian_developer_message) =
+                crate::context_manager::updates::build_developer_update_item(vec![
+                    developer_instructions.to_string(),
+                ])
+        {
+            items.push(guardian_developer_message);
         }
         items
     }

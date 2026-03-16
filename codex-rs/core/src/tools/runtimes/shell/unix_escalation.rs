@@ -6,6 +6,9 @@ use crate::exec::ExecToolCallOutput;
 use crate::exec::SandboxType;
 use crate::exec::is_likely_sandbox_denied;
 use crate::features::Feature;
+use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::review_approval_request;
+use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::ShellType;
 use crate::skills::SkillMetadata;
@@ -196,9 +199,25 @@ impl CoreShellActionProvider {
         let session = self.session.clone();
         let turn = self.turn.clone();
         let call_id = self.call_id.clone();
-        let approval_id = Some(Uuid::new_v4().to_string());
+        let approval_id = Uuid::new_v4().to_string();
         Ok(stopwatch
             .pause_for(async move {
+                if routes_approval_to_guardian(&turn) {
+                    return review_approval_request(
+                        &session,
+                        &turn,
+                        GuardianApprovalRequest::Execve {
+                            id: approval_id.clone(),
+                            tool_name: "shell".to_string(),
+                            program: program.to_string_lossy().into_owned(),
+                            argv: argv.to_vec(),
+                            cwd: workdir,
+                            additional_permissions,
+                        },
+                        None,
+                    )
+                    .await;
+                }
                 let available_decisions = vec![
                     Some(ReviewDecision::Approved),
                     // Currently, ApprovedForSession is only honored for skills,
@@ -217,7 +236,7 @@ impl CoreShellActionProvider {
                     .request_command_approval(
                         &turn,
                         call_id,
-                        approval_id,
+                        Some(approval_id),
                         command,
                         workdir,
                         None,

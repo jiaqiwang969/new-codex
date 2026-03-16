@@ -13,22 +13,26 @@ use codex_core::sandboxing::SandboxPermissions;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::ExecPolicyAmendment;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_apply_patch_function_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -672,6 +676,49 @@ async fn wait_for_completion(test: &TestCodex) {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+}
+
+async fn wait_for_completion_via_guardian(test: &TestCodex) -> Vec<GuardianAssessmentStatus> {
+    let mut statuses = Vec::new();
+    loop {
+        let event = wait_for_event(&test.codex, |event| {
+            matches!(
+                event,
+                EventMsg::GuardianAssessment(_)
+                    | EventMsg::ExecApprovalRequest(_)
+                    | EventMsg::ApplyPatchApprovalRequest(_)
+                    | EventMsg::RequestUserInput(_)
+                    | EventMsg::TurnComplete(_)
+            )
+        })
+        .await;
+
+        match event {
+            EventMsg::GuardianAssessment(event) => statuses.push(event.status),
+            EventMsg::ExecApprovalRequest(event) => {
+                panic!("unexpected exec approval request: {:?}", event.command);
+            }
+            EventMsg::ApplyPatchApprovalRequest(event) => {
+                panic!("unexpected patch approval request: {:?}", event.call_id);
+            }
+            EventMsg::RequestUserInput(event) => {
+                panic!(
+                    "unexpected request_user_input prompt: {:?}",
+                    event.questions
+                );
+            }
+            EventMsg::TurnComplete(_) => return statuses,
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+}
+
+fn output_item_for_call(mock: &ResponseMock, call_id: &str) -> Value {
+    mock.requests()
+        .into_iter()
+        .find(|request| request.function_call_output_text(call_id).is_some())
+        .unwrap_or_else(|| panic!("expected function_call_output for {call_id}"))
+        .function_call_output(call_id)
 }
 
 fn scenarios() -> Vec<ScenarioSpec> {
@@ -1578,6 +1625,277 @@ async fn approval_matrix_covers_all_modes() -> Result<()> {
     for scenario in scenarios() {
         run_scenario(&scenario).await?;
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_reviewer_auto_approves_shell_without_user_prompt() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let sandbox_policy_for_config = sandbox_policy.clone();
+    let mut builder = test_codex()
+        .with_model("gpt-5.1")
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+            config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
+        });
+    let test = builder.build(&server).await?;
+
+    let call_id = "guardian-shell-auto-approve";
+    let target = TargetPath::Workspace("guardian_shell.txt");
+    let (event, _) = ActionKind::WriteFile {
+        target,
+        content: "guardian-shell",
+    }
+    .prepare(
+        &test,
+        &server,
+        call_id,
+        SandboxPermissions::RequireEscalated,
+    )
+    .await?;
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-shell-1"),
+                event,
+                ev_completed("resp-shell-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-guardian-1"),
+                ev_assistant_message(
+                    "msg-guardian-1",
+                    r#"{"risk_level":"low","risk_score":42,"rationale":"safe","evidence":[]}"#,
+                ),
+                ev_completed("resp-guardian-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-shell-2"),
+                ev_assistant_message("msg-shell-1", "done"),
+                ev_completed("resp-shell-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
+
+    let statuses = wait_for_completion_via_guardian(&test).await;
+    assert_eq!(
+        statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Approved,
+        ]
+    );
+
+    let result = parse_result(&output_item_for_call(&responses, call_id));
+    Expectation::FileCreated {
+        target,
+        content: "guardian-shell",
+    }
+    .verify(&test, &result)?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_reviewer_denies_apply_patch_without_user_prompt() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![],
+        read_only_access: Default::default(),
+        network_access: false,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+    };
+    let sandbox_policy_for_config = sandbox_policy.clone();
+    let mut builder = test_codex()
+        .with_model("gpt-5.1-codex")
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+            config.include_apply_patch_tool = true;
+            config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
+        });
+    let test = builder.build(&server).await?;
+
+    let call_id = "guardian-apply-patch-denied";
+    let target = TargetPath::OutsideWorkspace("guardian_apply_patch_denied.txt");
+    let (event, _) = ActionKind::ApplyPatchFunction {
+        target,
+        content: "guardian-patch",
+    }
+    .prepare(&test, &server, call_id, SandboxPermissions::UseDefault)
+    .await?;
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-patch-1"),
+                event,
+                ev_completed("resp-patch-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-guardian-2"),
+                ev_assistant_message(
+                    "msg-guardian-2",
+                    r#"{"risk_level":"high","risk_score":95,"rationale":"destructive","evidence":[]}"#,
+                ),
+                ev_completed("resp-guardian-2"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-patch-2"),
+                ev_assistant_message("msg-patch-1", "done"),
+                ev_completed("resp-patch-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
+
+    let statuses = wait_for_completion_via_guardian(&test).await;
+    assert_eq!(
+        statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Denied,
+        ]
+    );
+
+    let result = parse_result(&output_item_for_call(&responses, call_id));
+    Expectation::FileNotCreated {
+        target,
+        message_contains: &["patch rejected by user"],
+    }
+    .verify(&test, &result)?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn guardian_reviewer_denies_managed_network_request_without_user_prompt() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    fs::write(
+        home.path().join("config.toml"),
+        r#"[permissions.network]
+enabled = true
+mode = "limited"
+allow_local_binding = true
+"#,
+    )?;
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![],
+        read_only_access: Default::default(),
+        network_access: true,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+    };
+    let sandbox_policy_for_config = sandbox_policy.clone();
+    let mut builder = test_codex().with_home(home).with_config(move |config| {
+        config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+        config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+        config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
+        let layers = config
+            .config_layer_stack
+            .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+            .into_iter()
+            .cloned()
+            .collect();
+        let mut requirements = config.config_layer_stack.requirements().clone();
+        requirements.network = Some(Sourced::new(
+            NetworkConstraints {
+                enabled: Some(true),
+                allow_local_binding: Some(true),
+                ..Default::default()
+            },
+            RequirementSource::CloudRequirements,
+        ));
+        let mut requirements_toml = config.config_layer_stack.requirements_toml().clone();
+        requirements_toml.network = Some(NetworkRequirementsToml {
+            enabled: Some(true),
+            allow_local_binding: Some(true),
+            ..Default::default()
+        });
+        config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
+            .expect("rebuild config layer stack with network requirements");
+    });
+    let test = builder.build(&server).await?;
+
+    let runtime_proxy = test
+        .session_configured
+        .network_proxy
+        .as_ref()
+        .expect("expected runtime managed network proxy addresses");
+    let proxy_addr = runtime_proxy.http_addr.as_str();
+    let call_id = "guardian-network-denied";
+    let fetch_command = format!(
+        "python3 -c \"import urllib.request; proxy = urllib.request.ProxyHandler({{'http': 'http://{proxy_addr}'}}); opener = urllib.request.build_opener(proxy); print('OK:' + opener.open('http://codex-network-test.invalid', timeout=30).read().decode(errors='replace'))\""
+    );
+    let event = shell_event(
+        call_id,
+        &fetch_command,
+        30_000,
+        SandboxPermissions::UseDefault,
+    )?;
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-network-1"),
+                event,
+                ev_completed("resp-network-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-guardian-3"),
+                ev_assistant_message(
+                    "msg-guardian-3",
+                    r#"{"risk_level":"high","risk_score":90,"rationale":"blocked host","evidence":[]}"#,
+                ),
+                ev_completed("resp-guardian-3"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-network-2"),
+                ev_assistant_message("msg-network-1", "done"),
+                ev_completed("resp-network-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
+
+    let statuses = wait_for_completion_via_guardian(&test).await;
+    assert_eq!(
+        statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Denied,
+        ]
+    );
+
+    let result = parse_result(&output_item_for_call(&responses, call_id));
+    Expectation::CommandFailure {
+        output_contains: "",
+    }
+    .verify(&test, &result)?;
 
     Ok(())
 }

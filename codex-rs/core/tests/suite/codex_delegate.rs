@@ -1,7 +1,9 @@
 use codex_core::config::Constrained;
 use codex_core::sandboxing::SandboxPermissions;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewRequest;
@@ -191,6 +193,108 @@ async fn codex_delegate_forwards_patch_approval_and_proceeds_on_decision() {
     })
     .await;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+}
+
+#[ignore = "review subagents still force AskForApproval::Never, so this path is dormant"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_delegate_routes_exec_approval_through_guardian_reviewer() {
+    skip_if_no_network!();
+
+    let call_id = "call-exec-guardian-1";
+    let args = serde_json::json!({
+        "command": "touch delegated-guardian.txt",
+        "timeout_ms": 1000,
+        "sandbox_permissions": SandboxPermissions::RequireEscalated,
+    })
+    .to_string();
+    let sse1 = sse(vec![
+        ev_response_created("resp-1"),
+        ev_function_call(call_id, "shell_command", &args),
+        ev_completed("resp-1"),
+    ]);
+    let guardian = sse(vec![
+        ev_response_created("resp-guardian-1"),
+        ev_assistant_message(
+            "msg-guardian-1",
+            r#"{"risk_level":"low","risk_score":40,"rationale":"safe","evidence":[]}"#,
+        ),
+        ev_completed("resp-guardian-1"),
+    ]);
+    let review_json = serde_json::json!({
+        "findings": [],
+        "overall_correctness": "ok",
+        "overall_explanation": "delegate approved exec via guardian",
+        "overall_confidence_score": 0.5
+    })
+    .to_string();
+    let sse2 = sse(vec![
+        ev_response_created("resp-2"),
+        ev_assistant_message("msg-1", &review_json),
+        ev_completed("resp-2"),
+    ]);
+
+    let server = start_mock_server().await;
+    mount_sse_sequence(&server, vec![sse1, guardian, sse2]).await;
+
+    let mut builder = test_codex().with_model("gpt-5.1").with_config(|config| {
+        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+        config.permissions.sandbox_policy =
+            Constrained::allow_any(SandboxPolicy::new_read_only_policy());
+        config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
+    });
+    let test = builder.build(&server).await.expect("build test codex");
+
+    test.codex
+        .submit(Op::Review {
+            review_request: ReviewRequest {
+                target: ReviewTarget::Custom {
+                    instructions: "Please review".to_string(),
+                },
+                user_facing_hint: None,
+            },
+        })
+        .await
+        .expect("submit review");
+
+    wait_for_event(&test.codex, |ev| {
+        matches!(ev, EventMsg::EnteredReviewMode(_))
+    })
+    .await;
+
+    let mut guardian_statuses = Vec::new();
+    loop {
+        let event = wait_for_event(&test.codex, |ev| {
+            matches!(
+                ev,
+                EventMsg::GuardianAssessment(_)
+                    | EventMsg::ExecApprovalRequest(_)
+                    | EventMsg::TurnComplete(_)
+                    | EventMsg::ExitedReviewMode(_)
+            )
+        })
+        .await;
+
+        match event {
+            EventMsg::GuardianAssessment(event) => guardian_statuses.push(event.status),
+            EventMsg::ExecApprovalRequest(event) => {
+                panic!(
+                    "unexpected delegated exec approval prompt while guardian is active: {:?}",
+                    event.command
+                );
+            }
+            EventMsg::ExitedReviewMode(_) => {}
+            EventMsg::TurnComplete(_) => break,
+            _ => unreachable!("wait_for_event predicate filters event variants"),
+        }
+    }
+
+    assert_eq!(
+        guardian_statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Approved,
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

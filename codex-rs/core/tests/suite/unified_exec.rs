@@ -7,11 +7,15 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::config::Constrained;
 use codex_core::features::Feature;
+use codex_core::sandboxing::SandboxPermissions;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
@@ -177,6 +181,121 @@ fn collect_tool_outputs(bodies: &[Value]) -> Result<HashMap<String, ParsedUnifie
         }
     }
     Ok(outputs)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_routes_approval_through_guardian_reviewer() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_windows!(Ok(()));
+
+    let builder = test_codex().with_model("gpt-5.1").with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config.features.enable(Feature::UnifiedExec);
+        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+        config.permissions.sandbox_policy =
+            Constrained::allow_any(SandboxPolicy::new_read_only_policy());
+        config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
+    });
+    let harness = TestCodexHarness::with_builder(builder).await?;
+
+    let call_id = "guardian-unified-exec";
+    let args = json!({
+        "cmd": "printf guardian-unified-exec > guardian-unified-exec.txt && cat guardian-unified-exec.txt",
+        "yield_time_ms": 250,
+        "justification": "run an approved unified exec command",
+        "sandbox_permissions": SandboxPermissions::RequireEscalated,
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-guardian-1"),
+            ev_assistant_message(
+                "msg-guardian-1",
+                r#"{"risk_level":"low","risk_score":35,"rationale":"safe","evidence":[]}"#,
+            ),
+            ev_completed("resp-guardian-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    let mock = mount_sse_sequence(harness.server(), responses).await;
+
+    let test = harness.test();
+    let codex = test.codex.clone();
+    let cwd = test.cwd_path().to_path_buf();
+    let session_model = test.session_configured.model.clone();
+
+    codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "run unified exec with guardian approval".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd,
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            model: session_model,
+            effort: None,
+            summary: ReasoningSummary::Auto,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let mut statuses = Vec::new();
+    loop {
+        let event = wait_for_event(&codex, |event| {
+            matches!(
+                event,
+                EventMsg::GuardianAssessment(_)
+                    | EventMsg::ExecApprovalRequest(_)
+                    | EventMsg::TurnComplete(_)
+            )
+        })
+        .await;
+
+        match event {
+            EventMsg::GuardianAssessment(event) => statuses.push(event.status),
+            EventMsg::ExecApprovalRequest(event) => {
+                anyhow::bail!(
+                    "unexpected exec approval request while guardian is active: {:?}",
+                    event.command
+                );
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => unreachable!("wait_for_event predicate filters event variants"),
+        }
+    }
+
+    assert_eq!(
+        statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Approved,
+        ]
+    );
+
+    let output = mock
+        .function_call_output_text(call_id)
+        .context("expected unified exec output")?;
+    let parsed = parse_unified_exec_output(&output)?;
+    assert_eq!(parsed.exit_code, Some(0));
+    assert!(
+        parsed.output.contains("guardian-unified-exec"),
+        "unexpected unified exec output: {}",
+        parsed.output
+    );
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

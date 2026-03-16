@@ -130,7 +130,7 @@ impl ToolOrchestrator {
             ExecApprovalRequirement::NeedsApproval { reason, .. } => {
                 let approval_ctx = ApprovalCtx {
                     session: &tool_ctx.session,
-                    turn: turn_ctx,
+                    turn: &tool_ctx.turn,
                     call_id: &tool_ctx.call_id,
                     retry_reason: reason,
                     network_approval_context: None,
@@ -272,7 +272,7 @@ impl ToolOrchestrator {
                 if !bypass_retry_approval {
                     let approval_ctx = ApprovalCtx {
                         session: &tool_ctx.session,
-                        turn: turn_ctx,
+                        turn: &tool_ctx.turn,
                         call_id: &tool_ctx.call_id,
                         retry_reason: Some(retry_reason),
                         network_approval_context: network_approval_context.clone(),

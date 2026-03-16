@@ -109,8 +109,8 @@ where
 
 #[derive(Clone)]
 pub(crate) struct ApprovalCtx<'a> {
-    pub session: &'a Session,
-    pub turn: &'a TurnContext,
+    pub session: &'a Arc<Session>,
+    pub turn: &'a Arc<TurnContext>,
     pub call_id: &'a str,
     pub retry_reason: Option<String>,
     pub network_approval_context: Option<NetworkApprovalContext>,

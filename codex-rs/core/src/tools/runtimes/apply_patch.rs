@@ -5,6 +5,9 @@
 //! `codex --codex-run-as-apply-patch`, and runs under the current
 //! `SandboxAttempt` with a minimal environment.
 use crate::exec::ExecToolCallOutput;
+use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::review_approval_request;
+use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::CommandSpec;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
@@ -44,6 +47,19 @@ pub struct ApplyPatchRuntime;
 impl ApplyPatchRuntime {
     pub fn new() -> Self {
         Self
+    }
+
+    fn build_guardian_review_request(
+        req: &ApplyPatchRequest,
+        call_id: &str,
+    ) -> GuardianApprovalRequest {
+        GuardianApprovalRequest::ApplyPatch {
+            id: call_id.to_string(),
+            cwd: req.action.cwd.clone(),
+            files: req.file_paths.clone(),
+            change_count: req.changes.len(),
+            patch: req.action.patch.clone(),
+        }
     }
 
     fn build_command_spec(req: &ApplyPatchRequest) -> Result<CommandSpec, ToolError> {
@@ -108,6 +124,15 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let approval_keys = self.approval_keys(req);
         let changes = req.changes.clone();
         Box::pin(async move {
+            if routes_approval_to_guardian(turn) {
+                return review_approval_request(
+                    session,
+                    turn,
+                    Self::build_guardian_review_request(req, ctx.call_id),
+                    retry_reason,
+                )
+                .await;
+            }
             if let Some(reason) = retry_reason {
                 let rx_approve = session
                     .request_patch_approval(turn, call_id, changes.clone(), Some(reason), None)
