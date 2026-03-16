@@ -121,6 +121,7 @@ mod event_mapping;
 pub mod review_format;
 pub mod review_prompts;
 mod seatbelt_permissions;
+pub mod security_types;
 mod thread_manager;
 pub mod web_search;
 pub mod windows_sandbox_read_grants;
