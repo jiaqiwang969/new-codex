@@ -74,6 +74,7 @@ use codex_otel::RuntimeMetricsSummary;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequestEvent;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -107,6 +108,8 @@ use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExitedReviewModeEvent;
+use codex_protocol::protocol::GuardianAssessmentEvent;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ListCustomPromptsResponseEvent;
 use codex_protocol::protocol::ListSkillsResponseEvent;
 use codex_protocol::protocol::McpListToolsResponseEvent;
@@ -352,6 +355,81 @@ impl UnifiedExecWaitStreak {
         }
         self.command_display = command_display.filter(|display| !display.is_empty());
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GuardianStatusIndicatorState {
+    header: String,
+    details: Option<String>,
+    details_max_lines: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PendingGuardianReviewStatus {
+    entries: Vec<PendingGuardianReviewStatusEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingGuardianReviewStatusEntry {
+    id: String,
+    detail: String,
+}
+
+impl PendingGuardianReviewStatus {
+    fn start_or_update(&mut self, id: String, detail: String) {
+        if let Some(existing) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            existing.detail = detail;
+        } else {
+            self.entries
+                .push(PendingGuardianReviewStatusEntry { id, detail });
+        }
+    }
+
+    fn finish(&mut self, id: &str) -> bool {
+        let original_len = self.entries.len();
+        self.entries.retain(|entry| entry.id != id);
+        self.entries.len() != original_len
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn status_indicator_state(&self) -> Option<GuardianStatusIndicatorState> {
+        let details = if self.entries.len() == 1 {
+            self.entries.first().map(|entry| entry.detail.clone())
+        } else if self.entries.is_empty() {
+            None
+        } else {
+            let mut lines = self
+                .entries
+                .iter()
+                .take(3)
+                .map(|entry| format!("• {}", entry.detail))
+                .collect::<Vec<_>>();
+            let remaining = self.entries.len().saturating_sub(3);
+            if remaining > 0 {
+                lines.push(format!("+{remaining} more"));
+            }
+            Some(lines.join("\n"))
+        };
+        let details = details?;
+        let header = if self.entries.len() == 1 {
+            String::from("Reviewing approval request")
+        } else {
+            format!("Reviewing {} approval requests", self.entries.len())
+        };
+        let details_max_lines = if self.entries.len() == 1 { 1 } else { 4 };
+        Some(GuardianStatusIndicatorState {
+            header,
+            details: Some(details),
+            details_max_lines,
+        })
+    }
+}
+
+fn is_guardian_review_status_header(header: &str) -> bool {
+    header == "Reviewing approval request" || header.starts_with("Reviewing ")
 }
 
 fn is_unified_exec_source(source: ExecCommandSource) -> bool {
@@ -609,6 +687,7 @@ pub(crate) struct ChatWidget {
     full_reasoning_buffer: String,
     // Current status header shown in the status indicator.
     current_status_header: String,
+    pending_guardian_review_status: PendingGuardianReviewStatus,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
     // Set when commentary output completes; once stream queues go idle we restore the status row.
@@ -1177,6 +1256,7 @@ impl ChatWidget {
             self.config.permissions.sandbox_policy =
                 Constrained::allow_only(event.sandbox_policy.clone());
         }
+        self.config.approvals_reviewer = event.approvals_reviewer;
         let initial_messages = event.initial_messages.clone();
         self.last_copyable_output = None;
         let forked_from_id = event.forked_from_id;
@@ -1527,6 +1607,7 @@ impl ChatWidget {
         self.bottom_pane.clear_quit_shortcut_hint();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
+        self.pending_guardian_review_status.clear();
         self.update_task_running_state();
         self.retry_status_header = None;
         self.pending_status_indicator_restore = false;
@@ -1579,6 +1660,7 @@ impl ChatWidget {
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.pending_status_indicator_restore = false;
+        self.pending_guardian_review_status.clear();
         self.agent_turn_running = false;
         self.turn_sleep_inhibitor.set_turn_running(false);
         self.update_task_running_state();
@@ -1832,6 +1914,7 @@ impl ChatWidget {
         self.stream_controller = None;
         self.plan_stream_controller = None;
         self.pending_status_indicator_restore = false;
+        self.pending_guardian_review_status.clear();
         self.request_status_line_branch_refresh();
         self.maybe_show_pending_rate_limit_prompt();
     }
@@ -1862,6 +1945,136 @@ impl ChatWidget {
 
     fn on_warning(&mut self, message: impl Into<String>) {
         self.add_to_history(history_cell::new_warning_event(message.into()));
+        self.request_redraw();
+    }
+
+    fn on_guardian_assessment(&mut self, ev: GuardianAssessmentEvent) {
+        let action_summary = |action: &serde_json::Value| {
+            let tool = action.get("tool").and_then(serde_json::Value::as_str)?;
+            match tool {
+                "shell" | "exec_command" => match action.get("command") {
+                    Some(serde_json::Value::String(command)) => Some(command.clone()),
+                    Some(serde_json::Value::Array(command)) => {
+                        let args = command
+                            .iter()
+                            .map(serde_json::Value::as_str)
+                            .collect::<Option<Vec<_>>>()?;
+                        shlex::try_join(args.iter().copied())
+                            .ok()
+                            .or_else(|| Some(args.join(" ")))
+                    }
+                    _ => None,
+                },
+                "apply_patch" => {
+                    let files = action
+                        .get("files")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|files| {
+                            files
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let change_count = action
+                        .get("change_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(files.len() as u64);
+                    Some(if files.len() == 1 {
+                        format!("apply_patch touching {}", files[0])
+                    } else {
+                        format!(
+                            "apply_patch touching {change_count} changes across {} files",
+                            files.len()
+                        )
+                    })
+                }
+                "network_access" => action
+                    .get("target")
+                    .or_else(|| action.get("host"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|target| format!("network access to {target}")),
+                "mcp_tool_call" => {
+                    let tool_name = action
+                        .get("tool_name")
+                        .and_then(serde_json::Value::as_str)?;
+                    let server = action
+                        .get("connector_name")
+                        .or_else(|| action.get("server"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown server");
+                    Some(format!("MCP {tool_name} on {server}"))
+                }
+                _ => None,
+            }
+        };
+
+        if ev.status == GuardianAssessmentStatus::InProgress
+            && let Some(action) = ev.action.as_ref()
+            && let Some(detail) = action_summary(action)
+        {
+            self.bottom_pane.ensure_status_indicator();
+            self.bottom_pane.set_interrupt_hint_visible(true);
+            self.pending_guardian_review_status
+                .start_or_update(ev.id.clone(), detail);
+            if let Some(status) = self.pending_guardian_review_status.status_indicator_state() {
+                self.set_status(
+                    status.header,
+                    status.details,
+                    StatusDetailsCapitalization::Preserve,
+                    status.details_max_lines,
+                );
+            }
+            self.request_redraw();
+            return;
+        }
+
+        self.pending_guardian_review_status.finish(&ev.id);
+        if let Some(status) = self.pending_guardian_review_status.status_indicator_state() {
+            self.set_status(
+                status.header,
+                status.details,
+                StatusDetailsCapitalization::Preserve,
+                status.details_max_lines,
+            );
+        } else if is_guardian_review_status_header(&self.current_status_header) {
+            self.set_status_header(String::from("Working"));
+        }
+
+        let Some(action) = ev.action else {
+            self.request_redraw();
+            return;
+        };
+        let summary = action_summary(&action).unwrap_or_else(|| {
+            serde_json::to_string(&action)
+                .unwrap_or_else(|_| "<unrenderable guardian action>".to_string())
+        });
+
+        match ev.status {
+            GuardianAssessmentStatus::Approved => {
+                self.add_to_history(history_cell::new_info_event(
+                    format!("Smart Approvals approved: {summary}"),
+                    ev.rationale,
+                ));
+            }
+            GuardianAssessmentStatus::Denied => {
+                let message = if let Some(rationale) = ev.rationale {
+                    format!("Smart Approvals denied: {summary}. {rationale}")
+                } else {
+                    format!("Smart Approvals denied: {summary}")
+                };
+                self.add_to_history(history_cell::new_warning_event(message));
+            }
+            GuardianAssessmentStatus::Aborted => {
+                let message = if let Some(rationale) = ev.rationale {
+                    format!("Smart Approvals aborted: {summary}. {rationale}")
+                } else {
+                    format!("Smart Approvals aborted: {summary}")
+                };
+                self.add_to_history(history_cell::new_warning_event(message));
+            }
+            GuardianAssessmentStatus::InProgress => {}
+        }
         self.request_redraw();
     }
 
@@ -2200,9 +2413,8 @@ impl ChatWidget {
             .to_string();
             for f in ev.files {
                 txt.push_str(&format!(
-                    "  └ 📝 M {}
-",
-                    f
+                    "  └ 📝 M {f}
+"
                 ));
             }
             self.on_agent_message(txt);
@@ -3005,6 +3217,7 @@ impl ChatWidget {
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
+            pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
             thread_id: None,
@@ -3192,6 +3405,7 @@ impl ChatWidget {
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
+            pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
             thread_id: None,
@@ -3368,6 +3582,7 @@ impl ChatWidget {
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
             current_status_header: String::from("Working"),
+            pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
             thread_id: None,
@@ -4438,14 +4653,13 @@ impl ChatWidget {
                     .or(self.last_completed_turn_id.as_ref());
                 let base_reason = if let Some(turn_id) = target_turn {
                     format!(
-                        "User detected a logic bug or strange behavior during active turn: {}.",
-                        turn_id
+                        "User detected a logic bug or strange behavior during active turn: {turn_id}."
                     )
                 } else {
                     "User detected a logic bug or strange behavior.".to_string()
                 };
-                let reason = format!("{}\nUser provided context: {}", base_reason, trimmed);
-                self.add_info_message(format!("🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."), None);
+                let reason = format!("{base_reason}\nUser provided context: {trimmed}");
+                self.add_info_message("🧊 [Background] Freezing moment for self-debugging... Your TUI will not block.".to_string(), None);
                 let app_event_tx = self.app_event_tx.clone();
                 std::thread::spawn(move || {
                     let mut cmd = std::process::Command::new("bash");
@@ -4459,7 +4673,7 @@ impl ChatWidget {
                         cmd.arg(root.to_string_lossy().as_ref());
                         let _ = std::fs::write(
                             root.join("last_panic.log"),
-                            format!("Behavioral Bug Snapshot: {}", reason),
+                            format!("Behavioral Bug Snapshot: {reason}"),
                         );
                     }
                     match cmd.status() {
@@ -4484,13 +4698,12 @@ impl ChatWidget {
                             details.push_str("3. Wake Clone: `~/start-debug.sh`\n\n");
                             details.push_str("The clone will automatically compile a local binary and begin investigating the bug.\n");
 
-                            let _ =
-                                app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
-                                    Box::new(crate::history_cell::new_info_event(details, None)),
-                                ));
+                            app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
+                                Box::new(crate::history_cell::new_info_event(details, None)),
+                            ));
                         }
                         Ok(status) => {
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                            app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
                                 codex_protocol::protocol::Event {
                                     id: "".to_string(),
                                     msg: codex_protocol::protocol::EventMsg::Error(
@@ -4505,7 +4718,7 @@ impl ChatWidget {
                             ));
                         }
                         Err(e) => {
-                            let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                            app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
                                 codex_protocol::protocol::Event {
                                     id: "".to_string(),
                                     msg: codex_protocol::protocol::EventMsg::Error(
@@ -4728,24 +4941,20 @@ impl ChatWidget {
             .as_ref()
             .or(self.last_completed_turn_id.as_ref());
         let base_reason = if let Some(turn_id) = target_turn {
-            format!(
-                "User detected a logic bug or strange behavior during active turn: {}.",
-                turn_id
-            )
+            format!("User detected a logic bug or strange behavior during active turn: {turn_id}.")
         } else {
             "User detected a logic bug or strange behavior.".to_string()
         };
 
         let reason = if let Some(user_args) = args {
-            format!("{}\nUser provided context: {}", base_reason, user_args)
+            format!("{base_reason}\nUser provided context: {user_args}")
         } else {
             base_reason
         };
 
         self.add_info_message(
-            format!(
-                "🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."
-            ),
+            "🧊 [Background] Freezing moment for self-debugging... Your TUI will not block."
+                .to_string(),
             None,
         );
         let app_event_tx = self.app_event_tx.clone();
@@ -4766,13 +4975,13 @@ impl ChatWidget {
                 cmd.arg(root.to_string_lossy().as_ref());
                 let _ = std::fs::write(
                     root.join("last_panic.log"),
-                    format!("Behavioral Bug Snapshot: {}", reason),
+                    format!("Behavioral Bug Snapshot: {reason}"),
                 );
             }
 
             match cmd.output() {
                 Ok(output) if output.status.success() => {
-                    let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_protocol::protocol::Event {
+                    app_event_tx.send(crate::app_event::AppEvent::CodexEvent(codex_protocol::protocol::Event {
                         id: "".to_string(),
                         msg: codex_protocol::protocol::EventMsg::UserMessage(codex_protocol::protocol::UserMessageEvent {
                             message: "✅ [Background] Snapshot completed! A new Terminal window has been automatically opened for your debugging session.".to_string(),
@@ -4789,12 +4998,12 @@ impl ChatWidget {
                         "⚠️ Sandbox script exited with {}.\nStderr: {}\nStdout: {}",
                         output.status, err_msg, out_msg
                     );
-                    let _ = app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(
-                        Box::new(crate::history_cell::new_error_event(full_err)),
-                    ));
+                    app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(Box::new(
+                        crate::history_cell::new_error_event(full_err),
+                    )));
                 }
                 Err(e) => {
-                    let _ = app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
+                    app_event_tx.send(crate::app_event::AppEvent::CodexEvent(
                         codex_protocol::protocol::Event {
                             id: "".to_string(),
                             msg: codex_protocol::protocol::EventMsg::Error(
@@ -6038,6 +6247,7 @@ impl ChatWidget {
                 self.on_rate_limit_snapshot(ev.rate_limits);
             }
             EventMsg::Warning(WarningEvent { message }) => self.on_warning(message),
+            EventMsg::GuardianAssessment(ev) => self.on_guardian_assessment(ev),
             EventMsg::ModelReroute(_) => {}
             EventMsg::Error(ErrorEvent {
                 message,
@@ -6881,6 +7091,7 @@ impl ChatWidget {
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: Some(switch_model_for_events.clone()),
@@ -7001,7 +7212,7 @@ impl ChatWidget {
         Option<String>,
     )> {
         let mut words = args.split_whitespace();
-        if words.next()?.trim().to_ascii_lowercase() != "duel" {
+        if !words.next()?.trim().eq_ignore_ascii_case("duel") {
             return None;
         }
         let winner = Self::resolve_explicit_team_profile_selector(words.next()?)?;
@@ -7033,7 +7244,7 @@ impl ChatWidget {
         Option<String>,
     )> {
         let mut words = args.split_whitespace();
-        if words.next()?.trim().to_ascii_lowercase() != "model-duel" {
+        if !words.next()?.trim().eq_ignore_ascii_case("model-duel") {
             return None;
         }
         let winner_model_sub = words.next()?.to_string();
@@ -7066,7 +7277,7 @@ impl ChatWidget {
         Option<String>,
     )> {
         let mut words = args.split_whitespace();
-        if words.next()?.trim().to_ascii_lowercase() != "model" {
+        if !words.next()?.trim().eq_ignore_ascii_case("model") {
             return None;
         }
         let verdict_token = words.next()?;
@@ -7786,6 +7997,7 @@ impl ChatWidget {
                     tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                         cwd: None,
                         approval_policy: None,
+                        approvals_reviewer: None,
                         sandbox_policy: None,
                         model: None,
                         effort: None,
@@ -8065,6 +8277,7 @@ impl ChatWidget {
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: Some(model_for_action.clone()),
@@ -8372,6 +8585,7 @@ impl ChatWidget {
             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: Some(model.clone()),
@@ -8380,8 +8594,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
             }));
-        self.app_event_tx
-            .send(AppEvent::UpdateModel(model.clone(), None));
+        self.app_event_tx.send(AppEvent::UpdateModel(model, None));
         self.app_event_tx
             .send(AppEvent::UpdateReasoningEffort(effort));
     }
@@ -8402,6 +8615,8 @@ impl ChatWidget {
         let include_read_only = cfg!(target_os = "windows");
         let current_approval = self.config.permissions.approval_policy.value();
         let current_sandbox = self.config.permissions.sandbox_policy.get();
+        let guardian_approval_enabled = self.config.features.enabled(Feature::GuardianApproval);
+        let current_review_policy = self.config.approvals_reviewer;
         let mut items: Vec<SelectionItem> = Vec::new();
         let presets: Vec<ApprovalPreset> = builtin_approval_presets();
 
@@ -8417,19 +8632,19 @@ impl ChatWidget {
             && windows_degraded_sandbox_enabled
             && presets.iter().any(|preset| preset.id == "auto");
 
+        let guardian_disabled_reason = |_enabled: bool| None::<String>;
+
         for preset in presets.into_iter() {
             if !include_read_only && preset.id == "read-only" {
                 continue;
             }
-            let is_current =
-                Self::preset_matches_current(current_approval, current_sandbox, &preset);
             let name = if preset.id == "auto" && windows_degraded_sandbox_enabled {
                 "Default (non-admin sandbox)".to_string()
             } else {
                 preset.label.to_string()
             };
             let description = Some(preset.description.replace(" (Identical to Agent mode)", ""));
-            let disabled_reason = match self
+            let approval_disabled_reason = match self
                 .config
                 .permissions
                 .approval_policy
@@ -8438,6 +8653,9 @@ impl ChatWidget {
                 Ok(()) => None,
                 Err(err) => Some(err.to_string()),
             };
+            let default_disabled_reason = approval_disabled_reason
+                .clone()
+                .or_else(|| guardian_disabled_reason(false));
             let requires_confirmation = preset.id == "full-access"
                 && !self
                     .config
@@ -8494,6 +8712,7 @@ impl ChatWidget {
                             preset.approval,
                             preset.sandbox.clone(),
                             name.clone(),
+                            ApprovalsReviewer::User,
                         )
                     }
                 }
@@ -8503,20 +8722,69 @@ impl ChatWidget {
                         preset.approval,
                         preset.sandbox.clone(),
                         name.clone(),
+                        ApprovalsReviewer::User,
                     )
                 }
             } else {
-                Self::approval_preset_actions(preset.approval, preset.sandbox.clone(), name.clone())
+                Self::approval_preset_actions(
+                    preset.approval,
+                    preset.sandbox.clone(),
+                    name.clone(),
+                    ApprovalsReviewer::User,
+                )
             };
-            items.push(SelectionItem {
-                name,
-                description,
-                is_current,
-                actions,
-                dismiss_on_select: true,
-                disabled_reason,
-                ..Default::default()
-            });
+            if preset.id == "auto" {
+                items.push(SelectionItem {
+                    name: name.clone(),
+                    description: description.clone(),
+                    is_current: current_review_policy == ApprovalsReviewer::User
+                        && Self::preset_matches_current(current_approval, current_sandbox, &preset),
+                    actions,
+                    dismiss_on_select: true,
+                    disabled_reason: default_disabled_reason,
+                    ..Default::default()
+                });
+
+                if guardian_approval_enabled {
+                    items.push(SelectionItem {
+                        name: "Smart Approvals".to_string(),
+                        description: Some(
+                            "Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the guardian reviewer subagent."
+                                .to_string(),
+                        ),
+                        is_current: current_review_policy == ApprovalsReviewer::GuardianSubagent
+                            && Self::preset_matches_current(
+                                current_approval,
+                                current_sandbox,
+                                &preset,
+                            ),
+                        actions: Self::approval_preset_actions(
+                            preset.approval,
+                            preset.sandbox.clone(),
+                            "Smart Approvals".to_string(),
+                            ApprovalsReviewer::GuardianSubagent,
+                        ),
+                        dismiss_on_select: true,
+                        disabled_reason: approval_disabled_reason
+                            .or_else(|| guardian_disabled_reason(true)),
+                        ..Default::default()
+                    });
+                }
+            } else {
+                items.push(SelectionItem {
+                    name,
+                    description,
+                    is_current: Self::preset_matches_current(
+                        current_approval,
+                        current_sandbox,
+                        &preset,
+                    ),
+                    actions,
+                    dismiss_on_select: true,
+                    disabled_reason: default_disabled_reason,
+                    ..Default::default()
+                });
+            }
         }
 
         let footer_note = show_elevate_sandbox_hint.then(|| {
@@ -8561,12 +8829,14 @@ impl ChatWidget {
         approval: AskForApproval,
         sandbox: SandboxPolicy,
         label: String,
+        approvals_reviewer: ApprovalsReviewer,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
             let sandbox_clone = sandbox.clone();
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: Some(approval),
+                approvals_reviewer: Some(approvals_reviewer),
                 sandbox_policy: Some(sandbox_clone.clone()),
                 windows_sandbox_level: None,
                 model: None,
@@ -8577,6 +8847,7 @@ impl ChatWidget {
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
             tx.send(AppEvent::UpdateSandboxPolicy(sandbox_clone));
+            tx.send(AppEvent::UpdateApprovalsReviewer(approvals_reviewer));
             tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::new_info_event(format!("Permissions updated to {label}"), None),
             )));
@@ -8588,7 +8859,25 @@ impl ChatWidget {
         current_sandbox: &SandboxPolicy,
         preset: &ApprovalPreset,
     ) -> bool {
-        current_approval == preset.approval && *current_sandbox == preset.sandbox
+        if current_approval != preset.approval {
+            return false;
+        }
+
+        match (current_sandbox, &preset.sandbox) {
+            (SandboxPolicy::DangerFullAccess, SandboxPolicy::DangerFullAccess) => true,
+            (SandboxPolicy::ReadOnly { .. }, SandboxPolicy::ReadOnly { .. }) => true,
+            (
+                SandboxPolicy::WorkspaceWrite {
+                    network_access: current_network_access,
+                    ..
+                },
+                SandboxPolicy::WorkspaceWrite {
+                    network_access: preset_network_access,
+                    ..
+                },
+            ) => current_network_access == preset_network_access,
+            _ => false,
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -8643,14 +8932,22 @@ impl ChatWidget {
         ));
         let header = ColumnRenderable::with(header_children);
 
-        let mut accept_actions =
-            Self::approval_preset_actions(approval, sandbox.clone(), selected_name.clone());
+        let mut accept_actions = Self::approval_preset_actions(
+            approval,
+            sandbox.clone(),
+            selected_name.clone(),
+            self.config.approvals_reviewer,
+        );
         accept_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
         }));
 
-        let mut accept_and_remember_actions =
-            Self::approval_preset_actions(approval, sandbox, selected_name);
+        let mut accept_and_remember_actions = Self::approval_preset_actions(
+            approval,
+            sandbox,
+            selected_name,
+            self.config.approvals_reviewer,
+        );
         accept_and_remember_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
             tx.send(AppEvent::PersistFullAccessWarningAcknowledged);
@@ -8764,6 +9061,7 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
+                self.config.approvals_reviewer,
             ));
         }
 
@@ -8777,6 +9075,7 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
+                self.config.approvals_reviewer,
             ));
         }
 
@@ -9126,6 +9425,10 @@ impl ChatWidget {
                     ),
             );
         }
+    }
+
+    pub(crate) fn set_approvals_reviewer(&mut self, reviewer: ApprovalsReviewer) {
+        self.config.approvals_reviewer = reviewer;
     }
 
     pub(crate) fn set_full_access_warning_acknowledged(&mut self, acknowledged: bool) {

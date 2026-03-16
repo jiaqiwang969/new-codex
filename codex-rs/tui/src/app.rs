@@ -58,6 +58,7 @@ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_otel::OtelManager;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
@@ -577,6 +578,7 @@ pub(crate) struct App {
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
     runtime_approval_policy_override: Option<AskForApproval>,
+    runtime_approvals_reviewer_override: Option<ApprovalsReviewer>,
     runtime_sandbox_policy_override: Option<SandboxPolicy>,
 
     pub(crate) file_search: FileSearchManager,
@@ -713,6 +715,9 @@ impl App {
             self.chat_widget.add_error_message(format!(
                 "Failed to carry forward approval policy override: {err}"
             ));
+        }
+        if let Some(reviewer) = self.runtime_approvals_reviewer_override {
+            config.approvals_reviewer = reviewer;
         }
         if let Some(policy) = self.runtime_sandbox_policy_override.as_ref()
             && let Err(err) = config.permissions.sandbox_policy.set(policy.clone())
@@ -1544,6 +1549,7 @@ impl App {
             cli_kv_overrides,
             harness_overrides,
             runtime_approval_policy_override: None,
+            runtime_approvals_reviewer_override: None,
             runtime_sandbox_policy_override: None,
             file_search,
             enhanced_keys_supported,
@@ -2700,6 +2706,7 @@ impl App {
                                     Op::OverrideTurnContext {
                                         cwd: None,
                                         approval_policy: None,
+                                        approvals_reviewer: None,
                                         sandbox_policy: None,
                                         windows_sandbox_level: Some(windows_sandbox_level),
                                         model: None,
@@ -2722,6 +2729,7 @@ impl App {
                                     Op::OverrideTurnContext {
                                         cwd: None,
                                         approval_policy: Some(preset.approval),
+                                        approvals_reviewer: Some(self.config.approvals_reviewer),
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         windows_sandbox_level: Some(windows_sandbox_level),
                                         model: None,
@@ -3140,6 +3148,11 @@ impl App {
                 }
                 self.chat_widget.set_approval_policy(policy);
             }
+            AppEvent::UpdateApprovalsReviewer(policy) => {
+                self.runtime_approvals_reviewer_override = Some(policy);
+                self.config.approvals_reviewer = policy;
+                self.chat_widget.set_approvals_reviewer(policy);
+            }
             AppEvent::UpdateSandboxPolicy(policy) => {
                 #[cfg(target_os = "windows")]
                 let policy_is_workspace_write_or_ro = matches!(
@@ -3237,6 +3250,7 @@ impl App {
                             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                                 cwd: None,
                                 approval_policy: None,
+                                approvals_reviewer: None,
                                 sandbox_policy: None,
                                 windows_sandbox_level: Some(windows_sandbox_level),
                                 model: None,
@@ -3711,6 +3725,7 @@ impl App {
                 model: config_snapshot.model,
                 model_provider_id: config_snapshot.model_provider_id,
                 approval_policy: config_snapshot.approval_policy,
+                approvals_reviewer: config_snapshot.approvals_reviewer,
                 sandbox_policy: config_snapshot.sandbox_policy,
                 cwd: config_snapshot.cwd,
                 reasoning_effort: config_snapshot.reasoning_effort,
@@ -4625,6 +4640,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
@@ -4724,6 +4740,7 @@ mod tests {
             cli_kv_overrides: Vec::new(),
             harness_overrides: ConfigOverrides::default(),
             runtime_approval_policy_override: None,
+            runtime_approvals_reviewer_override: None,
             runtime_sandbox_policy_override: None,
             file_search,
             transcript_cells: Vec::new(),
@@ -4838,6 +4855,7 @@ mod tests {
                 cli_kv_overrides: Vec::new(),
                 harness_overrides: ConfigOverrides::default(),
                 runtime_approval_policy_override: None,
+                runtime_approvals_reviewer_override: None,
                 runtime_sandbox_policy_override: None,
                 file_search,
                 transcript_cells: Vec::new(),
@@ -5200,6 +5218,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -5257,6 +5276,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -5348,6 +5368,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -5412,6 +5433,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -5491,6 +5513,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: None,
@@ -5617,6 +5640,7 @@ mod tests {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/home/user/project"),
             reasoning_effort: None,
@@ -5657,6 +5681,7 @@ mod tests {
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
+                approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/tmp/project"),
                 reasoning_effort: None,
