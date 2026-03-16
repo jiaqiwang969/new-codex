@@ -11,6 +11,9 @@ use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::CommandSpec;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
+use crate::smart_access::SmartAccessApprovalOutcome;
+use crate::smart_access::merge_human_approval_reason;
+use crate::smart_access::review_smart_access_request;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
@@ -124,18 +127,31 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         let approval_keys = self.approval_keys(req);
         let changes = req.changes.clone();
         Box::pin(async move {
-            if routes_approval_to_guardian(turn) {
-                return review_approval_request(
-                    session,
-                    turn,
-                    Self::build_guardian_review_request(req, ctx.call_id),
-                    retry_reason,
-                )
-                .await;
+            let approval_request = Self::build_guardian_review_request(req, ctx.call_id);
+            let mut human_reason = retry_reason.clone();
+            if let Some(outcome) = review_smart_access_request(
+                session,
+                turn,
+                approval_request.clone(),
+                retry_reason.clone(),
+            )
+            .await
+            {
+                match outcome {
+                    SmartAccessApprovalOutcome::Final(decision) => return decision,
+                    SmartAccessApprovalOutcome::FallbackToHuman { rationale } => {
+                        human_reason =
+                            merge_human_approval_reason(human_reason, rationale.as_str());
+                    }
+                }
             }
-            if let Some(reason) = retry_reason {
+            if routes_approval_to_guardian(turn) {
+                return review_approval_request(session, turn, approval_request, retry_reason)
+                    .await;
+            }
+            if retry_reason.is_some() {
                 let rx_approve = session
-                    .request_patch_approval(turn, call_id, changes.clone(), Some(reason), None)
+                    .request_patch_approval(turn, call_id, changes.clone(), human_reason, None)
                     .await;
                 return rx_approve.await.unwrap_or_default();
             }
@@ -146,7 +162,7 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
                 approval_keys,
                 || async move {
                     let rx_approve = session
-                        .request_patch_approval(turn, call_id, changes, None, None)
+                        .request_patch_approval(turn, call_id, changes, human_reason, None)
                         .await;
                     rx_approve.await.unwrap_or_default()
                 },

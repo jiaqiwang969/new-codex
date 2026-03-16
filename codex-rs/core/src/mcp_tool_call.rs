@@ -20,6 +20,8 @@ use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
+use crate::smart_access::SmartAccessApprovalOutcome;
+use crate::smart_access::review_smart_access_request;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterMcpToolCall;
 use codex_hooks::HookEventMcpToolCallStatus;
@@ -644,14 +646,24 @@ async fn maybe_request_mcp_tool_approval(
     {
         return Some(McpToolApprovalDecision::Accept);
     }
-    if routes_approval_to_guardian(turn_context) {
-        let decision = review_approval_request(
-            sess,
-            turn_context,
-            build_guardian_mcp_tool_review_request(call_id, invocation, metadata),
-            None,
-        )
-        .await;
+    let approval_request = build_guardian_mcp_tool_review_request(call_id, invocation, metadata);
+    if let Some(outcome) =
+        review_smart_access_request(sess, turn_context, approval_request.clone(), None).await
+    {
+        match outcome {
+            SmartAccessApprovalOutcome::Final(decision) => {
+                let decision = mcp_tool_approval_decision_from_guardian(decision);
+                if matches!(decision, McpToolApprovalDecision::AcceptAndRemember)
+                    && let Some(key) = approval_key
+                {
+                    remember_mcp_tool_approval(sess, key).await;
+                }
+                return Some(decision);
+            }
+            SmartAccessApprovalOutcome::FallbackToHuman { .. } => {}
+        }
+    } else if routes_approval_to_guardian(turn_context) {
+        let decision = review_approval_request(sess, turn_context, approval_request, None).await;
         let decision = mcp_tool_approval_decision_from_guardian(decision);
         if matches!(decision, McpToolApprovalDecision::AcceptAndRemember)
             && let Some(key) = approval_key

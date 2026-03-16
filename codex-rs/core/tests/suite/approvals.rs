@@ -15,6 +15,7 @@ use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::SecurityMode;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -708,6 +709,50 @@ async fn wait_for_completion_via_guardian(test: &TestCodex) -> Vec<GuardianAsses
                 );
             }
             EventMsg::TurnComplete(_) => return statuses,
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+}
+
+async fn wait_for_guardian_then_exec_approval(
+    test: &TestCodex,
+    expected_command: &str,
+) -> (Vec<GuardianAssessmentStatus>, ExecApprovalRequestEvent) {
+    let mut statuses = Vec::new();
+    loop {
+        let event = wait_for_event(&test.codex, |event| {
+            matches!(
+                event,
+                EventMsg::GuardianAssessment(_)
+                    | EventMsg::ExecApprovalRequest(_)
+                    | EventMsg::ApplyPatchApprovalRequest(_)
+                    | EventMsg::RequestUserInput(_)
+                    | EventMsg::TurnComplete(_)
+            )
+        })
+        .await;
+
+        match event {
+            EventMsg::GuardianAssessment(event) => statuses.push(event.status),
+            EventMsg::ExecApprovalRequest(approval) => {
+                let last_arg = approval
+                    .command
+                    .last()
+                    .map(std::string::String::as_str)
+                    .unwrap_or_default();
+                assert_eq!(last_arg, expected_command);
+                return (statuses, approval);
+            }
+            EventMsg::ApplyPatchApprovalRequest(event) => {
+                panic!("unexpected patch approval request: {:?}", event.call_id);
+            }
+            EventMsg::RequestUserInput(event) => {
+                panic!(
+                    "unexpected request_user_input prompt: {:?}",
+                    event.questions
+                );
+            }
+            EventMsg::TurnComplete(_) => panic!("expected exec approval request before completion"),
             other => panic!("unexpected event: {other:?}"),
         }
     }
@@ -1896,6 +1941,219 @@ allow_local_binding = true
         output_contains: "",
     }
     .verify(&test, &result)?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn smart_access_auto_approves_low_risk_delete_without_user_prompt() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let sandbox_policy_for_config = sandbox_policy.clone();
+    let mut builder = test_codex()
+        .with_model("gpt-5.1")
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+            config.security_mode = SecurityMode::SmartAccess;
+            config.approvals_reviewer = ApprovalsReviewer::User;
+        });
+    let test = builder.build(&server).await?;
+
+    let target_path = test.cwd.path().join("smart_access_delete.txt");
+    fs::write(&target_path, "delete-me")?;
+
+    let call_id = "smart-access-delete-auto-approve";
+    let command = format!("rm {target_path:?} && printf 'deleted'");
+    let event = shell_event(
+        call_id,
+        &command,
+        5_000,
+        SandboxPermissions::RequireEscalated,
+    )?;
+    let guardian_response = json!({
+        "risk_level": "low",
+        "risk_score": 18,
+        "rationale": "single-file delete within the protected workspace root",
+        "evidence": [],
+        "predicted_effects": [{
+            "kind": "protected_delete",
+            "scope": {
+                "target_path": target_path,
+                "source_path": null,
+                "destination_path": null,
+                "tool_name": "shell",
+                "process_name": "rm",
+                "trusted_identity": null,
+                "recursive": false
+            },
+            "confidence": 96,
+            "why": "The command removes one workspace file."
+        }]
+    })
+    .to_string();
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-smart-access-delete-1"),
+                event,
+                ev_completed("resp-smart-access-delete-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-smart-access-delete-guardian"),
+                ev_assistant_message("msg-smart-access-delete-guardian", &guardian_response),
+                ev_completed("resp-smart-access-delete-guardian"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-smart-access-delete-2"),
+                ev_assistant_message("msg-smart-access-delete-2", "done"),
+                ev_completed("resp-smart-access-delete-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
+
+    let statuses = wait_for_completion_via_guardian(&test).await;
+    assert_eq!(
+        statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Approved,
+        ]
+    );
+
+    let result = parse_result(&output_item_for_call(&responses, call_id));
+    Expectation::CommandSuccess {
+        stdout_contains: "deleted",
+    }
+    .verify(&test, &result)?;
+    assert!(
+        !target_path.exists(),
+        "expected deleted file to stay removed"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn smart_access_falls_back_to_user_when_security_host_downgrades() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let approval_policy = AskForApproval::OnRequest;
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let sandbox_policy_for_config = sandbox_policy.clone();
+    let mut builder = test_codex()
+        .with_model("gpt-5.1")
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+            config.security_mode = SecurityMode::SmartAccess;
+            config.approvals_reviewer = ApprovalsReviewer::User;
+            config.endpoint_security = false;
+        });
+    let test = builder.build(&server).await?;
+
+    let source_path = test.cwd.path().join("smart_access_move_source.txt");
+    let destination_path = std::env::temp_dir().join(format!(
+        "smart_access_move_target_{}.txt",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&destination_path);
+    fs::write(&source_path, "move-me")?;
+
+    let call_id = "smart-access-move-fallback";
+    let command = format!("mv {source_path:?} {destination_path:?} && printf 'moved'");
+    let event = shell_event(
+        call_id,
+        &command,
+        5_000,
+        SandboxPermissions::RequireEscalated,
+    )?;
+    let guardian_response = json!({
+        "risk_level": "low",
+        "risk_score": 24,
+        "rationale": "single-file move outside the workspace requires host arbitration",
+        "evidence": [],
+        "predicted_effects": [{
+            "kind": "protected_move_out",
+            "scope": {
+                "target_path": null,
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "tool_name": "shell",
+                "process_name": "mv",
+                "trusted_identity": null,
+                "recursive": false
+            },
+            "confidence": 94,
+            "why": "The command moves one protected file out of the workspace."
+        }]
+    })
+    .to_string();
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-smart-access-move-1"),
+                event,
+                ev_completed("resp-smart-access-move-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-smart-access-move-guardian"),
+                ev_assistant_message("msg-smart-access-move-guardian", &guardian_response),
+                ev_completed("resp-smart-access-move-guardian"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-smart-access-move-2"),
+                ev_assistant_message("msg-smart-access-move-2", "done"),
+                ev_completed("resp-smart-access-move-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
+
+    let (statuses, approval) = wait_for_guardian_then_exec_approval(&test, &command).await;
+    assert_eq!(
+        statuses,
+        vec![
+            GuardianAssessmentStatus::InProgress,
+            GuardianAssessmentStatus::Approved,
+        ]
+    );
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: None,
+            decision: ReviewDecision::Approved,
+        })
+        .await?;
+    wait_for_completion(&test).await;
+
+    let result = parse_result(&output_item_for_call(&responses, call_id));
+    Expectation::CommandSuccess {
+        stdout_contains: "moved",
+    }
+    .verify(&test, &result)?;
+    assert!(
+        !source_path.exists(),
+        "expected source file to be moved out of the workspace"
+    );
+    assert!(
+        destination_path.exists(),
+        "expected moved file to exist at destination"
+    );
+    let _ = fs::remove_file(destination_path);
 
     Ok(())
 }

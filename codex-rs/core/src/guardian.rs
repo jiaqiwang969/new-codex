@@ -103,6 +103,14 @@ pub(crate) struct GuardianAssessment {
     predicted_effects: Vec<PredictedEffect>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct GuardianReviewResult {
+    pub(crate) decision: ReviewDecision,
+    pub(crate) risk_score: u8,
+    pub(crate) rationale: String,
+    pub(crate) predicted_effects: Vec<PredictedEffect>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum GuardianApprovalRequest {
     Shell {
@@ -207,7 +215,7 @@ async fn run_guardian_review(
     request: GuardianApprovalRequest,
     retry_reason: Option<String>,
     external_cancel: Option<CancellationToken>,
-) -> ReviewDecision {
+) -> GuardianReviewResult {
     let assessment_id = guardian_request_id(&request).to_string();
     let assessment_turn_id = guardian_request_turn_id(&request, &turn.sub_id).to_string();
     let action_summary = guardian_assessment_action_value(&request);
@@ -306,7 +314,12 @@ async fn run_guardian_review(
                     }),
                 )
                 .await;
-            return ReviewDecision::Abort;
+            return GuardianReviewResult {
+                decision: ReviewDecision::Abort,
+                risk_score: 0,
+                rationale: "Automatic approval review aborted.".to_string(),
+                predicted_effects: vec![],
+            };
         }
     };
 
@@ -344,10 +357,17 @@ async fn run_guardian_review(
         )
         .await;
 
-    if approved {
+    let decision = if approved {
         ReviewDecision::Approved
     } else {
         ReviewDecision::Denied
+    };
+
+    GuardianReviewResult {
+        decision,
+        risk_score: assessment.risk_score,
+        rationale: assessment.rationale,
+        predicted_effects: assessment.predicted_effects,
     }
 }
 
@@ -357,6 +377,17 @@ pub(crate) async fn review_approval_request(
     request: GuardianApprovalRequest,
     retry_reason: Option<String>,
 ) -> ReviewDecision {
+    review_approval_request_detailed(session, turn, request, retry_reason)
+        .await
+        .decision
+}
+
+pub(crate) async fn review_approval_request_detailed(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    request: GuardianApprovalRequest,
+    retry_reason: Option<String>,
+) -> GuardianReviewResult {
     run_guardian_review(
         Arc::clone(session),
         Arc::clone(turn),
@@ -382,6 +413,7 @@ pub(crate) async fn review_approval_request_with_cancel(
         Some(cancel_token),
     )
     .await
+    .decision
 }
 
 async fn build_guardian_prompt_items(
