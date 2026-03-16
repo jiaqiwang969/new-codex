@@ -1672,7 +1672,7 @@ async fn guardian_reviewer_auto_approves_shell_without_user_prompt() -> Result<(
                 ev_response_created("resp-guardian-1"),
                 ev_assistant_message(
                     "msg-guardian-1",
-                    r#"{"risk_level":"low","risk_score":42,"rationale":"safe","evidence":[]}"#,
+                    r#"{"risk_level":"low","risk_score":42,"rationale":"safe","evidence":[],"predicted_effects":[]}"#,
                 ),
                 ev_completed("resp-guardian-1"),
             ]),
@@ -1751,7 +1751,7 @@ async fn guardian_reviewer_denies_apply_patch_without_user_prompt() -> Result<()
                 ev_response_created("resp-guardian-2"),
                 ev_assistant_message(
                     "msg-guardian-2",
-                    r#"{"risk_level":"high","risk_score":95,"rationale":"destructive","evidence":[]}"#,
+                    r#"{"risk_level":"high","risk_score":95,"rationale":"destructive","evidence":[],"predicted_effects":[]}"#,
                 ),
                 ev_completed("resp-guardian-2"),
             ]),
@@ -1867,7 +1867,7 @@ allow_local_binding = true
                 ev_response_created("resp-guardian-3"),
                 ev_assistant_message(
                     "msg-guardian-3",
-                    r#"{"risk_level":"high","risk_score":90,"rationale":"blocked host","evidence":[]}"#,
+                    r#"{"risk_level":"high","risk_score":90,"rationale":"blocked host","evidence":[],"predicted_effects":[]}"#,
                 ),
                 ev_completed("resp-guardian-3"),
             ]),

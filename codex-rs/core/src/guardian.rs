@@ -2,6 +2,7 @@
 //! automatically instead of shown to the user.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,8 @@ use crate::features::Feature;
 use crate::models_manager::manager::RefreshStrategy;
 use crate::protocol::Op;
 use crate::protocol::SandboxPolicy;
+use crate::security_types::PredictedEffect;
+use crate::security_types::PredictedEffectKind;
 use crate::truncate::approx_bytes_for_tokens;
 use crate::truncate::approx_token_count;
 use crate::truncate::approx_tokens_from_byte_count;
@@ -97,6 +100,7 @@ pub(crate) struct GuardianAssessment {
     risk_score: u8,
     rationale: String,
     evidence: Vec<GuardianEvidence>,
+    predicted_effects: Vec<PredictedEffect>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +211,7 @@ async fn run_guardian_review(
     let assessment_id = guardian_request_id(&request).to_string();
     let assessment_turn_id = guardian_request_turn_id(&request, &turn.sub_id).to_string();
     let action_summary = guardian_assessment_action_value(&request);
+    let validation_request = request.clone();
     session
         .send_event(
             turn.as_ref(),
@@ -258,12 +263,24 @@ async fn run_guardian_review(
     };
 
     let assessment = match outcome {
-        GuardianReviewOutcome::Completed(Ok(assessment)) => assessment,
+        GuardianReviewOutcome::Completed(Ok(assessment)) => {
+            match validate_guardian_assessment(&validation_request, assessment) {
+                Ok(assessment) => assessment,
+                Err(err) => GuardianAssessment {
+                    risk_level: GuardianRiskLevel::High,
+                    risk_score: 100,
+                    rationale: format!("Automatic approval review failed: {err}"),
+                    evidence: vec![],
+                    predicted_effects: vec![],
+                },
+            }
+        }
         GuardianReviewOutcome::Completed(Err(err)) => GuardianAssessment {
             risk_level: GuardianRiskLevel::High,
             risk_score: 100,
             rationale: format!("Automatic approval review failed: {err}"),
             evidence: vec![],
+            predicted_effects: vec![],
         },
         GuardianReviewOutcome::TimedOut => GuardianAssessment {
             risk_level: GuardianRiskLevel::High,
@@ -272,6 +289,7 @@ async fn run_guardian_review(
                 "Automatic approval review timed out while evaluating the requested approval."
                     .to_string(),
             evidence: vec![],
+            predicted_effects: vec![],
         },
         GuardianReviewOutcome::Aborted => {
             session
@@ -1046,6 +1064,108 @@ fn parse_guardian_assessment(text: Option<&str>) -> anyhow::Result<GuardianAsses
     anyhow::bail!("guardian assessment was not valid JSON")
 }
 
+fn validate_guardian_assessment(
+    request: &GuardianApprovalRequest,
+    assessment: GuardianAssessment,
+) -> anyhow::Result<GuardianAssessment> {
+    if guardian_request_requires_predicted_effects(request)
+        && assessment.predicted_effects.is_empty()
+    {
+        anyhow::bail!(
+            "guardian review omitted predicted effects for a destructive or sensitive action"
+        );
+    }
+
+    for effect in &assessment.predicted_effects {
+        validate_predicted_effect(effect)?;
+    }
+
+    Ok(assessment)
+}
+
+fn guardian_request_requires_predicted_effects(request: &GuardianApprovalRequest) -> bool {
+    match request {
+        GuardianApprovalRequest::Shell { command, .. }
+        | GuardianApprovalRequest::ExecCommand { command, .. } => {
+            command_tokens_require_predicted_effects(command.iter().map(String::as_str))
+        }
+        #[cfg(unix)]
+        GuardianApprovalRequest::Execve { program, argv, .. } => {
+            command_tokens_require_predicted_effects(
+                std::iter::once(program.as_str()).chain(argv.iter().map(String::as_str)),
+            )
+        }
+        GuardianApprovalRequest::ApplyPatch { .. }
+        | GuardianApprovalRequest::NetworkAccess { .. } => false,
+        GuardianApprovalRequest::McpToolCall { annotations, .. } => annotations
+            .as_ref()
+            .is_some_and(|annotations| annotations.destructive_hint == Some(true)),
+    }
+}
+
+fn command_tokens_require_predicted_effects<'a>(
+    command_tokens: impl Iterator<Item = &'a str>,
+) -> bool {
+    command_tokens
+        .filter_map(command_token_basename)
+        .any(|token| {
+            matches!(
+                token,
+                "rm" | "mv" | "scp" | "curl" | "rsync" | "tar" | "shred"
+            )
+        })
+}
+
+fn command_token_basename(token: &str) -> Option<&str> {
+    Path::new(token)
+        .file_name()
+        .and_then(|value| value.to_str())
+}
+
+fn validate_predicted_effect(effect: &PredictedEffect) -> anyhow::Result<()> {
+    match effect.kind {
+        PredictedEffectKind::ProtectedDelete | PredictedEffectKind::SensitiveRead => {
+            if effect.scope.target_path.is_none() {
+                anyhow::bail!("predicted effect {:?} requires target_path", effect.kind);
+            }
+        }
+        PredictedEffectKind::ProtectedMoveOut | PredictedEffectKind::SensitiveTransferOut => {
+            if effect.scope.source_path.is_none() || effect.scope.destination_path.is_none() {
+                anyhow::bail!(
+                    "predicted effect {:?} requires source_path and destination_path",
+                    effect.kind
+                );
+            }
+        }
+        PredictedEffectKind::TaintWriteOut => {
+            if effect.scope.destination_path.is_none() {
+                anyhow::bail!(
+                    "predicted effect {:?} requires destination_path",
+                    effect.kind
+                );
+            }
+        }
+        PredictedEffectKind::ExecExfilTool => {
+            if effect.scope.process_name.is_none() && effect.scope.tool_name.is_none() {
+                anyhow::bail!(
+                    "predicted effect {:?} requires process_name or tool_name",
+                    effect.kind
+                );
+            }
+        }
+        PredictedEffectKind::TrustedIdentityMismatch => {
+            if effect.scope.trusted_identity.is_none() && effect.scope.process_name.is_none() {
+                anyhow::bail!(
+                    "predicted effect {:?} requires trusted_identity or process_name",
+                    effect.kind
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn guardian_output_schema() -> Value {
     serde_json::json!({
         "type": "object",
@@ -1074,9 +1194,59 @@ fn guardian_output_schema() -> Value {
                     },
                     "required": ["message", "why"]
                 }
+            },
+            "predicted_effects": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "protected_delete",
+                                "protected_move_out",
+                                "sensitive_read",
+                                "sensitive_transfer_out",
+                                "taint_write_out",
+                                "exec_exfil_tool",
+                                "trusted_identity_mismatch"
+                            ]
+                        },
+                        "scope": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "target_path": { "type": ["string", "null"] },
+                                "source_path": { "type": ["string", "null"] },
+                                "destination_path": { "type": ["string", "null"] },
+                                "tool_name": { "type": ["string", "null"] },
+                                "process_name": { "type": ["string", "null"] },
+                                "trusted_identity": { "type": ["string", "null"] },
+                                "recursive": { "type": "boolean" }
+                            },
+                            "required": [
+                                "target_path",
+                                "source_path",
+                                "destination_path",
+                                "tool_name",
+                                "process_name",
+                                "trusted_identity",
+                                "recursive"
+                            ]
+                        },
+                        "confidence": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100
+                        },
+                        "why": { "type": "string" }
+                    },
+                    "required": ["kind", "scope", "confidence", "why"]
+                }
             }
         },
-        "required": ["risk_level", "risk_score", "rationale", "evidence"]
+        "required": ["risk_level", "risk_score", "rationale", "evidence", "predicted_effects"]
     })
 }
 
@@ -1086,7 +1256,21 @@ fn guardian_output_contract_prompt() -> &'static str {
   "risk_level": "low" | "medium" | "high",
   "risk_score": 0-100,
   "rationale": string,
-  "evidence": [{"message": string, "why": string}]
+  "evidence": [{"message": string, "why": string}],
+  "predicted_effects": [{
+    "kind": "protected_delete" | "protected_move_out" | "sensitive_read" | "sensitive_transfer_out" | "taint_write_out" | "exec_exfil_tool" | "trusted_identity_mismatch",
+    "scope": {
+      "target_path": string | null,
+      "source_path": string | null,
+      "destination_path": string | null,
+      "tool_name": string | null,
+      "process_name": string | null,
+      "trusted_identity": string | null,
+      "recursive": boolean
+    },
+    "confidence": 0-100,
+    "why": string
+  }]
 }"#
 }
 

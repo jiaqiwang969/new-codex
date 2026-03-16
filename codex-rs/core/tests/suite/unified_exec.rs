@@ -216,7 +216,7 @@ async fn unified_exec_routes_approval_through_guardian_reviewer() -> Result<()> 
             ev_response_created("resp-guardian-1"),
             ev_assistant_message(
                 "msg-guardian-1",
-                r#"{"risk_level":"low","risk_score":35,"rationale":"safe","evidence":[]}"#,
+                r#"{"risk_level":"low","risk_score":35,"rationale":"safe","evidence":[],"predicted_effects":[]}"#,
             ),
             ev_completed("resp-guardian-1"),
         ]),
