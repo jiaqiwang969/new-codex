@@ -114,6 +114,7 @@ async fn permissions_message_added_on_override_change() -> Result<()> {
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
+            security_mode: None,
             approval_policy: Some(AskForApproval::Never),
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -257,6 +258,7 @@ async fn resume_replays_permissions_messages() -> Result<()> {
         .codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
+            security_mode: None,
             approval_policy: Some(AskForApproval::Never),
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -357,6 +359,7 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
         .codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
+            security_mode: None,
             approval_policy: Some(AskForApproval::Never),
             approvals_reviewer: None,
             sandbox_policy: None,

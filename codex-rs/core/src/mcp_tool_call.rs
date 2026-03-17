@@ -20,6 +20,9 @@ use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
+use crate::smart_access::SmartAccessApprovalOutcome;
+use crate::smart_access::merge_human_approval_reason;
+use crate::smart_access::review_smart_access_request;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterMcpToolCall;
 use codex_hooks::HookEventMcpToolCallStatus;
@@ -644,14 +647,27 @@ async fn maybe_request_mcp_tool_approval(
     {
         return Some(McpToolApprovalDecision::Accept);
     }
-    if routes_approval_to_guardian(turn_context) {
-        let decision = review_approval_request(
-            sess,
-            turn_context,
-            build_guardian_mcp_tool_review_request(call_id, invocation, metadata),
-            None,
-        )
-        .await;
+    let approval_request = build_guardian_mcp_tool_review_request(call_id, invocation, metadata);
+    let mut smart_access_rationale = None;
+    if let Some(outcome) =
+        review_smart_access_request(sess, turn_context, approval_request.clone(), None).await
+    {
+        match outcome {
+            SmartAccessApprovalOutcome::Final(decision) => {
+                let decision = mcp_tool_approval_decision_from_guardian(decision);
+                if matches!(decision, McpToolApprovalDecision::AcceptAndRemember)
+                    && let Some(key) = approval_key
+                {
+                    remember_mcp_tool_approval(sess, key).await;
+                }
+                return Some(decision);
+            }
+            SmartAccessApprovalOutcome::FallbackToHuman { rationale } => {
+                smart_access_rationale = Some(rationale);
+            }
+        }
+    } else if routes_approval_to_guardian(turn_context) {
+        let decision = review_approval_request(sess, turn_context, approval_request, None).await;
         let decision = mcp_tool_approval_decision_from_guardian(decision);
         if matches!(decision, McpToolApprovalDecision::AcceptAndRemember)
             && let Some(key) = approval_key
@@ -664,12 +680,10 @@ async fn maybe_request_mcp_tool_approval(
     let question_id = format!("{MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX}_{call_id}");
     let question = build_mcp_tool_approval_question(
         question_id.clone(),
-        &invocation.server,
-        &invocation.tool,
-        metadata.and_then(|metadata| metadata.tool_title.as_deref()),
-        metadata.and_then(|metadata| metadata.connector_name.as_deref()),
-        annotations,
+        invocation,
+        metadata,
         approval_key.is_some(),
+        smart_access_rationale.as_deref(),
     );
     let args = RequestUserInputArgs {
         questions: vec![question],
@@ -788,13 +802,12 @@ async fn lookup_mcp_app_usage_metadata(
 
 fn build_mcp_tool_approval_question(
     question_id: String,
-    server: &str,
-    tool_name: &str,
-    tool_title: Option<&str>,
-    connector_name: Option<&str>,
-    annotations: Option<&ToolAnnotations>,
+    invocation: &McpInvocation,
+    metadata: Option<&McpToolApprovalMetadata>,
     allow_remember_option: bool,
+    smart_access_rationale: Option<&str>,
 ) -> RequestUserInputQuestion {
+    let annotations = metadata.and_then(|metadata| metadata.annotations.as_ref());
     let destructive =
         annotations.and_then(|annotations| annotations.destructive_hint) == Some(true);
     let open_world = annotations.and_then(|annotations| annotations.open_world_hint) == Some(true);
@@ -805,19 +818,25 @@ fn build_mcp_tool_approval_question(
         (false, false) => "may have side effects",
     };
 
-    let tool_label = tool_title.unwrap_or(tool_name);
-    let app_label = connector_name
+    let tool_label = metadata
+        .and_then(|metadata| metadata.tool_title.as_deref())
+        .unwrap_or(invocation.tool.as_str());
+    let app_label = metadata
+        .and_then(|metadata| metadata.connector_name.as_deref())
         .map(|name| format!("The {name} app"))
         .unwrap_or_else(|| {
-            if server == CODEX_APPS_MCP_SERVER_NAME {
+            if invocation.server == CODEX_APPS_MCP_SERVER_NAME {
                 "This app".to_string()
             } else {
-                format!("The {server} MCP server")
+                format!("The {} MCP server", invocation.server)
             }
         });
     let question = format!(
         "{app_label} wants to run the tool \"{tool_label}\", which {reason}. Allow this action?"
     );
+    let question =
+        merge_human_approval_reason(Some(question), smart_access_rationale.unwrap_or(""))
+            .unwrap_or_default();
 
     let mut options = vec![RequestUserInputQuestionOption {
         label: MCP_TOOL_APPROVAL_ACCEPT.to_string(),
@@ -957,6 +976,28 @@ mod tests {
         }
     }
 
+    fn invocation(server: &str, tool_name: &str) -> McpInvocation {
+        McpInvocation {
+            server: server.to_string(),
+            tool: tool_name.to_string(),
+            arguments: None,
+        }
+    }
+
+    fn metadata(
+        tool_title: Option<&str>,
+        connector_name: Option<&str>,
+        annotations: Option<ToolAnnotations>,
+    ) -> McpToolApprovalMetadata {
+        McpToolApprovalMetadata {
+            annotations,
+            connector_id: None,
+            connector_name: connector_name.map(ToString::to_string),
+            tool_title: tool_title.map(ToString::to_string),
+            tool_description: None,
+        }
+    }
+
     #[test]
     fn approval_required_when_read_only_false_and_destructive() {
         let annotations = annotations(Some(false), Some(true), None);
@@ -990,12 +1031,14 @@ mod tests {
     fn custom_mcp_tool_question_mentions_server_name() {
         let question = build_mcp_tool_approval_question(
             "q".to_string(),
-            "custom_server",
-            "run_action",
-            Some("Run Action"),
-            None,
-            Some(&annotations(Some(false), Some(true), None)),
+            &invocation("custom_server", "run_action"),
+            Some(&metadata(
+                Some("Run Action"),
+                None,
+                Some(annotations(Some(false), Some(true), None)),
+            )),
             true,
+            None,
         );
 
         assert_eq!(question.header, "Approve app tool call?");
@@ -1017,12 +1060,14 @@ mod tests {
     fn codex_apps_tool_question_keeps_legacy_app_label() {
         let question = build_mcp_tool_approval_question(
             "q".to_string(),
-            CODEX_APPS_MCP_SERVER_NAME,
-            "run_action",
-            Some("Run Action"),
-            None,
-            Some(&annotations(Some(false), Some(true), None)),
+            &invocation(CODEX_APPS_MCP_SERVER_NAME, "run_action"),
+            Some(&metadata(
+                Some("Run Action"),
+                None,
+                Some(annotations(Some(false), Some(true), None)),
+            )),
             true,
+            None,
         );
 
         assert!(
@@ -1030,6 +1075,25 @@ mod tests {
                 .question
                 .starts_with("This app wants to run the tool \"Run Action\"")
         );
+    }
+
+    #[test]
+    fn smart_access_rationale_is_appended_to_mcp_tool_question() {
+        let question = build_mcp_tool_approval_question(
+            "q".to_string(),
+            &invocation(CODEX_APPS_MCP_SERVER_NAME, "run_action"),
+            Some(&metadata(
+                Some("Run Action"),
+                None,
+                Some(annotations(Some(false), Some(true), None)),
+            )),
+            true,
+            Some("Sensitive transfers require explicit human approval."),
+        );
+
+        assert!(question.question.contains(
+            "Smart Access escalated: Sensitive transfers require explicit human approval."
+        ));
     }
 
     #[test]

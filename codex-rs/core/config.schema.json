@@ -546,6 +546,9 @@
         "sandbox_mode": {
           "$ref": "#/definitions/SandboxMode"
         },
+        "security_mode": {
+          "$ref": "#/definitions/SecurityMode"
+        },
         "tools_view_image": {
           "type": "boolean"
         },
@@ -1335,6 +1338,14 @@
         }
       },
       "type": "object"
+    },
+    "SecurityMode": {
+      "enum": [
+        "default",
+        "smart-access",
+        "full-access"
+      ],
+      "type": "string"
     },
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
@@ -2144,6 +2155,14 @@
         }
       ],
       "description": "Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`."
+    },
+    "security_mode": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SecurityMode"
+        }
+      ],
+      "description": "Top-level security posture selected for this session."
     },
     "shell_environment_policy": {
       "allOf": [

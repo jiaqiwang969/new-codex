@@ -280,6 +280,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::config_types::SecurityMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DeveloperInstructions;
@@ -481,6 +482,7 @@ impl Codex {
             personality: config.personality,
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -902,6 +904,7 @@ pub(crate) struct SessionConfiguration {
     /// Compact prompt override.
     compact_prompt: Option<String>,
 
+    security_mode: SecurityMode,
     /// When to escalate for approval for execution
     approval_policy: Constrained<AskForApproval>,
     approvals_reviewer: ApprovalsReviewer,
@@ -941,6 +944,7 @@ impl SessionConfiguration {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.provider_id.clone(),
+            security_mode: self.security_mode,
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
             sandbox_policy: self.sandbox_policy.get().clone(),
@@ -967,6 +971,9 @@ impl SessionConfiguration {
         }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
+        }
+        if let Some(security_mode) = updates.security_mode {
+            next_configuration.security_mode = security_mode;
         }
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
@@ -1296,6 +1303,7 @@ fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> u
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) cwd: Option<PathBuf>,
+    pub(crate) security_mode: Option<SecurityMode>,
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
@@ -1377,6 +1385,7 @@ impl Session {
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
         per_turn_config.personality = session_configuration.personality;
+        per_turn_config.security_mode = session_configuration.security_mode;
         per_turn_config.approvals_reviewer = session_configuration.approvals_reviewer;
         let resolved_web_search_mode = resolve_web_search_mode_for_turn(
             &per_turn_config.web_search_mode,
@@ -1857,6 +1866,7 @@ impl Session {
             otel_manager,
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            smart_access_runtime_contexts: Mutex::new(HashMap::new()),
             execve_session_approvals: RwLock::new(HashMap::new()),
             skills_manager,
             file_watcher,
@@ -1909,6 +1919,7 @@ impl Session {
                 thread_name: session_configuration.thread_name.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
+                security_mode: config.security_mode,
                 approval_policy: session_configuration.approval_policy.value(),
                 approvals_reviewer: session_configuration.approvals_reviewer,
                 sandbox_policy: session_configuration.sandbox_policy.get().clone(),
@@ -4488,6 +4499,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             }
             Op::OverrideTurnContext {
                 cwd,
+                security_mode,
                 approval_policy,
                 approvals_reviewer,
                 sandbox_policy,
@@ -4513,6 +4525,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     sub.id.clone(),
                     SessionSettingsUpdate {
                         cwd,
+                        security_mode,
                         approval_policy,
                         approvals_reviewer,
                         sandbox_policy,
@@ -9413,6 +9426,7 @@ mod tests {
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -10880,6 +10894,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -10974,6 +10989,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -11296,6 +11312,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -11351,6 +11368,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -11434,6 +11452,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -11492,6 +11511,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
             otel_manager: otel_manager.clone(),
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            smart_access_runtime_contexts: Mutex::new(HashMap::new()),
             execve_session_approvals: RwLock::new(HashMap::new()),
             skills_manager,
             file_watcher,
@@ -11595,6 +11615,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
                 .clone()
                 .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             compact_prompt: config.compact_prompt.clone(),
+            security_mode: config.security_mode,
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
             sandbox_policy: config.permissions.sandbox_policy.clone(),
@@ -11653,6 +11674,7 @@ model_sub_responses = "gpt-5.3-codex-spark|[pro]"
             otel_manager: otel_manager.clone(),
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
+            smart_access_runtime_contexts: Mutex::new(HashMap::new()),
             execve_session_approvals: RwLock::new(HashMap::new()),
             skills_manager,
             file_watcher,

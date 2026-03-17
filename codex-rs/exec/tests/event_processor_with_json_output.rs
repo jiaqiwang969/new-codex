@@ -31,7 +31,9 @@ use codex_exec::exec_events::TurnStartedEvent;
 use codex_exec::exec_events::Usage;
 use codex_exec::exec_events::WebSearchItem;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::SecurityMode;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::plan_tool::PlanItemArg;
@@ -94,7 +96,9 @@ fn session_configured_produces_thread_started_event() {
             thread_name: None,
             model: "codex-mini-latest".to_string(),
             model_provider_id: "test-provider".to_string(),
+            security_mode: SecurityMode::Default,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/home/user/project"),
             reasoning_effort: None,

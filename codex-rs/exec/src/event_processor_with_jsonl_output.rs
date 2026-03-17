@@ -701,7 +701,7 @@ impl EventProcessorWithJsonOutput {
                 });
         }
         self.known_agents.insert(
-            thread_id.clone(),
+            thread_id,
             KnownAgentMetadata {
                 agent_type: state.agent_type.clone(),
                 model: state.model.clone(),

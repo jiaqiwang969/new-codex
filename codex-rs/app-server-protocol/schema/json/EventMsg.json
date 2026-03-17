@@ -93,6 +93,13 @@
         }
       ]
     },
+    "ApprovalsReviewer": {
+      "enum": [
+        "user",
+        "guardian_subagent"
+      ],
+      "type": "string"
+    },
     "AskForApproval": {
       "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codex.",
       "oneOf": [
@@ -1184,6 +1191,15 @@
               ],
               "description": "When to escalate for approval for execution"
             },
+            "approvals_reviewer": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ApprovalsReviewer"
+                }
+              ],
+              "default": "user",
+              "description": "Who reviews approval requests once they have been escalated."
+            },
             "cwd": {
               "description": "Working directory that should be treated as the *root* of the session.",
               "type": "string"
@@ -1263,6 +1279,15 @@
                 }
               ],
               "description": "How to sandbox commands executed in the system"
+            },
+            "security_mode": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/SecurityMode"
+                }
+              ],
+              "default": "default",
+              "description": "Top-level security posture selected for this session."
             },
             "session_id": {
               "$ref": "#/definitions/ThreadId"
@@ -2093,6 +2118,59 @@
             "type"
           ],
           "title": "ApplyPatchApprovalRequestEventMsg",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": true,
+            "id": {
+              "type": "string"
+            },
+            "rationale": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "risk_level": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GuardianRiskLevel"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "risk_score": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/GuardianAssessmentStatus"
+            },
+            "turn_id": {
+              "default": "",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "guardian_assessment"
+              ],
+              "title": "GuardianAssessmentEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "type"
+          ],
+          "title": "GuardianAssessmentEventMsg",
           "type": "object"
         },
         {
@@ -3834,6 +3912,23 @@
         "preexisting_untracked_files"
       ],
       "type": "object"
+    },
+    "GuardianAssessmentStatus": {
+      "enum": [
+        "in_progress",
+        "approved",
+        "denied",
+        "aborted"
+      ],
+      "type": "string"
+    },
+    "GuardianRiskLevel": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
     },
     "HistoryEntry": {
       "properties": {
@@ -5691,6 +5786,14 @@
         }
       ]
     },
+    "SecurityMode": {
+      "enum": [
+        "default",
+        "smart-access",
+        "full-access"
+      ],
+      "type": "string"
+    },
     "SessionNetworkProxyRuntime": {
       "properties": {
         "admin_addr": {
@@ -6975,6 +7078,15 @@
           ],
           "description": "When to escalate for approval for execution"
         },
+        "approvals_reviewer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ApprovalsReviewer"
+            }
+          ],
+          "default": "user",
+          "description": "Who reviews approval requests once they have been escalated."
+        },
         "cwd": {
           "description": "Working directory that should be treated as the *root* of the session.",
           "type": "string"
@@ -7054,6 +7166,15 @@
             }
           ],
           "description": "How to sandbox commands executed in the system"
+        },
+        "security_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SecurityMode"
+            }
+          ],
+          "default": "default",
+          "description": "Top-level security posture selected for this session."
         },
         "session_id": {
           "$ref": "#/definitions/ThreadId"
@@ -7884,6 +8005,59 @@
         "type"
       ],
       "title": "ApplyPatchApprovalRequestEventMsg",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "action": true,
+        "id": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "risk_level": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GuardianRiskLevel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "risk_score": {
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/GuardianAssessmentStatus"
+        },
+        "turn_id": {
+          "default": "",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "guardian_assessment"
+          ],
+          "title": "GuardianAssessmentEventMsgType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "type"
+      ],
+      "title": "GuardianAssessmentEventMsg",
       "type": "object"
     },
     {
