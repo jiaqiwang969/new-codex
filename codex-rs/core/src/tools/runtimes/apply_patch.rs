@@ -6,12 +6,17 @@
 //! `SandboxAttempt` with a minimal environment.
 use crate::exec::ExecToolCallOutput;
 use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::guardian_assessment_action_value;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::CommandSpec;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
 use crate::smart_access::SmartAccessApprovalOutcome;
+use crate::smart_access::clear_runtime_context;
+use crate::smart_access::endpoint_security_daemon_log_size;
+use crate::smart_access::is_smart_access_mode;
+use crate::smart_access::maybe_record_endpoint_security_runtime_mismatch;
 use crate::smart_access::merge_human_approval_reason;
 use crate::smart_access::review_smart_access_request;
 use crate::tools::sandboxing::Approvable;
@@ -200,13 +205,45 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        let spec = Self::build_command_spec(req)?;
-        let env = attempt
-            .env_for(spec, None)
-            .map_err(|err| ToolError::Codex(err.into()))?;
-        let out = execute_env(env, Self::stdout_stream(ctx))
-            .await
-            .map_err(ToolError::Codex)?;
+        let daemon_log_offset = endpoint_security_daemon_log_size();
+        let guardian_request = Self::build_guardian_review_request(req, &ctx.call_id);
+        let spec = match Self::build_command_spec(req) {
+            Ok(spec) => spec,
+            Err(err) => {
+                if is_smart_access_mode(ctx.turn.as_ref()) {
+                    clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
+                }
+                return Err(err);
+            }
+        };
+        let env = match attempt.env_for(spec, None) {
+            Ok(env) => env,
+            Err(err) => {
+                if is_smart_access_mode(ctx.turn.as_ref()) {
+                    clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
+                }
+                return Err(ToolError::Codex(err.into()));
+            }
+        };
+        let mut out = match execute_env(env, Self::stdout_stream(ctx)).await {
+            Ok(out) => out,
+            Err(err) => {
+                if is_smart_access_mode(ctx.turn.as_ref()) {
+                    clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
+                }
+                return Err(ToolError::Codex(err));
+            }
+        };
+        maybe_record_endpoint_security_runtime_mismatch(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &ctx.call_id,
+            &format!("{}:smart-access-runtime", ctx.call_id),
+            guardian_assessment_action_value(&guardian_request),
+            &mut out,
+            daemon_log_offset,
+        )
+        .await;
         Ok(out)
     }
 }

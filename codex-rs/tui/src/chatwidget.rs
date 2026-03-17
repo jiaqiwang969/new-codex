@@ -1579,11 +1579,11 @@ impl ChatWidget {
             .known_collab_agent_changes_by_turn
             .len()
             .saturating_sub(rollback_turns);
-        let drained = self
+        for turn_changes in self
             .known_collab_agent_changes_by_turn
             .drain(drain_start..)
-            .collect::<Vec<_>>();
-        for turn_changes in drained.into_iter().rev() {
+            .rev()
+        {
             for change in turn_changes.into_iter().rev() {
                 if let Some(previous) = change.previous {
                     self.known_collab_agents.insert(change.thread_id, previous);
@@ -2041,10 +2041,33 @@ impl ChatWidget {
                 .get("mismatch_summary")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("none");
+            let mismatch_reason_code = trace
+                .get("mismatch_reason_code")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let mismatch_classification = trace
+                .get("mismatch_classification")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let actual_effect = trace
+                .get("actual_effect")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("none");
+            let mismatch_detail = if mismatch_reason_code == "none"
+                && mismatch_classification == "none"
+                && actual_effect == "none"
+            {
+                mismatch_summary.to_string()
+            } else {
+                format!(
+                    "{mismatch_summary}; reason {mismatch_reason_code}; class {mismatch_classification}; actual {actual_effect}"
+                )
+            };
             let prefix = match decision {
                 "allow_with_permit" => "Smart Access permit issued",
                 "allow_with_amended_permit" => "Smart Access narrowed and permitted",
                 "deny" => "Smart Access denied",
+                "runtime_mismatch" => "Smart Access runtime mismatch",
                 "escalate_to_human" | "fallback_to_human" => {
                     "Smart Access deferred to manual approval"
                 }
@@ -2052,7 +2075,7 @@ impl ChatWidget {
                 _ => "Smart Access recorded",
             };
             let mut message = format!(
-                "{prefix}: {summary} (risk {risk_score}; effects {predicted_effects}; permit {permit_summary}; mismatch {mismatch_summary})"
+                "{prefix}: {summary} (risk {risk_score}; effects {predicted_effects}; permit {permit_summary}; mismatch {mismatch_detail})"
             );
             if let Some(rationale) = rationale.filter(|rationale| !rationale.trim().is_empty()) {
                 message.push_str(". ");
@@ -2060,7 +2083,11 @@ impl ChatWidget {
             }
             let warning = matches!(
                 decision,
-                "deny" | "escalate_to_human" | "fallback_to_human" | "downgrade_to_default"
+                "deny"
+                    | "runtime_mismatch"
+                    | "escalate_to_human"
+                    | "fallback_to_human"
+                    | "downgrade_to_default"
             );
             Some((message, warning))
         };
