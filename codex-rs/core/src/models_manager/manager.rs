@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result as CoreResult;
+use crate::model_compat::normalize_legacy_gemini_model_selection;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
@@ -208,6 +209,8 @@ impl ModelsManager {
         candidates: &[ModelInfo],
         config: &Config,
     ) -> ModelInfo {
+        let (model, _) = normalize_legacy_gemini_model_selection(model, None);
+        let model = model.as_ref();
         // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
         // retry for namespaced slugs like `custom/gpt-5.3-codex`.
         let remote = Self::find_model_by_longest_prefix(model, candidates)

@@ -1,0 +1,9 @@
+---
+source: tui/src/chatwidget/tests.rs
+assertion_line: 4269
+expression: rendered
+---
+• [PDF Update] Starting PDF processing...
+Input: <PDF_PATH>
+Output: <OUTPUT_DIR>
+Prompt: remove the background

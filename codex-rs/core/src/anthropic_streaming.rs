@@ -26,11 +26,158 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::error::Result;
 
+#[derive(Debug, Default)]
+struct AnthropicTextStreamState {
+    raw_text: String,
+    emitted_reasoning: String,
+    emitted_answer: String,
+}
+
+#[derive(Debug, Default)]
+struct AnthropicTextDeltas {
+    reasoning_delta: Option<String>,
+    answer_delta: Option<String>,
+}
+
+impl AnthropicTextStreamState {
+    fn ingest(&mut self, chunk: &str) -> AnthropicTextDeltas {
+        if chunk.starts_with(&self.raw_text) {
+            self.raw_text.clear();
+            self.raw_text.push_str(chunk);
+        } else if self.raw_text.starts_with(chunk) {
+            return AnthropicTextDeltas::default();
+        } else {
+            self.raw_text.push_str(chunk);
+        }
+
+        let (reasoning, answer) = extract_reasoning_and_answer(&self.raw_text);
+        AnthropicTextDeltas {
+            reasoning_delta: update_emitted_text(&reasoning, &mut self.emitted_reasoning),
+            answer_delta: update_emitted_text(&answer, &mut self.emitted_answer),
+        }
+    }
+}
+
+fn update_emitted_text(next: &str, emitted: &mut String) -> Option<String> {
+    if next == emitted {
+        return None;
+    }
+
+    let delta = if let Some(suffix) = next.strip_prefix(emitted.as_str()) {
+        suffix.to_string()
+    } else {
+        next.to_string()
+    };
+
+    emitted.clear();
+    emitted.push_str(next);
+    (!delta.is_empty()).then_some(delta)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MarkupMode {
+    #[default]
+    Plain,
+    Thinking,
+    Answer,
+}
+
+fn extract_reasoning_and_answer(raw: &str) -> (String, String) {
+    if !contains_reasoning_markup(raw) {
+        return (String::new(), raw.to_string());
+    }
+
+    let mut reasoning = String::new();
+    let mut answer = String::new();
+    let mut cursor = 0usize;
+    let mut mode = MarkupMode::Plain;
+
+    while let Some(start_rel) = raw[cursor..].find('<') {
+        let start = cursor + start_rel;
+        let text = &raw[cursor..start];
+        push_markup_text(text, mode, &mut reasoning, &mut answer);
+
+        let tail = &raw[start..];
+        if tail.starts_with("<thinking>") {
+            mode = MarkupMode::Thinking;
+            cursor = start + "<thinking>".len();
+            continue;
+        }
+        if tail.starts_with("</thinking>") {
+            mode = MarkupMode::Plain;
+            cursor = start + "</thinking>".len();
+            continue;
+        }
+        if tail.starts_with("<answer>") {
+            mode = MarkupMode::Answer;
+            cursor = start + "<answer>".len();
+            continue;
+        }
+        if tail.starts_with("</answer>") {
+            mode = MarkupMode::Plain;
+            cursor = start + "</answer>".len();
+            continue;
+        }
+        if looks_like_partial_markup_tag(tail) {
+            return (reasoning, answer);
+        }
+
+        push_markup_text("<", mode, &mut reasoning, &mut answer);
+        cursor = start + 1;
+    }
+
+    if cursor < raw.len() {
+        push_markup_text(&raw[cursor..], mode, &mut reasoning, &mut answer);
+    }
+
+    (reasoning, answer)
+}
+
+fn contains_reasoning_markup(raw: &str) -> bool {
+    raw.contains("<thinking>")
+        || raw.contains("<thinking")
+        || raw.contains("</thinking>")
+        || raw.contains("</thinking")
+        || raw.contains("<answer>")
+        || raw.contains("<answer")
+        || raw.contains("</answer>")
+        || raw.contains("</answer")
+}
+
+fn looks_like_partial_markup_tag(fragment: &str) -> bool {
+    if !fragment.starts_with('<') {
+        return false;
+    }
+    const TAGS: [&str; 4] = ["<thinking>", "</thinking>", "<answer>", "</answer>"];
+    TAGS.iter().any(|tag| tag.starts_with(fragment))
+}
+
+fn push_markup_text(text: &str, mode: MarkupMode, reasoning: &mut String, answer: &mut String) {
+    if text.is_empty() {
+        return;
+    }
+
+    match mode {
+        MarkupMode::Thinking => reasoning.push_str(text),
+        MarkupMode::Answer => answer.push_str(text),
+        MarkupMode::Plain => {
+            if !text.trim().is_empty() {
+                if answer.is_empty() {
+                    answer.push_str(text.trim_start());
+                } else {
+                    answer.push_str(text);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 enum BlockState {
     Text {
         id: String,
         accumulated: String,
+        text_stream_state: AnthropicTextStreamState,
     },
     Thinking {
         id: String,
@@ -167,19 +314,36 @@ async fn process_anthropic_sse<S>(
                             return;
                         }
                         saw_any_output = true;
-                        if !text.is_empty()
+                        let mut accumulated = String::new();
+                        let mut text_stream_state = AnthropicTextStreamState::default();
+                        let deltas = text_stream_state.ingest(&text);
+                        if let Some(reasoning_delta) = deltas.reasoning_delta
                             && tx_event
-                                .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
+                                .send(Ok(ResponseEvent::ReasoningContentDelta {
+                                    delta: reasoning_delta,
+                                    content_index: 0,
+                                }))
                                 .await
                                 .is_err()
                         {
                             return;
                         }
+                        if let Some(answer_delta) = deltas.answer_delta {
+                            accumulated.push_str(&answer_delta);
+                            if tx_event
+                                .send(Ok(ResponseEvent::OutputTextDelta(answer_delta)))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
                         blocks.insert(
                             index,
                             BlockState::Text {
                                 id,
-                                accumulated: text,
+                                accumulated,
+                                text_stream_state,
                             },
                         );
                     }
@@ -251,17 +415,35 @@ async fn process_anthropic_sse<S>(
                 };
                 match (&mut *block, parsed.delta) {
                     (
-                        BlockState::Text { accumulated, .. },
+                        BlockState::Text {
+                            accumulated,
+                            text_stream_state,
+                            ..
+                        },
                         AnthropicContentBlockDelta::TextDelta { text },
                     ) => {
-                        if tx_event
-                            .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
-                            .await
-                            .is_err()
+                        let deltas = text_stream_state.ingest(&text);
+                        if let Some(reasoning_delta) = deltas.reasoning_delta
+                            && tx_event
+                                .send(Ok(ResponseEvent::ReasoningContentDelta {
+                                    delta: reasoning_delta,
+                                    content_index: 0,
+                                }))
+                                .await
+                                .is_err()
                         {
                             return;
                         }
-                        accumulated.push_str(&text);
+                        if let Some(answer_delta) = deltas.answer_delta {
+                            if tx_event
+                                .send(Ok(ResponseEvent::OutputTextDelta(answer_delta.clone())))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            accumulated.push_str(&answer_delta);
+                        }
                     }
                     (
                         BlockState::Thinking { accumulated, .. },
@@ -304,7 +486,9 @@ async fn process_anthropic_sse<S>(
                     continue;
                 };
                 match block {
-                    BlockState::Text { id, accumulated } => {
+                    BlockState::Text {
+                        id, accumulated, ..
+                    } => {
                         if accumulated.is_empty() {
                             continue;
                         }
@@ -412,7 +596,9 @@ async fn process_anthropic_sse<S>(
                 continue;
             };
             match block {
-                BlockState::Text { id, accumulated } => {
+                BlockState::Text {
+                    id, accumulated, ..
+                } => {
                     if accumulated.is_empty() {
                         continue;
                     }
@@ -628,5 +814,53 @@ mod tests {
         assert_eq!(name, "shell_command".to_string());
         assert_eq!(call_id, "toolu_1".to_string());
         assert_eq!(args, "{\"cmd\":\"echo hi\"}".to_string());
+    }
+
+    #[tokio::test]
+    async fn text_block_with_thinking_markup_routes_only_answer_to_message_output() {
+        let payload = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"<thinking>The user just said hi.\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" Simple greeting.</thinking>\\n\\nHey\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"! What are you working on?\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let bytes_stream =
+            futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from(payload))]);
+        let mut response_stream = spawn_anthropic_sse_stream(bytes_stream, Duration::from_secs(1));
+
+        let mut reasoning = String::new();
+        let mut answer_deltas = String::new();
+        let mut final_output = String::new();
+
+        while let Some(event) = response_stream.next().await {
+            match event.expect("stream event should be ok") {
+                ResponseEvent::ReasoningContentDelta { delta, .. } => reasoning.push_str(&delta),
+                ResponseEvent::OutputTextDelta(delta) => answer_deltas.push_str(&delta),
+                ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }) => {
+                    for item in content {
+                        if let ContentItem::OutputText { text } = item {
+                            final_output.push_str(&text);
+                        }
+                    }
+                }
+                ResponseEvent::Completed { .. } => break,
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            reasoning,
+            "The user just said hi. Simple greeting.".to_string()
+        );
+        assert_eq!(answer_deltas, "Hey! What are you working on?".to_string());
+        assert_eq!(final_output, "Hey! What are you working on?".to_string());
     }
 }

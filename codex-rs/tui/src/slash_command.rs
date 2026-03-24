@@ -137,7 +137,7 @@ impl SlashCommand {
             SlashCommand::ImageQuality => "set output image quality (1K, 2K, 4K)",
             SlashCommand::AspectRatio => "set output aspect ratio (1:1, 16:9, 9:16, 4:3, 3:4)",
             SlashCommand::ClearRef => "clear the active reference images",
-            SlashCommand::PdfUpdate => "process PDF: remove watermark + batch image processing",
+            SlashCommand::PdfUpdate => "process PDF pages + batch image processing",
             SlashCommand::OpenImage => "open the most recently generated image",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Permissions => "choose what Codex is allowed to do",

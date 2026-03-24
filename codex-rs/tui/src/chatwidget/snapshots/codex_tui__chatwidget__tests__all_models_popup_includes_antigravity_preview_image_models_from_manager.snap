@@ -1,0 +1,19 @@
+---
+source: tui/src/chatwidget/tests.rs
+assertion_line: 5915
+expression: popup
+---
+  Select Model and Effort
+  Access legacy models by running codex -m <model_name> or in your config.toml
+
+  13. gemma-3n                                      Local Gemma 3n served via Gemini-compatible API.
+  14. grok-4-latest                                 xAI Grok 4 via OpenAI-compatible Responses API (256K context).
+  15. grok-4-1-fast-reasoning                       xAI Grok 4.1 fast reasoning via OpenAI-compatible Responses API (2M context).
+  16. claude-opus-4-6                               Anthropic Claude Opus 4.6 — deep reasoning with 1M context.
+  17. claude-sonnet-4-6                             Anthropic Claude Sonnet 4.6 — fast execution with 1M context.
+  18. claude-haiku-4-5-20251001                     Anthropic Claude Haiku 4.5 — fastest responses with 200K context.
+  19. antigravity/gemini-3.1-flash-image-preview    Gemini 3.1 Flash Image via CLIProxyAPI for text, image understanding, and image
+                                                    generation.
+› 20. antigravity/gemini-3.1-pro-preview (current)  Gemini 3.1 Pro via CLIProxyAPI with full thoughtSignature support and 1M context.
+
+  Press enter to select reasoning effort, or esc to dismiss.

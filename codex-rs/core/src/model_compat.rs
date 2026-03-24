@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+
+use codex_protocol::openai_models::ReasoningEffort;
+
 /// Returns the canonical Grok model slug when the input refers to a Grok model.
 ///
 /// Accepts both `grok-*` and namespaced `xai/grok-*` forms.
@@ -69,6 +73,68 @@ pub(crate) fn is_openai_model_slug(slug: &str) -> bool {
         || normalized.starts_with("o1-")
         || normalized.starts_with("o3-")
         || normalized.starts_with("o4-")
+}
+
+pub(crate) fn normalize_legacy_gemini_model_selection(
+    model: &str,
+    reasoning_effort: Option<ReasoningEffort>,
+) -> (Cow<'_, str>, Option<ReasoningEffort>) {
+    match model {
+        "gemini-3.1-pro-high" => (
+            Cow::Borrowed("gemini-3.1-pro-preview"),
+            Some(ReasoningEffort::High),
+        ),
+        "gemini-3.1-pro-low" => (
+            Cow::Borrowed("gemini-3.1-pro-preview"),
+            Some(ReasoningEffort::Low),
+        ),
+        "gemini-3-pro-high" => (
+            Cow::Borrowed("gemini-3-pro-preview"),
+            Some(ReasoningEffort::High),
+        ),
+        "gemini-3-pro-low" => (
+            Cow::Borrowed("gemini-3-pro-preview"),
+            Some(ReasoningEffort::Low),
+        ),
+        "gemini-3-flash" => (Cow::Borrowed("gemini-3-flash-preview"), reasoning_effort),
+        "gemini-3-pro-image" => (
+            Cow::Borrowed("gemini-3-pro-image-preview"),
+            reasoning_effort,
+        ),
+        "gemini-3.1-flash-image" => (
+            Cow::Borrowed("gemini-3.1-flash-image-preview"),
+            reasoning_effort,
+        ),
+        "antigravity/gemini-3.1-pro-high" | "antigravity-gemini/gemini-3.1-pro-high" => (
+            Cow::Borrowed("antigravity/gemini-3.1-pro-preview"),
+            Some(ReasoningEffort::High),
+        ),
+        "antigravity/gemini-3.1-pro-low" | "antigravity-gemini/gemini-3.1-pro-low" => (
+            Cow::Borrowed("antigravity/gemini-3.1-pro-preview"),
+            Some(ReasoningEffort::Low),
+        ),
+        "antigravity/gemini-3-pro-high" | "antigravity-gemini/gemini-3-pro-high" => (
+            Cow::Borrowed("antigravity/gemini-3-pro-preview"),
+            Some(ReasoningEffort::High),
+        ),
+        "antigravity/gemini-3-pro-low" | "antigravity-gemini/gemini-3-pro-low" => (
+            Cow::Borrowed("antigravity/gemini-3-pro-preview"),
+            Some(ReasoningEffort::Low),
+        ),
+        "antigravity/gemini-3-flash" | "antigravity-gemini/gemini-3-flash" => (
+            Cow::Borrowed("antigravity/gemini-3-flash-preview"),
+            reasoning_effort,
+        ),
+        "antigravity/gemini-3.1-flash-image" | "antigravity-gemini/gemini-3.1-flash-image" => (
+            Cow::Borrowed("antigravity/gemini-3.1-flash-image-preview"),
+            reasoning_effort,
+        ),
+        "antigravity-gemini/gemini-3.1-flash-image-preview" => (
+            Cow::Borrowed("antigravity/gemini-3.1-flash-image-preview"),
+            reasoning_effort,
+        ),
+        _ => (Cow::Borrowed(model), reasoning_effort),
+    }
 }
 
 pub(crate) fn model_supports_web_search_tool(slug: &str) -> bool {
@@ -233,5 +299,94 @@ mod tests {
         assert!(!is_openai_model_slug("gemini-3-pro-preview"));
         assert!(!is_openai_model_slug("grok-4-latest"));
         assert!(!is_openai_model_slug("llama3"));
+    }
+
+    #[test]
+    fn legacy_gemini_model_selection_normalizes_old_slugs_and_effort() {
+        for (model, reasoning_effort, expected_model, expected_effort) in [
+            (
+                "gemini-3.1-pro-high",
+                Some(ReasoningEffort::Minimal),
+                "gemini-3.1-pro-preview",
+                Some(ReasoningEffort::High),
+            ),
+            (
+                "gemini-3.1-pro-low",
+                Some(ReasoningEffort::High),
+                "gemini-3.1-pro-preview",
+                Some(ReasoningEffort::Low),
+            ),
+            (
+                "antigravity/gemini-3-pro-high",
+                Some(ReasoningEffort::Minimal),
+                "antigravity/gemini-3-pro-preview",
+                Some(ReasoningEffort::High),
+            ),
+            (
+                "antigravity-gemini/gemini-3-flash",
+                Some(ReasoningEffort::Medium),
+                "antigravity/gemini-3-flash-preview",
+                Some(ReasoningEffort::Medium),
+            ),
+            (
+                "gemini-3-pro-image",
+                None,
+                "gemini-3-pro-image-preview",
+                None,
+            ),
+            (
+                "gemini-3-pro-image-preview",
+                Some(ReasoningEffort::Medium),
+                "gemini-3-pro-image-preview",
+                Some(ReasoningEffort::Medium),
+            ),
+            (
+                "gemini-3.1-flash-image",
+                None,
+                "gemini-3.1-flash-image-preview",
+                None,
+            ),
+            (
+                "gemini-3.1-flash-image-preview",
+                Some(ReasoningEffort::Medium),
+                "gemini-3.1-flash-image-preview",
+                Some(ReasoningEffort::Medium),
+            ),
+            (
+                "antigravity/gemini-3.1-flash-image",
+                None,
+                "antigravity/gemini-3.1-flash-image-preview",
+                None,
+            ),
+            (
+                "antigravity/gemini-3.1-flash-image-preview",
+                Some(ReasoningEffort::Medium),
+                "antigravity/gemini-3.1-flash-image-preview",
+                Some(ReasoningEffort::Medium),
+            ),
+            (
+                "antigravity-gemini/gemini-3.1-flash-image",
+                None,
+                "antigravity/gemini-3.1-flash-image-preview",
+                None,
+            ),
+            (
+                "antigravity-gemini/gemini-3.1-flash-image-preview",
+                Some(ReasoningEffort::Medium),
+                "antigravity/gemini-3.1-flash-image-preview",
+                Some(ReasoningEffort::Medium),
+            ),
+            (
+                "antigravity/gemini-3.1-pro-preview",
+                Some(ReasoningEffort::High),
+                "antigravity/gemini-3.1-pro-preview",
+                Some(ReasoningEffort::High),
+            ),
+        ] {
+            let (normalized_model, normalized_effort) =
+                normalize_legacy_gemini_model_selection(model, reasoning_effort);
+            assert_eq!(normalized_model.as_ref(), expected_model);
+            assert_eq!(normalized_effort, expected_effort);
+        }
     }
 }

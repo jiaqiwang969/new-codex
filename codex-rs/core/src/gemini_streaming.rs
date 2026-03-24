@@ -192,7 +192,11 @@ fn push_markup_text(text: &str, mode: MarkupMode, reasoning: &mut String, answer
             // When markup tags are present, whitespace between sections should
             // not become user-visible output.
             if !text.trim().is_empty() {
-                answer.push_str(text);
+                if answer.is_empty() {
+                    answer.push_str(text.trim_start());
+                } else {
+                    answer.push_str(text);
+                }
             }
         }
     }
@@ -761,6 +765,14 @@ mod tests {
 
         assert_eq!(reasoning, "plan");
         assert_eq!(answer, "done");
+    }
+
+    #[test]
+    fn extract_reasoning_and_answer_trims_plain_answer_prefix_after_thinking_markup() {
+        let (reasoning, answer) = extract_reasoning_and_answer("<thinking>plan</thinking>\n\nDone");
+
+        assert_eq!(reasoning, "plan");
+        assert_eq!(answer, "Done");
     }
 
     #[test]

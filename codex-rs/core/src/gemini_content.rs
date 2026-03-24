@@ -74,15 +74,6 @@ fn supports_multiple_inline_images(api_model: &str) -> bool {
 /// Strip Gemini-specific suffixes from the model slug to get the upstream
 /// API model name.
 pub(crate) fn strip_model_suffix(model: &str) -> &str {
-    if matches!(
-        model,
-        "antigravity/gemini-3-pro-image-preview" | "antigravity-gemini/gemini-3-pro-image-preview"
-    ) {
-        // CLIProxyAPI antigravity alias: keep client-facing preview slug working
-        // while routing to the canonical upstream model.
-        return "gemini-3-pro-image";
-    }
-
     let m = model.strip_suffix("-codex").unwrap_or(model);
     let m = m.strip_suffix("-germini").unwrap_or(m);
     let m = m.strip_suffix("-gemini").unwrap_or(m);
@@ -875,14 +866,22 @@ mod tests {
     }
 
     #[test]
-    fn strip_model_suffix_maps_antigravity_image_preview_to_canonical_model() {
+    fn strip_model_suffix_preserves_antigravity_preview_image_api_model() {
+        assert_eq!(
+            strip_model_suffix("antigravity/gemini-3.1-flash-image-preview"),
+            "gemini-3.1-flash-image-preview"
+        );
+        assert_eq!(
+            strip_model_suffix("antigravity-gemini/gemini-3.1-flash-image-preview"),
+            "gemini-3.1-flash-image-preview"
+        );
         assert_eq!(
             strip_model_suffix("antigravity/gemini-3-pro-image-preview"),
-            "gemini-3-pro-image"
+            "gemini-3-pro-image-preview"
         );
         assert_eq!(
             strip_model_suffix("antigravity-gemini/gemini-3-pro-image-preview"),
-            "gemini-3-pro-image"
+            "gemini-3-pro-image-preview"
         );
     }
 

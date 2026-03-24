@@ -28,7 +28,7 @@
   - /ref-image：设置参考图片
   - /ref-image-batch：批量处理文件夹中的图片
   - /image-quality (1K/2K/4K) + /aspect-ratio (1:1/16:9/9:16/4:3/3:4)
-  - /pdf-update：PDF 水印去除 + 批量图片处理
+  - /pdf-update：PDF 转图片 + 批量图片处理
   - Gemini Image 模型专用配置（response_modalities、image_config）
 
   5. TUI 增强

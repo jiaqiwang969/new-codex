@@ -135,7 +135,7 @@ pub(crate) fn scan_image_files(dir: &Path) -> Vec<PathBuf> {
     images
 }
 
-/// Embedded Python script for PDF-to-image conversion and watermark removal.
+/// Embedded Python script for PDF-to-image conversion.
 pub(crate) const PDF_PROCESS_SCRIPT: &str = r#"
 import sys
 import os
@@ -156,11 +156,9 @@ def main():
 
     try:
         from pdf2image import convert_from_path
-        import cv2
-        import numpy as np
     except ImportError as e:
         print(f"Error: Missing dependency: {e}", file=sys.stderr)
-        print("Run: pip install pdf2image opencv-python-headless numpy", file=sys.stderr)
+        print("Run: pip install pdf2image Pillow", file=sys.stderr)
         sys.exit(1)
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -174,38 +172,13 @@ def main():
         sys.exit(1)
 
     print(f"Total pages: {len(images)}")
-    print("Removing watermarks...")
-    processed_count = 0
 
     for i, image in enumerate(images):
-        temp_path = os.path.join(output_dir, f"_temp_{i}.png")
         output_path = os.path.join(output_dir, f"page_{i+1:03d}.png")
-        image.save(temp_path, "PNG")
+        image.save(output_path, "PNG")
+        print(f"  Saved: page_{i+1:03d}.png")
 
-        img = cv2.imread(temp_path)
-        height, width = img.shape[:2]
-        roi_x, roi_y = int(width * 0.80), int(height * 0.92)
-        roi = img[roi_y:height, roi_x:width]
-        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        mask_roi = cv2.inRange(gray_roi, 150, 240)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        mask_roi = cv2.dilate(mask_roi, kernel, iterations=2)
-        mask = np.zeros((height, width), dtype=np.uint8)
-        mask[roi_y:height, roi_x:width] = mask_roi
-
-        if np.sum(mask) > 100:
-            kernel_expand = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-            mask = cv2.dilate(mask, kernel_expand, iterations=1)
-            result = cv2.inpaint(img, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-            cv2.imwrite(output_path, result)
-            processed_count += 1
-            print(f"  page_{i+1:03d}.png: watermark removed")
-        else:
-            cv2.imwrite(output_path, img)
-            print(f"  page_{i+1:03d}.png: no watermark")
-        os.remove(temp_path)
-
-    print(f"Done! {len(images)} pages, {processed_count} watermarks removed")
+    print(f"Done! {len(images)} pages exported")
 
 if __name__ == "__main__":
     main()
@@ -279,3 +252,19 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::PDF_PROCESS_SCRIPT;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn pdf_process_script_no_longer_references_watermark_removal() {
+        let forbidden_markers = ["watermark", "cv2", "numpy"]
+            .into_iter()
+            .filter(|marker| PDF_PROCESS_SCRIPT.contains(marker))
+            .collect::<Vec<_>>();
+        assert_eq!(forbidden_markers, Vec::<&str>::new());
+        assert_eq!(PDF_PROCESS_SCRIPT.contains("convert_from_path"), true);
+    }
+}

@@ -285,6 +285,26 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             input_modalities: default_input_modalities(),
         },
         ModelPreset {
+            id: "gemini-3.1-flash-image-preview".to_string(),
+            model: "gemini-3.1-flash-image-preview".to_string(),
+            display_name: "Gemini 3.1 Flash Image".to_string(),
+            description:
+                "Gemini 3.1 Flash Image for text, image understanding, and image generation."
+                    .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description:
+                    "Default Gemini reasoning behaviour for image workflows.".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
             id: "gemini-3-pro-image-preview".to_string(),
             model: "gemini-3-pro-image-preview".to_string(),
             display_name: "Gemini 3 Pro Image".to_string(),
@@ -450,6 +470,25 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
         },
         // Antigravity Gemini models
         ModelPreset {
+            id: "antigravity/gemini-3.1-flash-image-preview".to_string(),
+            model: "antigravity/gemini-3.1-flash-image-preview".to_string(),
+            display_name: "Antigravity Gemini 3.1 Flash Image".to_string(),
+            description: "Gemini 3.1 Flash Image via CLIProxyAPI for text, image understanding, and image generation."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description:
+                    "Default Gemini reasoning behaviour for image workflows.".to_string(),
+            }],
+            supports_personality: false,
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+            input_modalities: default_input_modalities(),
+        },
+        ModelPreset {
             id: "antigravity/gemini-3.1-pro-preview".to_string(),
             model: "antigravity/gemini-3.1-pro-preview".to_string(),
             display_name: "Antigravity Gemini 3.1 Pro".to_string(),
@@ -570,25 +609,6 @@ pub(crate) static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
                     description: "Balanced speed and reasoning depth".to_string(),
                 },
             ],
-            supports_personality: false,
-            is_default: false,
-            upgrade: None,
-            show_in_picker: true,
-            supported_in_api: true,
-            input_modalities: default_input_modalities(),
-        },
-        ModelPreset {
-            id: "antigravity/gemini-3-pro-image-preview".to_string(),
-            model: "antigravity/gemini-3-pro-image-preview".to_string(),
-            display_name: "Antigravity Gemini 3 Pro Image".to_string(),
-            description: "Gemini 3 Pro Image via CLIProxyAPI for text, image understanding, and image generation."
-                .to_string(),
-            default_reasoning_effort: ReasoningEffort::Medium,
-            supported_reasoning_efforts: vec![ReasoningEffortPreset {
-                effort: ReasoningEffort::Medium,
-                description:
-                    "Default Gemini reasoning behaviour for image workflows.".to_string(),
-            }],
             supports_personality: false,
             is_default: false,
             upgrade: None,
@@ -1040,5 +1060,51 @@ mod tests {
                 ReasoningEffort::High,
             ]
         );
+    }
+
+    #[test]
+    fn gemini_image_presets_keep_only_supported_antigravity_preview_models() {
+        for preview_slug in [
+            "gemini-3.1-flash-image-preview",
+            "gemini-3-pro-image-preview",
+            "antigravity/gemini-3.1-flash-image-preview",
+        ] {
+            let preset = PRESETS
+                .iter()
+                .find(|preset| preset.model == preview_slug)
+                .unwrap_or_else(|| panic!("{preview_slug} preset should exist"));
+
+            assert!(
+                preset.show_in_picker,
+                "{preview_slug} should appear in picker"
+            );
+            assert_eq!(
+                preset.default_reasoning_effort,
+                ReasoningEffort::Medium,
+                "{preview_slug} should default to medium reasoning",
+            );
+            assert_eq!(
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .map(|preset| preset.effort)
+                    .collect::<Vec<_>>(),
+                vec![ReasoningEffort::Medium],
+                "{preview_slug} should only support medium reasoning",
+            );
+        }
+
+        for removed_slug in [
+            "gemini-3.1-flash-image",
+            "gemini-3-pro-image",
+            "antigravity/gemini-3.1-flash-image",
+            "antigravity/gemini-3-pro-image",
+            "antigravity/gemini-3-pro-image-preview",
+        ] {
+            assert!(
+                PRESETS.iter().all(|preset| preset.model != removed_slug),
+                "{removed_slug} should not remain in presets",
+            );
+        }
     }
 }
