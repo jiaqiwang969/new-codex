@@ -12,9 +12,6 @@ use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::ShellType;
 use crate::skills::SkillMetadata;
-use crate::smart_access::SmartAccessApprovalOutcome;
-use crate::smart_access::merge_human_approval_reason;
-use crate::smart_access::review_smart_access_request;
 use crate::tools::runtimes::ExecveSessionApproval;
 use crate::tools::runtimes::build_command_spec;
 use crate::tools::sandboxing::SandboxAttempt;
@@ -205,29 +202,21 @@ impl CoreShellActionProvider {
         let approval_id = Uuid::new_v4().to_string();
         Ok(stopwatch
             .pause_for(async move {
-                let approval_request = GuardianApprovalRequest::Execve {
-                    id: approval_id.clone(),
-                    tool_name: "shell".to_string(),
-                    program: program.to_string_lossy().into_owned(),
-                    argv: argv.to_vec(),
-                    cwd: workdir.clone(),
-                    additional_permissions: additional_permissions.clone(),
-                };
-                let mut human_reason = None;
-                if let Some(outcome) =
-                    review_smart_access_request(&session, &turn, approval_request.clone(), None)
-                        .await
-                {
-                    match outcome {
-                        SmartAccessApprovalOutcome::Final(decision) => return decision,
-                        SmartAccessApprovalOutcome::FallbackToHuman { rationale } => {
-                            human_reason =
-                                merge_human_approval_reason(human_reason, rationale.as_str());
-                        }
-                    }
-                }
                 if routes_approval_to_guardian(&turn) {
-                    return review_approval_request(&session, &turn, approval_request, None).await;
+                    return review_approval_request(
+                        &session,
+                        &turn,
+                        GuardianApprovalRequest::Execve {
+                            id: approval_id.clone(),
+                            tool_name: "shell".to_string(),
+                            program: program.to_string_lossy().into_owned(),
+                            argv: argv.to_vec(),
+                            cwd: workdir,
+                            additional_permissions,
+                        },
+                        None,
+                    )
+                    .await;
                 }
                 let available_decisions = vec![
                     Some(ReviewDecision::Approved),
@@ -250,7 +239,7 @@ impl CoreShellActionProvider {
                         Some(approval_id),
                         command,
                         workdir,
-                        human_reason,
+                        None,
                         None,
                         None,
                         additional_permissions,

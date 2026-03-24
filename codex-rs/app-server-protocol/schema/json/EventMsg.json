@@ -1280,15 +1280,6 @@
               ],
               "description": "How to sandbox commands executed in the system"
             },
-            "security_mode": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/SecurityMode"
-                }
-              ],
-              "default": "default",
-              "description": "Top-level security posture selected for this session."
-            },
             "session_id": {
               "$ref": "#/definitions/ThreadId"
             },
@@ -5786,14 +5777,6 @@
         }
       ]
     },
-    "SecurityMode": {
-      "enum": [
-        "default",
-        "smart-access",
-        "full-access"
-      ],
-      "type": "string"
-    },
     "SessionNetworkProxyRuntime": {
       "properties": {
         "admin_addr": {
@@ -7166,15 +7149,6 @@
             }
           ],
           "description": "How to sandbox commands executed in the system"
-        },
-        "security_mode": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SecurityMode"
-            }
-          ],
-          "default": "default",
-          "description": "Top-level security posture selected for this session."
         },
         "session_id": {
           "$ref": "#/definitions/ThreadId"

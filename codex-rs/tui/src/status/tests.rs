@@ -12,9 +12,7 @@ use codex_core::WireApi;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CreditsSnapshot;
@@ -831,61 +829,6 @@ async fn status_permissions_non_default_workspace_write_is_custom() {
         permissions_text,
         Some("Custom (workspace-write with network access, on-request)")
     );
-}
-
-#[tokio::test]
-async fn status_permissions_render_smart_access_mode() {
-    let temp_home = TempDir::new().expect("temp home");
-    let mut config = test_config(&temp_home).await;
-    config.security_mode = SecurityMode::SmartAccess;
-    config.approvals_reviewer = ApprovalsReviewer::User;
-    config
-        .permissions
-        .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("set approval policy");
-    config
-        .permissions
-        .sandbox_policy
-        .set(SandboxPolicy::new_workspace_write_policy())
-        .expect("set sandbox policy");
-
-    let auth_manager = test_auth_manager(&config);
-    let usage = TokenUsage::default();
-    let captured_at = chrono::Local
-        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
-        .single()
-        .expect("timestamp");
-    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
-
-    let composite = new_status_output(
-        &config,
-        &auth_manager,
-        None,
-        &usage,
-        &None,
-        None,
-        None,
-        None,
-        None,
-        captured_at,
-        &model_slug,
-        None,
-        None,
-    );
-    let rendered_lines = render_lines(&composite.display_lines(120));
-    let permissions_line = rendered_lines
-        .iter()
-        .find(|line| line.contains("Permissions:"))
-        .expect("permissions line");
-    let permissions_text = permissions_line
-        .split("Permissions:")
-        .nth(1)
-        .map(str::trim)
-        .map(|text| text.trim_end_matches('│'))
-        .map(str::trim);
-
-    assert_eq!(permissions_text, Some("Smart Access"));
 }
 
 #[tokio::test]

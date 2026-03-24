@@ -15,8 +15,6 @@ use crate::config_loader::RequirementSource;
 use crate::config_loader::load_requirements_toml;
 use crate::config_loader::version_for_toml;
 use codex_config::CONFIG_TOML_FILE;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::protocol::AskForApproval;
@@ -232,64 +230,6 @@ extra = true
         Some(&TomlValue::String("managed_config".to_string()))
     );
     assert_eq!(nested.get("extra"), Some(&TomlValue::Boolean(true)));
-}
-
-#[tokio::test]
-async fn explicit_security_mode_remains_distinct_from_approval_fields() -> std::io::Result<()> {
-    let codex_home = tempdir().expect("tempdir");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"security_mode = "smart-access"
-approval_policy = "never"
-approvals_reviewer = "user"
-sandbox_mode = "read-only"
-"#,
-    )?;
-
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert_eq!(config.security_mode, SecurityMode::SmartAccess);
-    assert_eq!(
-        config.permissions.approval_policy.value(),
-        AskForApproval::Never
-    );
-    assert_eq!(config.approvals_reviewer, ApprovalsReviewer::User);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn legacy_guardian_reviewer_derives_smart_access_security_mode() -> std::io::Result<()> {
-    let codex_home = tempdir().expect("tempdir");
-    std::fs::write(
-        codex_home.path().join(CONFIG_TOML_FILE),
-        r#"approval_policy = "on-request"
-approvals_reviewer = "guardian_subagent"
-sandbox_mode = "workspace-write"
-"#,
-    )?;
-
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .fallback_cwd(Some(codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-
-    assert_eq!(config.security_mode, SecurityMode::SmartAccess);
-    assert_eq!(
-        config.permissions.approval_policy.value(),
-        AskForApproval::OnRequest
-    );
-    assert_eq!(
-        config.approvals_reviewer,
-        ApprovalsReviewer::GuardianSubagent
-    );
-
-    Ok(())
 }
 
 #[tokio::test]

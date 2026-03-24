@@ -223,8 +223,9 @@ async fn mcp_server_elicitation_round_trip() -> Result<()> {
         };
 
         if notification.method.as_str() == "turn/completed" {
-            let completed: TurnCompletedNotification =
-                serde_json::from_value(notification.params.expect("turn/completed params"))?;
+            let completed: TurnCompletedNotification = serde_json::from_value(
+                notification.params.clone().expect("turn/completed params"),
+            )?;
             assert_eq!(completed.thread_id, thread.id);
             assert_eq!(completed.turn.id, turn.id);
             assert_eq!(completed.turn.status, TurnStatus::Completed);

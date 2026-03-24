@@ -12,7 +12,6 @@ use codex_core::features::Feature;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
@@ -217,7 +216,7 @@ async fn unified_exec_routes_approval_through_guardian_reviewer() -> Result<()> 
             ev_response_created("resp-guardian-1"),
             ev_assistant_message(
                 "msg-guardian-1",
-                r#"{"risk_level":"low","risk_score":35,"rationale":"safe","evidence":[],"predicted_effects":[]}"#,
+                r#"{"risk_level":"low","risk_score":35,"rationale":"safe","evidence":[]}"#,
             ),
             ev_completed("resp-guardian-1"),
         ]),
@@ -292,170 +291,6 @@ async fn unified_exec_routes_approval_through_guardian_reviewer() -> Result<()> 
     assert_eq!(parsed.exit_code, Some(0));
     assert!(
         parsed.output.contains("guardian-unified-exec"),
-        "unexpected unified exec output: {}",
-        parsed.output
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unified_exec_emits_runtime_mismatch_trace_when_daemon_blocks() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    skip_if_sandbox!(Ok(()));
-    skip_if_windows!(Ok(()));
-
-    let daemon_log_path = Path::new("/tmp/codex-es-daemon.log");
-    fs::write(daemon_log_path, "")?;
-
-    let builder = test_codex().with_model("gpt-5.1").with_config(|config| {
-        config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        config.permissions.sandbox_policy = Constrained::allow_any(SandboxPolicy::DangerFullAccess);
-        config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
-        config.security_mode = SecurityMode::SmartAccess;
-    });
-    let harness = TestCodexHarness::with_builder(builder).await?;
-
-    let call_id = "guardian-unified-exec-runtime-mismatch";
-    let args = json!({
-        "cmd": format!(
-            "printf '[Codex ES Daemon] Blocked protected delete: /tmp/runtime-mismatch.txt\\n' >> {} && exit 1",
-            daemon_log_path.display(),
-        ),
-        "yield_time_ms": 250,
-        "justification": "simulate an endpoint security runtime deny",
-        "sandbox_permissions": SandboxPermissions::RequireEscalated,
-    });
-    let responses = vec![
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-        sse(vec![
-            ev_response_created("resp-guardian-1"),
-            ev_assistant_message(
-                "msg-guardian-1",
-                r#"{"risk_level":"low","risk_score":18,"rationale":"single protected delete","evidence":[],"predicted_effects":[{"kind":"protected_delete","scope":{"target_path":"/tmp/runtime-mismatch.txt","source_path":null,"destination_path":null,"tool_name":"exec_command","process_name":"rm","trusted_identity":null,"recursive":false},"confidence":93,"why":"Deletes one protected file."}]}"#,
-            ),
-            ev_completed("resp-guardian-1"),
-        ]),
-        sse(vec![
-            ev_response_created("resp-2"),
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-2"),
-        ]),
-    ];
-    let mock = mount_sse_sequence(harness.server(), responses).await;
-
-    let test = harness.test();
-    let codex = test.codex.clone();
-    let cwd = test.cwd_path().to_path_buf();
-    let session_model = test.session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "run unified exec that will hit endpoint security".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd,
-            approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: ReasoningSummary::Auto,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let mut saw_runtime_mismatch = None;
-    loop {
-        let event = wait_for_event(&codex, |event| {
-            matches!(
-                event,
-                EventMsg::GuardianAssessment(_)
-                    | EventMsg::ExecApprovalRequest(_)
-                    | EventMsg::TurnComplete(_)
-            )
-        })
-        .await;
-
-        match event {
-            EventMsg::GuardianAssessment(event) => {
-                if event
-                    .action
-                    .as_ref()
-                    .and_then(|action| action.get("smart_access"))
-                    .and_then(|trace| trace.get("decision"))
-                    .and_then(Value::as_str)
-                    == Some("runtime_mismatch")
-                {
-                    saw_runtime_mismatch = Some(event);
-                }
-            }
-            EventMsg::ExecApprovalRequest(event) => {
-                anyhow::bail!(
-                    "unexpected exec approval request while guardian is active: {:?}",
-                    event.command
-                );
-            }
-            EventMsg::TurnComplete(_) => break,
-            _ => unreachable!("wait_for_event predicate filters event variants"),
-        }
-    }
-
-    let runtime_mismatch = saw_runtime_mismatch.expect("expected runtime mismatch trace");
-    assert_eq!(runtime_mismatch.status, GuardianAssessmentStatus::Denied);
-    assert_eq!(runtime_mismatch.risk_score, None);
-    assert_eq!(
-        runtime_mismatch
-            .action
-            .as_ref()
-            .and_then(|action| action.get("smart_access"))
-            .and_then(|trace| trace.get("mismatch_summary"))
-            .and_then(Value::as_str),
-        Some("[Codex ES Daemon] Blocked protected delete: /tmp/runtime-mismatch.txt")
-    );
-    assert_eq!(
-        runtime_mismatch
-            .action
-            .as_ref()
-            .and_then(|action| action.get("smart_access"))
-            .and_then(|trace| trace.get("mismatch_reason_code"))
-            .and_then(Value::as_str),
-        Some("PROTECTED_ZONE_AI_DELETE")
-    );
-    assert_eq!(
-        runtime_mismatch
-            .action
-            .as_ref()
-            .and_then(|action| action.get("smart_access"))
-            .and_then(|trace| trace.get("mismatch_classification"))
-            .and_then(Value::as_str),
-        Some("underpredicted")
-    );
-    assert_eq!(
-        runtime_mismatch
-            .action
-            .as_ref()
-            .and_then(|action| action.get("smart_access"))
-            .and_then(|trace| trace.get("actual_effect"))
-            .and_then(Value::as_str),
-        Some("protected_delete:/tmp/runtime-mismatch.txt")
-    );
-
-    let output = mock
-        .function_call_output_text(call_id)
-        .context("expected unified exec output")?;
-    let parsed = parse_unified_exec_output(&output)?;
-    assert_eq!(parsed.exit_code, Some(1));
-    assert!(
-        parsed.output.contains("[SYSTEM SECURITY INTERVENTION]"),
         "unexpected unified exec output: {}",
         parsed.output
     );

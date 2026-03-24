@@ -74,7 +74,6 @@ use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::config_types::WebSearchMode;
@@ -269,9 +268,6 @@ pub struct Config {
 
     /// Optionally specify the personality of the model
     pub personality: Option<Personality>,
-
-    /// Top-level security posture selected for this session.
-    pub security_mode: SecurityMode,
 
     /// Effective permission configuration for shell tool execution.
     pub permissions: Permissions,
@@ -1179,9 +1175,6 @@ pub struct ConfigToml {
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
 
-    /// Top-level security posture selected for this session.
-    pub security_mode: Option<SecurityMode>,
-
     /// Default approval policy for executing commands.
     pub approval_policy: Option<AskForApproval>,
 
@@ -2006,20 +1999,6 @@ impl Config {
             .or(config_profile.approvals_reviewer)
             .or(cfg.approvals_reviewer)
             .unwrap_or(ApprovalsReviewer::User);
-        let security_mode = config_profile
-            .security_mode
-            .or(cfg.security_mode)
-            .unwrap_or_else(|| {
-                if approvals_reviewer == ApprovalsReviewer::GuardianSubagent {
-                    SecurityMode::SmartAccess
-                } else if approval_policy == AskForApproval::Never
-                    && matches!(sandbox_policy, SandboxPolicy::DangerFullAccess)
-                {
-                    SecurityMode::FullAccess
-                } else {
-                    SecurityMode::Default
-                }
-            });
         let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features)
             .unwrap_or(WebSearchMode::Cached);
         // TODO(dylan): We should be able to leverage ConfigLayerStack so that
@@ -2417,7 +2396,6 @@ impl Config {
             user_configured_provider,
             cwd: resolved_cwd,
             startup_warnings,
-            security_mode,
             permissions: Permissions {
                 approval_policy: constrained_approval_policy.value,
                 sandbox_policy: constrained_sandbox_policy.value,
@@ -5078,7 +5056,6 @@ model_verbosity = "high"
                 model_provider_id: "openai".to_string(),
                 model_provider: fixture.openai_provider.clone(),
                 user_configured_provider: fixture.openai_provider.clone(),
-                security_mode: SecurityMode::Default,
                 permissions: Permissions {
                     approval_policy: Constrained::allow_any(AskForApproval::Never),
                     sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5210,7 +5187,6 @@ model_verbosity = "high"
             model_provider_id: "openai-custom".to_string(),
             model_provider: fixture.openai_custom_provider.clone(),
             user_configured_provider: fixture.openai_custom_provider.clone(),
-            security_mode: SecurityMode::Default,
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::UnlessTrusted),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5340,7 +5316,6 @@ model_verbosity = "high"
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             user_configured_provider: fixture.openai_provider.clone(),
-            security_mode: SecurityMode::Default,
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -5456,7 +5431,6 @@ model_verbosity = "high"
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             user_configured_provider: fixture.openai_provider.clone(),
-            security_mode: SecurityMode::Default,
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
                 sandbox_policy: Constrained::allow_any(SandboxPolicy::new_read_only_policy()),
@@ -6225,17 +6199,26 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )?;
+        let built_in_anthropic = built_in_model_providers()
+            .remove(ANTHROPIC_PROVIDER_ID)
+            .expect("built-in anthropic provider");
 
-        assert_eq!(config.model_provider_id, "anthropic");
+        assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+        assert_eq!(config.model_provider.base_url, built_in_anthropic.base_url);
+        assert_eq!(config.model_provider.env_key, built_in_anthropic.env_key);
         assert_eq!(
-            config.model_provider.base_url.as_deref(),
-            Some("https://api.anthropic.com")
+            config.model_provider.account_pool,
+            vec![
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_1".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_2".to_string()),
+                },
+            ]
         );
-        assert_eq!(
-            config.model_provider.env_key.as_deref(),
-            Some("ANTHROPIC_API_KEY")
-        );
-        assert_eq!(config.model_provider.account_pool.len(), 2);
 
         Ok(())
     }
@@ -6264,16 +6247,13 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
             ConfigOverrides::default(),
             codex_home.path().to_path_buf(),
         )?;
+        let built_in_anthropic = built_in_model_providers()
+            .remove(ANTHROPIC_PROVIDER_ID)
+            .expect("built-in anthropic provider");
 
-        assert_eq!(config.model_provider_id, "anthropic");
-        assert_eq!(
-            config.model_provider.base_url.as_deref(),
-            Some("https://api.anthropic.com")
-        );
-        assert_eq!(
-            config.model_provider.env_key.as_deref(),
-            Some("ANTHROPIC_API_KEY")
-        );
+        assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+        assert_eq!(config.model_provider.base_url, built_in_anthropic.base_url);
+        assert_eq!(config.model_provider.env_key, built_in_anthropic.env_key);
         assert_eq!(
             config.model_provider.account_pool,
             vec![

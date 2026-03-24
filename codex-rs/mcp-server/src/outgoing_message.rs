@@ -233,7 +233,6 @@ mod tests {
     use anyhow::Result;
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::ApprovalsReviewer;
-    use codex_protocol::config_types::SecurityMode;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
@@ -302,7 +301,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-4o".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -346,7 +344,6 @@ mod tests {
             thread_name: None,
             model: "gpt-4o".to_string(),
             model_provider_id: "test-provider".to_string(),
-            security_mode: SecurityMode::Default,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -386,7 +383,6 @@ mod tests {
                 "session_id": session_configured_event.session_id,
                 "model": "gpt-4o",
                 "model_provider_id": "test-provider",
-                "security_mode": "default",
                 "approval_policy": "never",
                 "approvals_reviewer": "user",
                 "sandbox_policy": {
@@ -416,7 +412,6 @@ mod tests {
             thread_name: None,
             model: "gpt-4o".to_string(),
             model_provider_id: "test-provider".to_string(),
-            security_mode: SecurityMode::Default,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -457,7 +452,6 @@ mod tests {
                 "session_id": session_configured_event.session_id,
                 "model": "gpt-4o",
                 "model_provider_id": "test-provider",
-                "security_mode": "default",
                 "approval_policy": "never",
                 "approvals_reviewer": "user",
                 "sandbox_policy": {

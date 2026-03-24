@@ -6,46 +6,19 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
-## Security modes and reviewers
+## Approvals reviewer
 
-Approval handling now has three separate configuration axes:
+Approval handling now has two separate configuration axes:
 
-- `security_mode`: the top-level access mode (`default`, `smart-access`, or `full-access`)
 - `approval_policy`: when Codex must escalate an action for approval
 - `approvals_reviewer`: who reviews escalated actions (`user` or `guardian_subagent`)
 
-`security_mode = "smart-access"` is a real product mode, not a synonym for
-`approvals_reviewer = "guardian_subagent"`. It keeps workspace-write style
-execution defaults, but reviewable actions are routed through Smart Access
-arbitration so low-risk requests can auto-resolve while higher-risk requests
-fall back to explicit human approval.
-
-```toml
-security_mode = "smart-access"
-
-[features]
-smart_approvals = true
-```
-
 The `smart_approvals` feature flag is only a rollout and UI gate. It does not
-silently replace `approval_policy` or `security_mode`.
+silently replace `approval_policy`.
 
 Older configs that still use the deprecated `guardian_approval = true` alias are
 migrated to `approvals_reviewer = "guardian_subagent"` when no explicit reviewer
 is already set in the same scope.
-
-When `endpoint_security = true`, Smart Access also loads capability hints from
-`<codex_home>/es_policy.json` and compares predicted effects against the live
-runtime. If the macOS Endpoint Security daemon blocks a permitted shell,
-`apply_patch`, or `unified_exec` operation at runtime, Codex appends a warning
-to the tool output and records a Smart Access runtime mismatch trace instead of
-silently treating the block as an ordinary command failure.
-
-The legacy `request_security_override` tool remains available only when
-`endpoint_security = true`. Under Smart Access it still requires explicit
-escalated user approval, and Codex refuses to mint a legacy override when the
-requested effect would need a narrower permit or a human escalation that the old
-override file format cannot represent.
 
 ## Provider account pool
 

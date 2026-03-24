@@ -334,7 +334,6 @@ async fn resume_model_switch_is_not_duplicated_after_pre_turn_override() -> Resu
         .codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
-            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,

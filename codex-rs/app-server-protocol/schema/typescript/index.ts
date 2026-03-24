@@ -201,7 +201,6 @@ export type { ReviewTarget } from "./ReviewTarget";
 export type { SandboxMode } from "./SandboxMode";
 export type { SandboxPolicy } from "./SandboxPolicy";
 export type { SandboxSettings } from "./SandboxSettings";
-export type { SecurityMode } from "./SecurityMode";
 export type { SendUserMessageParams } from "./SendUserMessageParams";
 export type { SendUserMessageResponse } from "./SendUserMessageResponse";
 export type { SendUserTurnParams } from "./SendUserTurnParams";

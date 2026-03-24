@@ -3,7 +3,6 @@ use codex_core::config::Constrained;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -121,7 +120,6 @@ async fn override_turn_context_without_user_turn_does_not_record_permissions_upd
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
-            security_mode: None,
             approval_policy: Some(AskForApproval::Never),
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -164,7 +162,6 @@ async fn override_turn_context_without_user_turn_does_not_record_environment_upd
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: Some(new_cwd.path().to_path_buf()),
-            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -204,7 +201,6 @@ async fn override_turn_context_without_user_turn_does_not_record_collaboration_u
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
-            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -243,7 +239,6 @@ async fn override_turn_context_updates_approvals_reviewer_for_future_turns() -> 
     test.codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
-            security_mode: None,
             approval_policy: None,
             approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
             sandbox_policy: None,
@@ -268,42 +263,6 @@ async fn override_turn_context_updates_approvals_reviewer_for_future_turns() -> 
         snapshot.approvals_reviewer,
         ApprovalsReviewer::GuardianSubagent
     );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn override_turn_context_updates_security_mode_for_future_turns() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let test = test_codex().build(&server).await?;
-
-    test.codex
-        .submit(Op::OverrideTurnContext {
-            cwd: None,
-            security_mode: Some(SecurityMode::SmartAccess),
-            approval_policy: None,
-            approvals_reviewer: None,
-            sandbox_policy: None,
-            windows_sandbox_level: None,
-            model: None,
-            effort: None,
-            summary: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let mut snapshot = test.codex.config_snapshot().await;
-    for _ in 0..50 {
-        if snapshot.security_mode == SecurityMode::SmartAccess {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        snapshot = test.codex.config_snapshot().await;
-    }
-    assert_eq!(snapshot.security_mode, SecurityMode::SmartAccess);
 
     Ok(())
 }

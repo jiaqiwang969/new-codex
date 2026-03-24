@@ -82,18 +82,6 @@ pub enum ApprovalsReviewer {
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
-pub enum SecurityMode {
-    #[default]
-    Default,
-    SmartAccess,
-    FullAccess,
-}
-
-#[derive(
-    Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Display, JsonSchema, TS,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
 pub enum WindowsSandboxLevel {
     #[default]
     Disabled,
@@ -370,17 +358,6 @@ mod tests {
             let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
             assert_eq!(ModeKind::Default, mode);
         }
-    }
-
-    #[test]
-    fn security_mode_uses_kebab_case_on_the_wire() {
-        let serialized =
-            serde_json::to_string(&SecurityMode::SmartAccess).expect("serialize security mode");
-        assert_eq!("\"smart-access\"", serialized);
-
-        let deserialized: SecurityMode =
-            serde_json::from_str(&serialized).expect("deserialize security mode");
-        assert_eq!(SecurityMode::SmartAccess, deserialized);
     }
 
     #[test]

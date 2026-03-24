@@ -7,10 +7,6 @@ use crate::sandboxing::SandboxPermissions;
 use crate::shell::Shell;
 use crate::shell::get_shell_by_model_provided_path;
 use crate::skills::maybe_emit_implicit_skill_invocation;
-use crate::smart_access::clear_runtime_context;
-use crate::smart_access::emit_runtime_mismatch_trace_event;
-use crate::smart_access::endpoint_security_intervention_summary;
-use crate::smart_access::is_smart_access_mode;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -155,7 +151,6 @@ impl ToolHandler for UnifiedExecHandler {
                     turn.tools_config.allow_login_shell,
                 )
                 .map_err(FunctionCallError::RespondToModel)?;
-                let raw_command = args.cmd.clone();
 
                 let ExecCommandArgs {
                     workdir,
@@ -237,7 +232,7 @@ impl ToolHandler for UnifiedExecHandler {
                             .unwrap_or(0);
 
                         // 2. Execute the actual command
-                        let mut response = match manager
+                        let mut response = manager
                             .exec_command(
                                 ExecCommandRequest {
                                     command,
@@ -254,20 +249,7 @@ impl ToolHandler for UnifiedExecHandler {
                                 },
                                 &context,
                             )
-                            .await
-                        {
-                            Ok(response) => response,
-                            Err(err) => {
-                                if is_smart_access_mode(context.turn.as_ref()) {
-                                    clear_runtime_context(
-                                        context.session.as_ref(),
-                                        &context.call_id,
-                                    )
-                                    .await;
-                                }
-                                return Err(err);
-                            }
-                        };
+                            .await?;
 
                         // 3. Check if the daemon yelled during our execution!
                         if response.exit_code.unwrap_or(0) != 0
@@ -280,38 +262,20 @@ impl ToolHandler for UnifiedExecHandler {
                                     let mut new_logs = String::new();
                                     if f.read_to_string(&mut new_logs).is_ok()
                                         && !new_logs.trim().is_empty()
-                                        && let Some(mismatch_summary) =
-                                            endpoint_security_intervention_summary(&new_logs)
+                                    {
+                                        // Only append if it actually contains an alert
+                                        if new_logs.contains("Blocked")
+                                            || new_logs.contains("block")
                                         {
                                             let warning = format!(
                                                 "\n\n[SYSTEM SECURITY INTERVENTION]: The background Kernel Security Daemon blocked this operation:\n{}\nTo bypass this, you MUST use the `request_security_override` tool with `sandbox_permissions: \"require_escalated\"`.",
                                                 new_logs.trim()
                                             );
                                             response.output.push_str(&warning);
-                                            if is_smart_access_mode(context.turn.as_ref()) {
-                                                emit_runtime_mismatch_trace_event(
-                                                    context.session.as_ref(),
-                                                    context.turn.as_ref(),
-                                                    &context.call_id,
-                                                    &format!(
-                                                        "{}:smart-access-runtime",
-                                                        context.call_id
-                                                    ),
-                                                    serde_json::json!({
-                                                        "tool": "exec_command",
-                                                        "command": raw_command,
-                                                    }),
-                                                    mismatch_summary.as_str(),
-                                                )
-                                                .await;
-                                            }
                                         }
+                                    }
                                 }
                             }
-                        if is_smart_access_mode(context.turn.as_ref()) {
-                            clear_runtime_context(context.session.as_ref(), &context.call_id)
-                                .await;
-                        }
 
                         Ok::<UnifiedExecResponse, crate::unified_exec::UnifiedExecError>(response)
                     },

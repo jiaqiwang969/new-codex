@@ -1,10 +1,5 @@
-use codex_core::config::ConfigToml;
-use codex_core::config::profile::ConfigProfile;
 use codex_core::config::types::MemoriesConfig;
-use codex_core::config::types::SecurityMode;
 use core_test_support::load_default_config_for_test;
-use pretty_assertions::assert_eq;
-use std::collections::HashMap;
 use tempfile::TempDir;
 
 #[test]
@@ -57,32 +52,4 @@ async fn test_test_config_disables_entire_summary_generation() {
     let codex_home = TempDir::new().expect("temp dir");
     let config = load_default_config_for_test(&codex_home).await;
     assert!(!config.memories.entire_summary_enabled);
-}
-
-#[test]
-fn config_toml_parses_security_mode_at_top_level_and_in_profiles() {
-    let config: ConfigToml = toml::from_str(
-        r#"security_mode = "smart-access"
-profile = "smart"
-
-[profiles.smart]
-security_mode = "full-access"
-"#,
-    )
-    .expect("parse security mode config");
-
-    let expected = ConfigToml {
-        security_mode: Some(SecurityMode::SmartAccess),
-        profile: Some("smart".to_string()),
-        profiles: HashMap::from([(
-            "smart".to_string(),
-            ConfigProfile {
-                security_mode: Some(SecurityMode::FullAccess),
-                ..Default::default()
-            },
-        )]),
-        ..Default::default()
-    };
-
-    assert_eq!(expected, config);
 }

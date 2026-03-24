@@ -4,13 +4,10 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Instant;
 
-use codex_core::config::Constrained;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
 use codex_core::features::Feature;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -209,6 +206,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         })
         .with_config(move |config| {
             config.features.enable(Feature::MemoryTool);
+            config.features.enable(Feature::Apps);
             config.features.disable(Feature::SearchTool);
             config.notify = Some(vec![notify_script_str.clone()]);
 
@@ -397,6 +395,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         })
         .with_config(move |config| {
             config.features.enable(Feature::MemoryTool);
+            config.features.enable(Feature::Apps);
             config.features.disable(Feature::SearchTool);
             config.notify = Some(vec![notify_script_str.clone()]);
 
@@ -561,6 +560,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         })
         .with_config(move |config| {
             config.features.enable(Feature::MemoryTool);
+            config.features.enable(Feature::Apps);
             config.features.disable(Feature::SearchTool);
             config.notify = Some(vec![notify_script_str.clone()]);
 
@@ -674,6 +674,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         })
         .with_config(move |config| {
             config.features.enable(Feature::MemoryTool);
+            config.features.enable(Feature::Apps);
             config.features.disable(Feature::SearchTool);
             config.notify = Some(vec![notify_script_str.clone()]);
 
@@ -804,6 +805,7 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         })
         .with_config(move |config| {
             config.features.enable(Feature::MemoryTool);
+            config.features.enable(Feature::Apps);
             config.features.disable(Feature::SearchTool);
             config.notify = Some(vec![notify_script_str.clone()]);
 
@@ -892,119 +894,6 @@ echo "${@: -1}" >> $(dirname "${0}")/notify.ndjson"#,
         }
         sleep(Duration::from_millis(50)).await;
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(mcp_test_value)]
-async fn smart_access_mcp_human_prompt_includes_security_host_rationale() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let call_id = "notify-mcp-smart-access-rationale-1";
-    let tool_name = format!("mcp__{CODEX_APPS_SERVER_NAME}__dangerous_write");
-    let guardian_response = json!({
-        "risk_level": "medium",
-        "risk_score": 74,
-        "rationale": "moves sensitive material outside the protected source zone",
-        "evidence": [],
-        "predicted_effects": [{
-            "kind": "sensitive_transfer_out",
-            "scope": {
-                "target_path": "/Users/demo/.ssh/id_rsa",
-                "source_path": "/Users/demo/.ssh/id_rsa",
-                "destination_path": "/tmp/id_rsa",
-                "tool_name": "mcp",
-                "process_name": "dangerous_write",
-                "trusted_identity": null,
-                "recursive": false
-            },
-            "confidence": 88,
-            "why": "Moves sensitive material outside the protected source zone."
-        }]
-    })
-    .to_string();
-    responses::mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                responses::ev_response_created("resp-smart-access-mcp-1"),
-                responses::ev_function_call(call_id, &tool_name, "{}"),
-                ev_completed("resp-smart-access-mcp-1"),
-            ]),
-            sse(vec![
-                responses::ev_response_created("resp-smart-access-mcp-guardian"),
-                ev_assistant_message("msg-smart-access-mcp-guardian", &guardian_response),
-                ev_completed("resp-smart-access-mcp-guardian"),
-            ]),
-            sse(vec![
-                ev_assistant_message("msg-smart-access-mcp-2", "done"),
-                ev_completed("resp-smart-access-mcp-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    let approval_policy = AskForApproval::OnRequest;
-    let sandbox_policy = SandboxPolicy::new_read_only_policy();
-    let sandbox_policy_for_config = sandbox_policy.clone();
-    let rmcp_test_server_bin = stdio_server_bin()?;
-
-    let fixture = test_codex()
-        .with_model("gpt-5.1")
-        .with_config(move |config| {
-            config.features.enable(Feature::Apps);
-            config.features.disable(Feature::SearchTool);
-            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
-            config.security_mode = SecurityMode::SmartAccess;
-            config.approvals_reviewer = ApprovalsReviewer::User;
-            config.endpoint_security = true;
-
-            let mut servers = config.mcp_servers.get().clone();
-            servers.insert(
-                CODEX_APPS_SERVER_NAME.to_string(),
-                McpServerConfig {
-                    transport: McpServerTransportConfig::Stdio {
-                        command: rmcp_test_server_bin,
-                        args: Vec::new(),
-                        env: Some(HashMap::from([(
-                            MCP_TEST_ENABLE_APPROVAL_TOOL.to_string(),
-                            "1".to_string(),
-                        )])),
-                        env_vars: Vec::new(),
-                        cwd: None,
-                    },
-                    enabled: true,
-                    required: false,
-                    disabled_reason: None,
-                    startup_timeout_sec: Some(Duration::from_secs(10)),
-                    tool_timeout_sec: None,
-                    enabled_tools: None,
-                    disabled_tools: None,
-                    scopes: None,
-                },
-            );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
-        })
-        .build(&server)
-        .await?;
-
-    let question = submit_mcp_approval_turn_and_capture_question(
-        &fixture,
-        "call codex apps dangerous tool",
-        "Deny",
-    )
-    .await?;
-
-    assert!(
-        question.contains("Sensitive transfers require explicit human approval."),
-        "expected Smart Access rationale in approval question, got: {question}"
-    );
-
-    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1801,16 +1690,6 @@ async fn submit_mcp_approval_turn(
     prompt: &str,
     choice: &str,
 ) -> anyhow::Result<()> {
-    submit_mcp_approval_turn_and_capture_question(fixture, prompt, choice)
-        .await
-        .map(|_| ())
-}
-
-async fn submit_mcp_approval_turn_and_capture_question(
-    fixture: &TestCodex,
-    prompt: &str,
-    choice: &str,
-) -> anyhow::Result<String> {
     let session_model = fixture.session_configured.model.clone();
     fixture
         .codex
@@ -1832,7 +1711,6 @@ async fn submit_mcp_approval_turn_and_capture_question(
         .await?;
 
     let mut saw_request = false;
-    let mut approval_question = None;
     loop {
         let event = wait_for_event(&fixture.codex, |event| {
             matches!(
@@ -1850,7 +1728,6 @@ async fn submit_mcp_approval_turn_and_capture_question(
                 let Some(question) = request.questions.first() else {
                     anyhow::bail!("approval question should exist");
                 };
-                approval_question = Some(question.question.clone());
                 let question_id = question.id.clone();
                 let mut answers = HashMap::new();
                 answers.insert(
@@ -1876,5 +1753,5 @@ async fn submit_mcp_approval_turn_and_capture_question(
             _ => unreachable!("wait_for_event predicate filters event variants"),
         }
     }
-    approval_question.ok_or_else(|| anyhow::anyhow!("approval question should be captured"))
+    Ok(())
 }

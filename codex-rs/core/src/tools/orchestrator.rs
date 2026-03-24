@@ -12,7 +12,6 @@ use crate::exec::ExecToolCallOutput;
 use crate::features::Feature;
 use crate::network_policy_decision::network_approval_context_from_payload;
 use crate::sandboxing::SandboxManager;
-use crate::smart_access::is_smart_access_mode;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use crate::tools::network_approval::NetworkApprovalMode;
 use crate::tools::network_approval::begin_network_approval;
@@ -121,30 +120,14 @@ impl ToolOrchestrator {
         let requirement = tool.exec_approval_requirement(req).unwrap_or_else(|| {
             default_exec_approval_requirement(approval_policy, &turn_ctx.sandbox_policy)
         });
-        let force_smart_access_review = is_smart_access_mode(turn_ctx);
         match requirement {
-            ExecApprovalRequirement::Skip { .. } if !force_smart_access_review => {
+            ExecApprovalRequirement::Skip { .. } => {
                 otel.tool_decision(otel_tn, otel_ci, &ReviewDecision::Approved, otel_cfg);
             }
             ExecApprovalRequirement::Forbidden { reason } => {
                 return Err(ToolError::Rejected(reason));
             }
-            requirement_for_review @ (ExecApprovalRequirement::Skip { .. }
-            | ExecApprovalRequirement::NeedsApproval {
-                reason: None,
-                ..
-            }
-            | ExecApprovalRequirement::NeedsApproval {
-                reason: Some(_),
-                ..
-            }) => {
-                let is_skip_requirement =
-                    matches!(requirement_for_review, ExecApprovalRequirement::Skip { .. });
-                let reason = match requirement_for_review {
-                    ExecApprovalRequirement::Skip { .. } => None,
-                    ExecApprovalRequirement::NeedsApproval { reason, .. } => reason,
-                    ExecApprovalRequirement::Forbidden { .. } => unreachable!(),
-                };
+            ExecApprovalRequirement::NeedsApproval { reason, .. } => {
                 let approval_ctx = ApprovalCtx {
                     session: &tool_ctx.session,
                     turn: &tool_ctx.turn,
@@ -154,16 +137,7 @@ impl ToolOrchestrator {
                 };
                 let decision = tool.start_approval_async(req, approval_ctx).await;
 
-                otel.tool_decision(
-                    otel_tn,
-                    otel_ci,
-                    &decision,
-                    if is_skip_requirement {
-                        otel_cfg
-                    } else {
-                        otel_user.clone()
-                    },
-                );
+                otel.tool_decision(otel_tn, otel_ci, &decision, otel_user.clone());
 
                 match decision {
                     ReviewDecision::Denied | ReviewDecision::Abort => {

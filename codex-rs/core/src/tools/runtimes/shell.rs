@@ -17,13 +17,6 @@ use crate::powershell::prefix_powershell_script_with_utf8;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
 use crate::shell::ShellType;
-use crate::smart_access::SmartAccessApprovalOutcome;
-use crate::smart_access::clear_runtime_context;
-use crate::smart_access::endpoint_security_daemon_log_size;
-use crate::smart_access::is_smart_access_mode;
-use crate::smart_access::maybe_record_endpoint_security_runtime_mismatch;
-use crate::smart_access::merge_human_approval_reason;
-use crate::smart_access::review_smart_access_request;
 use crate::tools::network_approval::NetworkApprovalMode;
 use crate::tools::network_approval::NetworkApprovalSpec;
 use crate::tools::runtimes::build_command_spec;
@@ -44,7 +37,6 @@ use codex_network_proxy::NetworkProxy;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::ReviewDecision;
 use futures::future::BoxFuture;
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -153,7 +145,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
         let command = req.command.clone();
         let cwd = req.cwd.clone();
         let retry_reason = ctx.retry_reason.clone();
-        let base_reason = ctx
+        let reason = ctx
             .retry_reason
             .clone()
             .or_else(|| req.justification.clone());
@@ -161,33 +153,21 @@ impl Approvable<ShellRequest> for ShellRuntime {
         let turn = ctx.turn;
         let call_id = ctx.call_id.to_string();
         Box::pin(async move {
-            let approval_request = GuardianApprovalRequest::Shell {
-                id: call_id.clone(),
-                command: command.clone(),
-                cwd: cwd.clone(),
-                sandbox_permissions: req.sandbox_permissions,
-                additional_permissions: req.additional_permissions.clone(),
-                justification: req.justification.clone(),
-            };
-            let mut reason = base_reason;
-            if let Some(outcome) = review_smart_access_request(
-                session,
-                turn,
-                approval_request.clone(),
-                retry_reason.clone(),
-            )
-            .await
-            {
-                match outcome {
-                    SmartAccessApprovalOutcome::Final(decision) => return decision,
-                    SmartAccessApprovalOutcome::FallbackToHuman { rationale } => {
-                        reason = merge_human_approval_reason(reason, rationale.as_str());
-                    }
-                }
-            }
             if routes_approval_to_guardian(turn) {
-                return review_approval_request(session, turn, approval_request, retry_reason)
-                    .await;
+                return review_approval_request(
+                    session,
+                    turn,
+                    GuardianApprovalRequest::Shell {
+                        id: call_id,
+                        command,
+                        cwd,
+                        sandbox_permissions: req.sandbox_permissions,
+                        additional_permissions: req.additional_permissions.clone(),
+                        justification: req.justification.clone(),
+                    },
+                    retry_reason,
+                )
+                .await;
             }
             with_cached_approval(&session.services, "shell", keys, move || async move {
                 let available_decisions = None;
@@ -240,7 +220,6 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
-        let daemon_log_offset = endpoint_security_daemon_log_size();
         let session_shell = ctx.session.user_shell();
         let command = maybe_wrap_shell_lc_with_snapshot(
             &req.command,
@@ -258,38 +237,17 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
 
         #[cfg(unix)]
         if self.backend == ShellRuntimeBackend::ShellCommandZshFork {
-            match unix_escalation::try_run_zsh_fork(req, attempt, ctx, &command).await {
-                Ok(Some(mut out)) => {
-                    maybe_record_endpoint_security_runtime_mismatch(
-                        ctx.session.as_ref(),
-                        ctx.turn.as_ref(),
-                        &ctx.call_id,
-                        &format!("{}:smart-access-runtime", ctx.call_id),
-                        json!({
-                            "tool": ctx.tool_name.as_str(),
-                            "command": command.clone(),
-                        }),
-                        &mut out,
-                        daemon_log_offset,
-                    )
-                    .await;
-                    return Ok(out);
-                }
-                Ok(None) => {
+            match unix_escalation::try_run_zsh_fork(req, attempt, ctx, &command).await? {
+                Some(out) => return Ok(out),
+                None => {
                     tracing::warn!(
                         "ZshFork backend specified, but conditions for using it were not met, falling back to normal execution",
                     );
                 }
-                Err(err) => {
-                    if is_smart_access_mode(ctx.turn.as_ref()) {
-                        clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
-                    }
-                    return Err(err);
-                }
             }
         }
 
-        let spec = match build_command_spec(
+        let spec = build_command_spec(
             &command,
             &req.cwd,
             &req.env,
@@ -297,46 +255,13 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             req.sandbox_permissions,
             req.additional_permissions.clone(),
             req.justification.clone(),
-        ) {
-            Ok(spec) => spec,
-            Err(err) => {
-                if is_smart_access_mode(ctx.turn.as_ref()) {
-                    clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
-                }
-                return Err(err);
-            }
-        };
-        let env = match attempt.env_for(spec, req.network.as_ref()) {
-            Ok(env) => env,
-            Err(err) => {
-                if is_smart_access_mode(ctx.turn.as_ref()) {
-                    clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
-                }
-                return Err(ToolError::Codex(err.into()));
-            }
-        };
-        let mut out = match execute_env(env, Self::stdout_stream(ctx)).await {
-            Ok(out) => out,
-            Err(err) => {
-                if is_smart_access_mode(ctx.turn.as_ref()) {
-                    clear_runtime_context(ctx.session.as_ref(), &ctx.call_id).await;
-                }
-                return Err(ToolError::Codex(err));
-            }
-        };
-        maybe_record_endpoint_security_runtime_mismatch(
-            ctx.session.as_ref(),
-            ctx.turn.as_ref(),
-            &ctx.call_id,
-            &format!("{}:smart-access-runtime", ctx.call_id),
-            json!({
-                "tool": ctx.tool_name.as_str(),
-                "command": command.clone(),
-            }),
-            &mut out,
-            daemon_log_offset,
-        )
-        .await;
+        )?;
+        let env = attempt
+            .env_for(spec, req.network.as_ref())
+            .map_err(|err| ToolError::Codex(err.into()))?;
+        let out = execute_env(env, Self::stdout_stream(ctx))
+            .await
+            .map_err(ToolError::Codex)?;
         Ok(out)
     }
 }

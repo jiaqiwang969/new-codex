@@ -2572,8 +2572,6 @@ fn apply_spawn_agent_runtime_overrides(
     config: &mut Config,
     turn: &TurnContext,
 ) -> Result<(), FunctionCallError> {
-    config.security_mode = turn.config.security_mode;
-    config.approvals_reviewer = turn.config.approvals_reviewer;
     config
         .permissions
         .approval_policy
@@ -2608,7 +2606,6 @@ mod tests {
     use crate::ThreadManager;
     use crate::built_in_model_providers;
     use crate::codex::make_session_and_context;
-    use crate::config::AgentRoleConfig;
     use crate::config::DEFAULT_AGENT_MAX_DEPTH;
     use crate::config::types::ShellEnvironmentPolicy;
     use crate::function_tool::FunctionCallError;
@@ -2619,8 +2616,6 @@ mod tests {
     use crate::protocol::SubAgentSource;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::ThreadId;
-    use codex_protocol::config_types::ApprovalsReviewer;
-    use codex_protocol::config_types::SecurityMode;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::InitialHistory;
@@ -4005,74 +4000,6 @@ mod tests {
             .await;
         assert_eq!(snapshot.sandbox_policy, expected_sandbox);
         assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
-    }
-
-    #[tokio::test]
-    async fn spawn_agent_reapplies_smart_access_runtime_after_role_config() {
-        #[derive(Debug, Deserialize)]
-        struct SpawnAgentResult {
-            agent_id: String,
-        }
-
-        let (mut session, mut turn) = make_session_and_context().await;
-        let manager = thread_manager();
-        session.services.agent_control = manager.agent_control();
-
-        fs::create_dir_all(&turn.config.codex_home).expect("recreate codex home");
-        let role_path = turn.config.codex_home.join("custom-smart-access-role.toml");
-        fs::write(
-            &role_path,
-            r#"
-security_mode = "default"
-approvals_reviewer = "guardian_subagent"
-"#,
-        )
-        .expect("write custom role config");
-
-        let mut config = (*turn.config).clone();
-        config.security_mode = SecurityMode::SmartAccess;
-        config.approvals_reviewer = ApprovalsReviewer::User;
-        config.agent_roles.insert(
-            "custom".to_string(),
-            AgentRoleConfig {
-                config_file: Some(role_path),
-                ..Default::default()
-            },
-        );
-        turn.config = Arc::new(config);
-
-        let invocation = invocation(
-            Arc::new(session),
-            Arc::new(turn),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "inspect this repo",
-                "agent_type": "custom"
-            })),
-        );
-        let output = MultiAgentHandler
-            .handle(invocation)
-            .await
-            .expect("spawn_agent should succeed");
-        let ToolOutput::Function {
-            body: FunctionCallOutputBody::Text(content),
-            ..
-        } = output
-        else {
-            panic!("expected function output");
-        };
-        let result: SpawnAgentResult =
-            serde_json::from_str(&content).expect("spawn_agent result should be json");
-        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
-
-        let snapshot = manager
-            .get_thread(agent_id)
-            .await
-            .expect("spawned agent thread should exist")
-            .config_snapshot()
-            .await;
-        assert_eq!(snapshot.security_mode, SecurityMode::SmartAccess);
-        assert_eq!(snapshot.approvals_reviewer, ApprovalsReviewer::User);
     }
 
     #[tokio::test]

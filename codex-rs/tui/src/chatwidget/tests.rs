@@ -39,7 +39,6 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::config_types::Settings;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -167,7 +166,6 @@ async fn resumed_initial_messages_render_history() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -238,7 +236,6 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -299,7 +296,6 @@ async fn replayed_user_message_preserves_remote_image_urls() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -357,7 +353,6 @@ async fn replayed_user_message_with_only_remote_images_renders_history_cell() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -410,7 +405,6 @@ async fn replayed_user_message_with_only_local_images_does_not_render_history_ce
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -522,7 +516,6 @@ async fn submission_preserves_text_elements_and_local_images() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -606,7 +599,6 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -701,7 +693,6 @@ async fn enter_with_only_remote_images_submits_user_turn() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -765,7 +756,6 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -805,7 +795,6 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -845,7 +834,6 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -886,7 +874,6 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -2559,7 +2546,11 @@ async fn collab_wait_after_rollback_restores_previous_metadata_for_same_thread_i
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1, "expected one wait-complete history cell");
     let rendered = lines_to_single_string(&cells[0]);
-    assert!(rendered.contains("role: explorer"), "rendered: {rendered}");
+    assert!(
+        rendered.contains("role: explorer"),
+        "rendered: {}",
+        rendered
+    );
     assert!(rendered.contains("model: claude-sonnet-4-6"));
     assert!(rendered.contains("provider: anthropic"));
     assert!(!rendered.contains("role: worker"));
@@ -3904,7 +3895,6 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
-        security_mode: SecurityMode::Default,
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5934,23 +5924,11 @@ async fn preset_matching_ignores_extra_workspace_write_details() {
     };
 
     assert!(
-        ChatWidget::preset_matches_current(
-            SecurityMode::Default,
-            AskForApproval::OnRequest,
-            ApprovalsReviewer::User,
-            &current_sandbox,
-            &preset,
-        ),
+        ChatWidget::preset_matches_current(AskForApproval::OnRequest, &current_sandbox, &preset),
         "WorkspaceWrite with extra roots should still match the Default preset when network access matches"
     );
     assert!(
-        !ChatWidget::preset_matches_current(
-            SecurityMode::Default,
-            AskForApproval::Never,
-            ApprovalsReviewer::User,
-            &current_sandbox,
-            &preset,
-        ),
+        !ChatWidget::preset_matches_current(AskForApproval::Never, &current_sandbox, &preset),
         "approval mismatch should prevent matching the preset"
     );
 }
@@ -6446,7 +6424,6 @@ async fn permissions_selection_history_snapshot_full_access_to_default() {
         .sandbox_policy
         .set(SandboxPolicy::DangerFullAccess)
         .expect("set sandbox policy");
-    chat.set_security_mode(SecurityMode::FullAccess);
 
     chat.open_permissions_popup();
     chat.handle_key_event(KeyEvent::from(KeyCode::Up));
@@ -6502,7 +6479,7 @@ async fn permissions_selection_emits_history_cell_when_current_is_selected() {
 }
 
 #[tokio::test]
-async fn permissions_selection_hides_smart_access_when_feature_disabled() {
+async fn permissions_selection_hides_smart_approvals_when_feature_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     #[cfg(target_os = "windows")]
     {
@@ -6515,13 +6492,13 @@ async fn permissions_selection_hides_smart_access_when_feature_disabled() {
     let popup = render_bottom_popup(&chat, 120);
 
     assert!(
-        !popup.contains("Smart Access"),
-        "expected Smart Access to stay hidden until the experimental feature is enabled: {popup}"
+        !popup.contains("Smart Approvals"),
+        "expected Smart Approvals to stay hidden until the experimental feature is enabled: {popup}"
     );
 }
 
 #[tokio::test]
-async fn permissions_selection_marks_smart_access_current_after_session_configured() {
+async fn permissions_selection_marks_smart_approvals_current_after_session_configured() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     #[cfg(target_os = "windows")]
     {
@@ -6539,9 +6516,8 @@ async fn permissions_selection_marks_smart_access_current_after_session_configur
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
-            security_mode: SecurityMode::SmartAccess,
             approval_policy: AskForApproval::OnRequest,
-            approvals_reviewer: ApprovalsReviewer::User,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
             sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
             cwd: PathBuf::from("/tmp/project"),
             reasoning_effort: None,
@@ -6557,13 +6533,13 @@ async fn permissions_selection_marks_smart_access_current_after_session_configur
     let popup = render_bottom_popup(&chat, 120);
 
     assert!(
-        popup.contains("Smart Access (current)"),
-        "expected Smart Access to be current after SessionConfigured sync: {popup}"
+        popup.contains("Smart Approvals (current)"),
+        "expected Smart Approvals to be current after SessionConfigured sync: {popup}"
     );
 }
 
 #[tokio::test]
-async fn permissions_selection_marks_smart_access_current_with_custom_workspace_write_details() {
+async fn permissions_selection_marks_smart_approvals_current_with_custom_workspace_write_details() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     #[cfg(target_os = "windows")]
     {
@@ -6584,9 +6560,8 @@ async fn permissions_selection_marks_smart_access_current_with_custom_workspace_
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
-            security_mode: SecurityMode::SmartAccess,
             approval_policy: AskForApproval::OnRequest,
-            approvals_reviewer: ApprovalsReviewer::User,
+            approvals_reviewer: ApprovalsReviewer::GuardianSubagent,
             sandbox_policy: SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![extra_root],
                 read_only_access: Default::default(),
@@ -6608,13 +6583,13 @@ async fn permissions_selection_marks_smart_access_current_with_custom_workspace_
     let popup = render_bottom_popup(&chat, 120);
 
     assert!(
-        popup.contains("Smart Access (current)"),
-        "expected Smart Access to be current even with custom workspace-write details: {popup}"
+        popup.contains("Smart Approvals (current)"),
+        "expected Smart Approvals to be current even with custom workspace-write details: {popup}"
     );
 }
 
 #[tokio::test]
-async fn permissions_selection_can_disable_smart_access() {
+async fn permissions_selection_can_disable_smart_approvals() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     #[cfg(target_os = "windows")]
     {
@@ -6623,8 +6598,7 @@ async fn permissions_selection_can_disable_smart_access() {
     }
     chat.config.notices.hide_full_access_warning = Some(true);
     chat.set_feature_enabled(Feature::GuardianApproval, true);
-    chat.config.security_mode = SecurityMode::SmartAccess;
-    chat.config.approvals_reviewer = ApprovalsReviewer::User;
+    chat.config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
     chat.config
         .permissions
         .approval_policy
@@ -6642,10 +6616,11 @@ async fn permissions_selection_can_disable_smart_access() {
 
     let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateSecurityMode(SecurityMode::Default))),
-        "expected selecting Default from Smart Access to switch the runtime security mode back to Default: {events:?}"
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateApprovalsReviewer(ApprovalsReviewer::User)
+        )),
+        "expected selecting Default from Smart Approvals to switch back to manual approval review: {events:?}"
     );
     assert!(
         !events
@@ -6656,7 +6631,7 @@ async fn permissions_selection_can_disable_smart_access() {
 }
 
 #[tokio::test]
-async fn permissions_selection_sends_security_mode_in_override_turn_context() {
+async fn permissions_selection_sends_approvals_reviewer_in_override_turn_context() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     #[cfg(target_os = "windows")]
     {
@@ -6681,9 +6656,8 @@ async fn permissions_selection_sends_security_mode_in_override_turn_context() {
         op,
         Op::OverrideTurnContext {
             cwd: None,
-            security_mode: Some(SecurityMode::SmartAccess),
             approval_policy: Some(AskForApproval::OnRequest),
-            approvals_reviewer: Some(ApprovalsReviewer::User),
+            approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
             sandbox_policy: Some(SandboxPolicy::new_workspace_write_policy()),
             windows_sandbox_level: None,
             model: None,
@@ -6840,130 +6814,6 @@ async fn guardian_approved_exec_renders_approved_request() {
 
     assert_snapshot!(
         "guardian_approved_exec_renders_approved_request",
-        term.backend().vt100().screen().contents()
-    );
-}
-
-#[tokio::test]
-async fn guardian_smart_access_trace_renders_permit_summary() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.show_welcome_banner = false;
-    let action = serde_json::json!({
-        "tool": "shell",
-        "command": "rm -f /tmp/guardian-approved.sqlite",
-    });
-
-    chat.handle_codex_event(Event {
-        id: "guardian-assessment".into(),
-        msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-            id: "thread:child-thread:guardian-1".into(),
-            turn_id: "turn-1".into(),
-            status: GuardianAssessmentStatus::Approved,
-            risk_score: Some(14),
-            risk_level: Some(GuardianRiskLevel::Low),
-            rationale: Some("Narrowly scoped to the requested file.".into()),
-            action: Some(action),
-        }),
-    });
-    chat.handle_codex_event(Event {
-        id: "smart-access-trace".into(),
-        msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-            id: "thread:child-thread:guardian-1:smart-access".into(),
-            turn_id: "turn-1".into(),
-            status: GuardianAssessmentStatus::Approved,
-            risk_score: Some(14),
-            risk_level: Some(GuardianRiskLevel::Low),
-            rationale: None,
-            action: Some(serde_json::json!({
-                "tool": "shell",
-                "command": "rm -f /tmp/guardian-approved.sqlite",
-                "smart_access": {
-                    "risk_score": 14,
-                    "predicted_effects": ["protected_delete:/tmp/guardian-approved.sqlite"],
-                    "decision": "allow_with_permit",
-                    "permit_summary": "protected_delete:/tmp/guardian-approved.sqlite ttl=120s",
-                    "mismatch_summary": null,
-                }
-            })),
-        }),
-    });
-
-    let width: u16 = 120;
-    let ui_height: u16 = chat.desired_height(width);
-    let vt_height: u16 = 14;
-    let viewport = Rect::new(0, vt_height - ui_height - 1, width, ui_height);
-
-    let backend = VT100Backend::new(width, vt_height);
-    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
-    term.set_viewport_area(viewport);
-
-    for lines in drain_insert_history(&mut rx) {
-        crate::insert_history::insert_history_lines(&mut term, lines)
-            .expect("Failed to insert history lines in test");
-    }
-
-    term.draw(|f| {
-        chat.render(f.area(), f.buffer_mut());
-    })
-    .expect("draw smart access trace history");
-
-    assert_snapshot!(
-        "guardian_smart_access_trace_renders_permit_summary",
-        term.backend().vt100().screen().contents()
-    );
-}
-
-#[tokio::test]
-async fn guardian_smart_access_runtime_mismatch_renders_warning() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
-    chat.show_welcome_banner = false;
-
-    chat.handle_codex_event(Event {
-        id: "smart-access-runtime-mismatch".into(),
-        msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
-            id: "thread:child-thread:guardian-1:smart-access-runtime".into(),
-            turn_id: "turn-1".into(),
-            status: GuardianAssessmentStatus::Denied,
-            risk_score: None,
-            risk_level: None,
-            rationale: Some("Endpoint Security blocked the operation at runtime.".into()),
-            action: Some(serde_json::json!({
-                "tool": "exec_command",
-                "command": "rm -f /tmp/runtime-mismatch.txt",
-                "smart_access": {
-                    "predicted_effects": [],
-                    "decision": "runtime_mismatch",
-                    "permit_summary": null,
-                    "mismatch_summary": "[Codex ES Daemon] Blocked protected delete: /tmp/runtime-mismatch.txt",
-                    "mismatch_reason_code": "PROTECTED_ZONE_AI_DELETE",
-                    "mismatch_classification": "underpredicted",
-                    "actual_effect": "protected_delete:/tmp/runtime-mismatch.txt",
-                }
-            })),
-        }),
-    });
-
-    let width: u16 = 120;
-    let ui_height: u16 = chat.desired_height(width);
-    let vt_height: u16 = 14;
-    let viewport = Rect::new(0, vt_height - ui_height - 1, width, ui_height);
-
-    let backend = VT100Backend::new(width, vt_height);
-    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
-    term.set_viewport_area(viewport);
-
-    for lines in drain_insert_history(&mut rx) {
-        crate::insert_history::insert_history_lines(&mut term, lines)
-            .expect("Failed to insert history lines in test");
-    }
-
-    term.draw(|f| {
-        chat.render(f.area(), f.buffer_mut());
-    })
-    .expect("draw smart access runtime mismatch history");
-
-    assert_snapshot!(
-        "guardian_smart_access_runtime_mismatch_renders_warning",
         term.backend().vt100().screen().contents()
     );
 }

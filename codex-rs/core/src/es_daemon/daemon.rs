@@ -1,12 +1,3 @@
-use crate::security_host::RuntimeDeniedEffect;
-use crate::security_host::SecurityHost;
-use crate::security_types::PredictedEffect;
-use crate::security_types::PredictedEffectKind;
-use crate::security_types::SecurityCapabilitySnapshot;
-use crate::security_types::SecurityMismatch;
-use crate::security_types::SecurityPermit;
-use crate::security_types::SecurityPermitScope;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use endpoint_sec::Client;
 use endpoint_sec::Event;
 use endpoint_sec::EventRenameDestinationFile;
@@ -105,21 +96,6 @@ impl SecurityPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LegacyRuntimeDeniedEffect {
-    ProtectedDelete {
-        target_path: PathBuf,
-        process_name: Option<String>,
-        ancestor_name: Option<String>,
-    },
-    ProtectedMoveOut {
-        source_path: PathBuf,
-        destination_path: PathBuf,
-        process_name: Option<String>,
-        ancestor_name: Option<String>,
-    },
-}
-
 fn current_unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -160,10 +136,6 @@ fn normalize_path_for_match(path: &Path) -> PathBuf {
 
 fn path_is_within(path: &Path, prefix: &Path) -> bool {
     path == prefix || path.starts_with(prefix)
-}
-
-fn absolute_path_buf(path: &Path) -> Option<AbsolutePathBuf> {
-    AbsolutePathBuf::try_from(normalize_path_for_match(path)).ok()
 }
 
 fn load_policy(policy_path: &Path) -> Option<SecurityPolicy> {
@@ -249,83 +221,6 @@ fn rename_destination_path(destination: Option<EventRenameDestinationFile<'_>>) 
     }
 }
 
-fn legacy_runtime_capability_snapshot(policy: &SecurityPolicy) -> SecurityCapabilitySnapshot {
-    SecurityCapabilitySnapshot {
-        protected_zones: policy
-            .protected_zones
-            .iter()
-            .filter_map(|zone| absolute_path_buf(Path::new(zone.as_str())))
-            .collect(),
-        transfer_gate_enabled: true,
-        ..Default::default()
-    }
-}
-
-fn legacy_runtime_mismatch(
-    policy: &SecurityPolicy,
-    permit: Option<&SecurityPermit>,
-    predicted_effects: Vec<PredictedEffect>,
-    denied_effect: LegacyRuntimeDeniedEffect,
-) -> SecurityMismatch {
-    let host = SecurityHost::new(legacy_runtime_capability_snapshot(policy));
-    match denied_effect {
-        LegacyRuntimeDeniedEffect::ProtectedDelete {
-            target_path,
-            process_name,
-            ancestor_name,
-        } => host.runtime_mismatch_for_denial(
-            permit,
-            predicted_effects,
-            RuntimeDeniedEffect {
-                actual_kind: PredictedEffectKind::ProtectedDelete,
-                actual_scope: SecurityPermitScope {
-                    target_path: absolute_path_buf(&target_path),
-                    source_path: None,
-                    destination_path: None,
-                    tool_name: None,
-                    process_name: process_name.clone(),
-                    trusted_identity: None,
-                    recursive: false,
-                },
-                process_name,
-                ancestor_name,
-                summary: format!(
-                    "Endpoint Security blocked protected delete: {}",
-                    target_path.display()
-                ),
-            },
-        ),
-        LegacyRuntimeDeniedEffect::ProtectedMoveOut {
-            source_path,
-            destination_path,
-            process_name,
-            ancestor_name,
-        } => host.runtime_mismatch_for_denial(
-            permit,
-            predicted_effects,
-            RuntimeDeniedEffect {
-                actual_kind: PredictedEffectKind::ProtectedMoveOut,
-                actual_scope: SecurityPermitScope {
-                    target_path: None,
-                    source_path: absolute_path_buf(&source_path),
-                    destination_path: absolute_path_buf(&destination_path),
-                    tool_name: None,
-                    process_name: process_name.clone(),
-                    trusted_identity: None,
-                    recursive: false,
-                },
-                process_name,
-                ancestor_name,
-                summary: format!(
-                    "Endpoint Security blocked move out of protected zone: {} -> {}",
-                    source_path.display(),
-                    destination_path.display()
-                ),
-            },
-        ),
-    }
-}
-
 pub fn run_daemon() -> anyhow::Result<()> {
     let policy_path = resolve_policy_path();
     let mut initial_policy = ensure_policy_file(&policy_path);
@@ -382,22 +277,9 @@ pub fn run_daemon() -> anyhow::Result<()> {
 
                 if current_policy.is_protected(&target_path, now) && !is_exempted_temp(&target_path)
                 {
-                    let mismatch = legacy_runtime_mismatch(
-                        &current_policy,
-                        None,
-                        Vec::new(),
-                        LegacyRuntimeDeniedEffect::ProtectedDelete {
-                            target_path: target_path.clone(),
-                            process_name: Some("unlink".to_string()),
-                            ancestor_name: None,
-                        },
-                    );
                     tracing::info!(
-                        classification = ?mismatch.classification,
-                        reason_code = %mismatch.actual_reason_code,
-                        summary = %mismatch.summary,
                         "[Codex ES Daemon] Blocked physical deletion of protected path: {}",
-                        target_path.display(),
+                        target_path.display()
                     );
                     let _ = client.respond_auth_result(
                         &message,
@@ -427,21 +309,7 @@ pub fn run_daemon() -> anyhow::Result<()> {
                     );
                 } else if let Some(destination_path) = destination_path {
                     if !current_policy.in_protected_zone(&destination_path) {
-                        let mismatch = legacy_runtime_mismatch(
-                            &current_policy,
-                            None,
-                            Vec::new(),
-                            LegacyRuntimeDeniedEffect::ProtectedMoveOut {
-                                source_path: source_path.clone(),
-                                destination_path: destination_path.clone(),
-                                process_name: Some("mv".to_string()),
-                                ancestor_name: None,
-                            },
-                        );
                         tracing::info!(
-                            classification = ?mismatch.classification,
-                            reason_code = %mismatch.actual_reason_code,
-                            summary = %mismatch.summary,
                             "[Codex ES Daemon] Blocked move out of protected zone: {} -> {}",
                             source_path.display(),
                             destination_path.display()
@@ -494,159 +362,5 @@ pub fn run_daemon() -> anyhow::Result<()> {
 
     loop {
         thread::sleep(Duration::from_secs(60));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::LegacyRuntimeDeniedEffect;
-    use super::SecurityPolicy;
-    use super::legacy_runtime_capability_snapshot;
-    use super::legacy_runtime_mismatch;
-    use crate::security_types::PredictedEffect;
-    use crate::security_types::PredictedEffectKind;
-    use crate::security_types::SecurityMismatch;
-    use crate::security_types::SecurityMismatchClassification;
-    use crate::security_types::SecurityPermit;
-    use crate::security_types::SecurityPermitScope;
-    use codex_utils_absolute_path::AbsolutePathBuf;
-    use pretty_assertions::assert_eq;
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
-    fn policy_with_documents_zone() -> SecurityPolicy {
-        SecurityPolicy {
-            protected_zones: vec!["/Users/demo/Documents".to_string()],
-            temporary_overrides: Vec::new(),
-            temporary_override_expirations: BTreeMap::new(),
-        }
-    }
-
-    #[test]
-    fn legacy_runtime_capability_snapshot_reports_limited_es_scope() {
-        let snapshot = legacy_runtime_capability_snapshot(&policy_with_documents_zone());
-
-        assert_eq!(
-            snapshot,
-            crate::security_types::SecurityCapabilitySnapshot {
-                protected_zones: vec![AbsolutePathBuf::try_from("/Users/demo/Documents").unwrap()],
-                transfer_gate_enabled: true,
-                ..Default::default()
-            }
-        );
-    }
-
-    #[test]
-    fn legacy_runtime_delete_denial_becomes_true_risk_mismatch() {
-        let mismatch = legacy_runtime_mismatch(
-            &policy_with_documents_zone(),
-            None,
-            Vec::new(),
-            LegacyRuntimeDeniedEffect::ProtectedDelete {
-                target_path: PathBuf::from("/Users/demo/Documents/report.txt"),
-                process_name: Some("rm".to_string()),
-                ancestor_name: Some("python".to_string()),
-            },
-        );
-
-        assert_eq!(
-            mismatch,
-            SecurityMismatch {
-                permit_id: None,
-                predicted_effects: Vec::new(),
-                actual_kind: PredictedEffectKind::ProtectedDelete,
-                actual_reason_code: "es_protected_delete".to_string(),
-                actual_scope: SecurityPermitScope {
-                    target_path: Some(
-                        AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
-                    ),
-                    source_path: None,
-                    destination_path: None,
-                    tool_name: None,
-                    process_name: Some("rm".to_string()),
-                    trusted_identity: None,
-                    recursive: false,
-                },
-                classification: SecurityMismatchClassification::TrueRisk,
-                process_name: Some("rm".to_string()),
-                ancestor_name: Some("python".to_string()),
-                summary:
-                    "Endpoint Security blocked protected delete: /Users/demo/Documents/report.txt"
-                        .to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn legacy_runtime_move_out_permit_miss_is_underpredicted() {
-        let permit = SecurityPermit {
-            id: "permit-1".to_string(),
-            kind: PredictedEffectKind::ProtectedMoveOut,
-            scope: SecurityPermitScope {
-                target_path: None,
-                source_path: Some(
-                    AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
-                ),
-                destination_path: Some(AbsolutePathBuf::try_from("/tmp/report.txt").unwrap()),
-                tool_name: Some("shell".to_string()),
-                process_name: Some("mv".to_string()),
-                trusted_identity: Some("apple.codesign:Terminal".to_string()),
-                recursive: false,
-            },
-            issued_at: 1_710_000_000,
-            expires_at: 1_710_000_120,
-            issuer: "security-host".to_string(),
-            risk_score: 18,
-            justification: "Low-risk narrow smart-access permit.".to_string(),
-            thread_id: "thread-123".to_string(),
-            turn_id: "turn-456".to_string(),
-        };
-        let predicted_effect = PredictedEffect {
-            kind: PredictedEffectKind::ProtectedMoveOut,
-            scope: permit.scope.clone(),
-            confidence: 91,
-            why: "Moves the protected file into the export zone.".to_string(),
-        };
-
-        let mismatch = legacy_runtime_mismatch(
-            &policy_with_documents_zone(),
-            Some(&permit),
-            vec![predicted_effect.clone()],
-            LegacyRuntimeDeniedEffect::ProtectedMoveOut {
-                source_path: PathBuf::from("/Users/demo/Documents/report.txt"),
-                destination_path: PathBuf::from("/Users/demo/Desktop/report.txt"),
-                process_name: Some("mv".to_string()),
-                ancestor_name: Some("python".to_string()),
-            },
-        );
-
-        assert_eq!(
-            mismatch,
-            SecurityMismatch {
-                permit_id: Some("permit-1".to_string()),
-                predicted_effects: vec![predicted_effect],
-                actual_kind: PredictedEffectKind::ProtectedMoveOut,
-                actual_reason_code: "permit_miss_protected_move_out".to_string(),
-                actual_scope: SecurityPermitScope {
-                    target_path: None,
-                    source_path: Some(
-                        AbsolutePathBuf::try_from("/Users/demo/Documents/report.txt").unwrap(),
-                    ),
-                    destination_path: Some(
-                        AbsolutePathBuf::try_from("/Users/demo/Desktop/report.txt").unwrap(),
-                    ),
-                    tool_name: None,
-                    process_name: Some("mv".to_string()),
-                    trusted_identity: None,
-                    recursive: false,
-                },
-                classification: SecurityMismatchClassification::Underpredicted,
-                process_name: Some("mv".to_string()),
-                ancestor_name: Some("python".to_string()),
-                summary:
-                    "Endpoint Security blocked move out of protected zone: /Users/demo/Documents/report.txt -> /Users/demo/Desktop/report.txt"
-                        .to_string(),
-            }
-        );
     }
 }

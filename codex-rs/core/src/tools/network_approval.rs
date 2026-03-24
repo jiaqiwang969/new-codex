@@ -3,9 +3,6 @@ use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
 use crate::network_policy_decision::denied_network_policy_message;
-use crate::smart_access::SmartAccessApprovalOutcome;
-use crate::smart_access::merge_human_approval_reason;
-use crate::smart_access::review_smart_access_request;
 use crate::tools::sandboxing::ToolError;
 use codex_network_proxy::BlockedRequest;
 use codex_network_proxy::BlockedRequestObserver;
@@ -307,7 +304,7 @@ impl NetworkApprovalService {
         let target = Self::format_network_target(key.protocol, request.host.as_str(), key.port);
         let policy_denial_message =
             format!("Network access to \"{target}\" was blocked by policy.");
-        let base_prompt_reason = format!("{} is not in the allowed_domains", request.host);
+        let prompt_reason = format!("{} is not in the allowed_domains", request.host);
 
         let Some(turn_context) = Self::active_turn_context(session.as_ref()).await else {
             pending.set_decision(PendingApprovalDecision::Deny).await;
@@ -334,51 +331,18 @@ impl NetworkApprovalService {
             host: request.host.clone(),
             protocol,
         };
-        let approval_request = GuardianApprovalRequest::NetworkAccess {
-            id: Self::approval_id_for_key(&key),
-            turn_id: turn_context.sub_id.clone(),
-            target: target.clone(),
-            host: request.host,
-            protocol,
-            port: key.port,
-        };
-        let mut prompt_reason = Some(base_prompt_reason);
-        let approval_decision = if let Some(outcome) = review_smart_access_request(
-            &session,
-            &turn_context,
-            approval_request.clone(),
-            Some(policy_denial_message.clone()),
-        )
-        .await
-        {
-            match outcome {
-                SmartAccessApprovalOutcome::Final(decision) => decision,
-                SmartAccessApprovalOutcome::FallbackToHuman { rationale } => {
-                    prompt_reason = merge_human_approval_reason(prompt_reason, rationale.as_str());
-                    let approval_id = Self::approval_id_for_key(&key);
-                    let prompt_command = vec!["network-access".to_string(), target.clone()];
-                    let available_decisions = None;
-                    session
-                        .request_command_approval(
-                            turn_context.as_ref(),
-                            approval_id,
-                            None,
-                            prompt_command,
-                            turn_context.cwd.clone(),
-                            prompt_reason.clone(),
-                            Some(network_approval_context.clone()),
-                            None,
-                            None,
-                            available_decisions,
-                        )
-                        .await
-                }
-            }
-        } else if routes_approval_to_guardian(&turn_context) {
+        let approval_decision = if routes_approval_to_guardian(&turn_context) {
             review_approval_request(
                 &session,
                 &turn_context,
-                approval_request,
+                GuardianApprovalRequest::NetworkAccess {
+                    id: Self::approval_id_for_key(&key),
+                    turn_id: turn_context.sub_id.clone(),
+                    target,
+                    host: request.host,
+                    protocol,
+                    port: key.port,
+                },
                 Some(policy_denial_message.clone()),
             )
             .await
@@ -393,7 +357,7 @@ impl NetworkApprovalService {
                     None,
                     prompt_command,
                     turn_context.cwd.clone(),
-                    prompt_reason,
+                    Some(prompt_reason),
                     Some(network_approval_context.clone()),
                     None,
                     None,

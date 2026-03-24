@@ -61,7 +61,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::SecurityMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::TurnItem;
@@ -580,7 +579,6 @@ pub(crate) struct App {
     harness_overrides: ConfigOverrides,
     runtime_approval_policy_override: Option<AskForApproval>,
     runtime_approvals_reviewer_override: Option<ApprovalsReviewer>,
-    runtime_security_mode_override: Option<SecurityMode>,
     runtime_sandbox_policy_override: Option<SandboxPolicy>,
 
     pub(crate) file_search: FileSearchManager,
@@ -720,9 +718,6 @@ impl App {
         }
         if let Some(reviewer) = self.runtime_approvals_reviewer_override {
             config.approvals_reviewer = reviewer;
-        }
-        if let Some(security_mode) = self.runtime_security_mode_override {
-            config.security_mode = security_mode;
         }
         if let Some(policy) = self.runtime_sandbox_policy_override.as_ref()
             && let Err(err) = config.permissions.sandbox_policy.set(policy.clone())
@@ -1555,7 +1550,6 @@ impl App {
             harness_overrides,
             runtime_approval_policy_override: None,
             runtime_approvals_reviewer_override: None,
-            runtime_security_mode_override: None,
             runtime_sandbox_policy_override: None,
             file_search,
             enhanced_keys_supported,
@@ -2299,8 +2293,7 @@ impl App {
                         Ok(entry) => {
                             tracing::info!(
                                 profile = profile.key,
-                                task_bucket = task_bucket
-                                    .map(super::team_profile_vouch::TeamProfileTaskBucket::key),
+                                task_bucket = task_bucket.map(|bucket| bucket.key()),
                                 wins = entry.wins,
                                 losses = entry.losses,
                                 "updated team profile vouch ledger"
@@ -2349,8 +2342,7 @@ impl App {
                             tracing::info!(
                                 winner = winner_profile.key,
                                 loser = loser_profile.key,
-                                task_bucket = task_bucket
-                                    .map(super::team_profile_vouch::TeamProfileTaskBucket::key),
+                                task_bucket = task_bucket.map(|bucket| bucket.key()),
                                 winner_wins = winner_entry.wins,
                                 winner_losses = winner_entry.losses,
                                 loser_wins = loser_entry.wins,
@@ -2393,8 +2385,7 @@ impl App {
                     Ok(entry) => {
                         tracing::info!(
                             model_sub = model_sub.as_str(),
-                            task_bucket = task_bucket
-                                .map(super::team_profile_vouch::TeamProfileTaskBucket::key),
+                            task_bucket = task_bucket.map(|bucket| bucket.key()),
                             wins = entry.wins,
                             losses = entry.losses,
                             "updated model-sub vouch ledger"
@@ -2440,8 +2431,7 @@ impl App {
                             tracing::info!(
                                 winner_model_sub = winner_model_sub.as_str(),
                                 loser_model_sub = loser_model_sub.as_str(),
-                                task_bucket = task_bucket
-                                    .map(super::team_profile_vouch::TeamProfileTaskBucket::key),
+                                task_bucket = task_bucket.map(|bucket| bucket.key()),
                                 winner_wins = winner_entry.wins,
                                 winner_losses = winner_entry.losses,
                                 loser_wins = loser_entry.wins,
@@ -2715,7 +2705,6 @@ impl App {
                                 self.app_event_tx.send(AppEvent::CodexOp(
                                     Op::OverrideTurnContext {
                                         cwd: None,
-                                        security_mode: None,
                                         approval_policy: None,
                                         approvals_reviewer: None,
                                         sandbox_policy: None,
@@ -2739,9 +2728,8 @@ impl App {
                                 self.app_event_tx.send(AppEvent::CodexOp(
                                     Op::OverrideTurnContext {
                                         cwd: None,
-                                        security_mode: Some(preset.security_mode),
                                         approval_policy: Some(preset.approval),
-                                        approvals_reviewer: Some(preset.approvals_reviewer),
+                                        approvals_reviewer: Some(self.config.approvals_reviewer),
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         windows_sandbox_level: Some(windows_sandbox_level),
                                         model: None,
@@ -3165,11 +3153,6 @@ impl App {
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
             }
-            AppEvent::UpdateSecurityMode(mode) => {
-                self.runtime_security_mode_override = Some(mode);
-                self.config.security_mode = mode;
-                self.chat_widget.set_security_mode(mode);
-            }
             AppEvent::UpdateSandboxPolicy(policy) => {
                 #[cfg(target_os = "windows")]
                 let policy_is_workspace_write_or_ro = matches!(
@@ -3266,7 +3249,6 @@ impl App {
                         self.app_event_tx
                             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                                 cwd: None,
-                                security_mode: None,
                                 approval_policy: None,
                                 approvals_reviewer: None,
                                 sandbox_policy: None,
@@ -3742,7 +3724,6 @@ impl App {
                 thread_name: None,
                 model: config_snapshot.model,
                 model_provider_id: config_snapshot.model_provider_id,
-                security_mode: config_snapshot.security_mode,
                 approval_policy: config_snapshot.approval_policy,
                 approvals_reviewer: config_snapshot.approvals_reviewer,
                 sandbox_policy: config_snapshot.sandbox_policy,
@@ -4658,7 +4639,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -4761,7 +4741,6 @@ mod tests {
             harness_overrides: ConfigOverrides::default(),
             runtime_approval_policy_override: None,
             runtime_approvals_reviewer_override: None,
-            runtime_security_mode_override: None,
             runtime_sandbox_policy_override: None,
             file_search,
             transcript_cells: Vec::new(),
@@ -4877,7 +4856,6 @@ mod tests {
                 harness_overrides: ConfigOverrides::default(),
                 runtime_approval_policy_override: None,
                 runtime_approvals_reviewer_override: None,
-                runtime_security_mode_override: None,
                 runtime_sandbox_policy_override: None,
                 file_search,
                 transcript_cells: Vec::new(),
@@ -5239,7 +5217,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5298,7 +5275,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5391,7 +5367,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5457,7 +5432,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5538,7 +5512,6 @@ mod tests {
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5666,7 +5639,6 @@ mod tests {
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
-            security_mode: SecurityMode::Default,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -5708,7 +5680,6 @@ mod tests {
                 thread_name: Some("keep me".to_string()),
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),

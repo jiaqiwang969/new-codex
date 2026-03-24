@@ -5,7 +5,6 @@ use serde::Serialize;
 
 use crate::config::types::ApprovalsReviewer;
 use crate::config::types::Personality;
-use crate::config::types::SecurityMode;
 use crate::config::types::WindowsToml;
 use crate::protocol::AskForApproval;
 use codex_protocol::config_types::ReasoningSummary;
@@ -29,7 +28,6 @@ pub struct ConfigProfile {
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
-    pub security_mode: Option<SecurityMode>,
     pub approval_policy: Option<AskForApproval>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_mode: Option<SandboxMode>,

@@ -29,7 +29,6 @@ use codex_core::features::Feature;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
@@ -304,9 +303,6 @@ pub(crate) enum AppEvent {
 
     /// Update the current approvals reviewer in the running app and widget.
     UpdateApprovalsReviewer(ApprovalsReviewer),
-
-    /// Update the current security mode in the running app and widget.
-    UpdateSecurityMode(SecurityMode),
 
     /// Update feature flags and persist them to the top-level config.
     UpdateFeatureFlags {

@@ -5650,7 +5650,6 @@ impl CodexMessageProcessor {
             let _ = thread
                 .submit(Op::OverrideTurnContext {
                     cwd: params.cwd,
-                    security_mode: None,
                     approval_policy: params.approval_policy.map(AskForApproval::to_core),
                     approvals_reviewer: None,
                     sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),

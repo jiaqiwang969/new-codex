@@ -2,9 +2,6 @@ use super::*;
 use crate::config::Constrained;
 use crate::config::NetworkProxySpec;
 use crate::config::test_config;
-use crate::security_types::PredictedEffect;
-use crate::security_types::PredictedEffectKind;
-use crate::security_types::SecurityPermitScope;
 use crate::test_support;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -29,11 +26,11 @@ use tokio_util::sync::CancellationToken;
 fn shell_request(id: &str) -> GuardianApprovalRequest {
     GuardianApprovalRequest::Shell {
         id: id.to_string(),
-        command: vec!["rm".to_string(), "/repo/report.txt".to_string()],
+        command: vec!["git".to_string(), "push".to_string()],
         cwd: PathBuf::from("/repo"),
         sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
         additional_permissions: None,
-        justification: Some("remove the reviewed file".to_string()),
+        justification: Some("push the reviewed branch".to_string()),
     }
 }
 
@@ -150,31 +147,11 @@ fn guardian_assessment_action_value_redacts_apply_patch_patch_text() {
 #[test]
 fn parse_guardian_assessment_extracts_embedded_json() {
     let parsed = parse_guardian_assessment(Some(
-        "preface {\"risk_level\":\"medium\",\"risk_score\":42,\"rationale\":\"ok\",\"evidence\":[],\"predicted_effects\":[{\"kind\":\"protected_delete\",\"scope\":{\"target_path\":\"/repo/report.txt\",\"source_path\":null,\"destination_path\":null,\"tool_name\":\"shell\",\"process_name\":\"rm\",\"trusted_identity\":null,\"recursive\":false},\"confidence\":91,\"why\":\"Deletes the requested file.\"}]}",
+        "preface {\"risk_level\":\"medium\",\"risk_score\":42,\"rationale\":\"ok\",\"evidence\":[]}",
     ))
     .expect("guardian assessment");
 
     assert_eq!(parsed.risk_score, 42);
-    assert_eq!(
-        parsed.predicted_effects,
-        vec![PredictedEffect {
-            kind: PredictedEffectKind::ProtectedDelete,
-            scope: SecurityPermitScope {
-                target_path: Some(
-                    codex_utils_absolute_path::AbsolutePathBuf::try_from("/repo/report.txt")
-                        .expect("absolute path"),
-                ),
-                source_path: None,
-                destination_path: None,
-                tool_name: Some("shell".to_string()),
-                process_name: Some("rm".to_string()),
-                trusted_identity: None,
-                recursive: false,
-            },
-            confidence: 91,
-            why: "Deletes the requested file.".to_string(),
-        }]
-    );
 }
 
 #[test]
@@ -262,7 +239,7 @@ async fn low_risk_guardian_review_is_approved() -> anyhow::Result<()> {
             ev_response_created("resp-guardian"),
             ev_assistant_message(
                 "msg-guardian",
-                r#"{"risk_level":"low","risk_score":42,"rationale":"safe","evidence":[],"predicted_effects":[{"kind":"protected_delete","scope":{"target_path":"/repo/report.txt","source_path":null,"destination_path":null,"tool_name":"shell","process_name":"rm","trusted_identity":null,"recursive":false},"confidence":94,"why":"Deletes the requested file."}]}"#,
+                r#"{"risk_level":"low","risk_score":42,"rationale":"safe","evidence":[]}"#,
             ),
             ev_completed("resp-guardian"),
         ]),
@@ -287,7 +264,7 @@ async fn high_risk_guardian_review_is_denied() -> anyhow::Result<()> {
             ev_response_created("resp-guardian"),
             ev_assistant_message(
                 "msg-guardian",
-                r#"{"risk_level":"high","risk_score":90,"rationale":"destructive","evidence":[],"predicted_effects":[{"kind":"protected_delete","scope":{"target_path":"/repo/report.txt","source_path":null,"destination_path":null,"tool_name":"shell","process_name":"rm","trusted_identity":null,"recursive":false},"confidence":87,"why":"Deletes the requested file."}]}"#,
+                r#"{"risk_level":"high","risk_score":90,"rationale":"destructive","evidence":[]}"#,
             ),
             ev_completed("resp-guardian"),
         ]),
@@ -311,32 +288,6 @@ async fn malformed_guardian_review_fails_closed() -> anyhow::Result<()> {
         sse(vec![
             ev_response_created("resp-guardian"),
             ev_assistant_message("msg-guardian", "not json"),
-            ev_completed("resp-guardian"),
-        ]),
-    )
-    .await;
-
-    let (session, turn) = make_guardian_review_context(format!("{}/v1", server.uri())).await;
-    let decision = review_approval_request(&session, &turn, shell_request("shell-1"), None).await;
-
-    assert_eq!(decision, ReviewDecision::Denied);
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn destructive_guardian_review_without_predicted_effects_fails_closed() -> anyhow::Result<()>
-{
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-guardian"),
-            ev_assistant_message(
-                "msg-guardian",
-                r#"{"risk_level":"low","risk_score":21,"rationale":"safe","evidence":[],"predicted_effects":[]}"#,
-            ),
             ev_completed("resp-guardian"),
         ]),
     )

@@ -1354,7 +1354,6 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_including_incoming_us
             codex
                 .submit(Op::OverrideTurnContext {
                     cwd: Some(PathBuf::from(PRETURN_CONTEXT_DIFF_CWD)),
-                    security_mode: None,
                     approval_policy: None,
                     approvals_reviewer: None,
                     sandbox_policy: None,
@@ -1465,7 +1464,6 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
     codex
         .submit(Op::OverrideTurnContext {
             cwd: None,
-            security_mode: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,

@@ -434,7 +434,7 @@ mod tests {
         )
         .expect("write vouch file");
         let snapshot = load_model_sub_vouch(home.path());
-        let candidates = ["claude-sonnet-4-6", "gpt-5.2-codex"];
+        let candidates = vec!["claude-sonnet-4-6", "gpt-5.2-codex"];
         let recommended = recommended_model_sub(
             &snapshot,
             Some(TeamProfileTaskBucket::Debug),
@@ -447,7 +447,7 @@ mod tests {
     fn recommended_model_returns_none_without_signal() {
         let home = tempdir().expect("tempdir");
         let snapshot = load_model_sub_vouch(home.path());
-        let candidates = ["claude-sonnet-4-6", "gpt-5.2-codex"];
+        let candidates = vec!["claude-sonnet-4-6", "gpt-5.2-codex"];
         let recommended = recommended_model_sub(&snapshot, None, candidates.iter().copied());
         assert_eq!(recommended, None);
     }

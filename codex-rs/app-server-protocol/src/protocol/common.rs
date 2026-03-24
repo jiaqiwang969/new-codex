@@ -562,7 +562,6 @@ macro_rules! server_request_definitions {
             }
         }
 
-
         impl ServerRequest {
             pub fn id(&self) -> &RequestId {
                 match self {

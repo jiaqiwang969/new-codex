@@ -9,7 +9,6 @@ use crate::protocol::Op;
 use crate::protocol::Submission;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::SecurityMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -29,7 +28,6 @@ use crate::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
-    pub security_mode: SecurityMode,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox_policy: SandboxPolicy,

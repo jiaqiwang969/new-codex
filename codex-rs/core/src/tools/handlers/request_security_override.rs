@@ -1,13 +1,6 @@
 use crate::function_tool::FunctionCallError;
 use crate::protocol::ReviewDecision;
 use crate::sandboxing::SandboxPermissions;
-use crate::security_host::SecurityArbitrationContext;
-use crate::security_host::SecurityHost;
-use crate::security_types::PredictedEffect;
-use crate::security_types::PredictedEffectKind;
-use crate::security_types::SecurityArbitrationDecision;
-use crate::security_types::SecurityCapabilitySnapshot;
-use crate::security_types::SecurityPermitScope;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -16,7 +9,6 @@ use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
 use codex_protocol::models::FunctionCallOutputBody;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -28,7 +20,7 @@ use std::time::UNIX_EPOCH;
 
 const TEMP_OVERRIDE_TTL_SECONDS: i64 = 15 * 60;
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct SecurityPolicy {
     #[serde(default)]
     protected_zones: Vec<String>,
@@ -74,125 +66,6 @@ fn normalize_path_for_policy(path: &Path) -> PathBuf {
 
 fn path_is_within(path: &Path, prefix: &Path) -> bool {
     path == prefix || path.starts_with(prefix)
-}
-
-fn absolute_path_buf(path: &Path) -> Result<AbsolutePathBuf, FunctionCallError> {
-    AbsolutePathBuf::try_from(path.to_path_buf()).map_err(|err| {
-        FunctionCallError::RespondToModel(format!(
-            "failed to normalize security override path: {err}"
-        ))
-    })
-}
-
-fn security_host_decision_for_override(
-    session: &crate::codex::Session,
-    turn: &crate::codex::TurnContext,
-    policy: &SecurityPolicy,
-    normalized_path: &Path,
-    args: &RequestSecurityOverrideArgs,
-) -> Result<SecurityArbitrationDecision, FunctionCallError> {
-    let capability_snapshot = SecurityCapabilitySnapshot {
-        protected_zones: policy
-            .protected_zones
-            .iter()
-            .map(|zone| normalize_path_for_policy(Path::new(zone.as_str())))
-            .filter_map(|zone| AbsolutePathBuf::try_from(zone).ok())
-            .collect(),
-        transfer_gate_enabled: turn.config.endpoint_security,
-        ..Default::default()
-    };
-    let security_host = SecurityHost::new(capability_snapshot);
-    let request_text = format!(
-        "{} {}",
-        args.justification.trim().to_lowercase(),
-        args.reason.trim().to_lowercase()
-    );
-    let request_tokens = request_text
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>();
-    let effect = if ["move", "trash", "rename", "desktop"]
-        .into_iter()
-        .any(|keyword| request_tokens.contains(&keyword))
-    {
-        let file_name = normalized_path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "override-target".to_string());
-        PredictedEffect {
-            kind: PredictedEffectKind::ProtectedMoveOut,
-            scope: SecurityPermitScope {
-                target_path: None,
-                source_path: Some(absolute_path_buf(normalized_path)?),
-                destination_path: Some(absolute_path_buf(Path::new("/tmp").join(file_name).as_path())?),
-                tool_name: Some("request_security_override".to_string()),
-                process_name: Some("mv".to_string()),
-                trusted_identity: None,
-                recursive: normalized_path.is_dir(),
-            },
-            confidence: 88,
-            why: "Legacy endpoint override request anticipates moving protected data out of the zone."
-                .to_string(),
-        }
-    } else {
-        PredictedEffect {
-            kind: PredictedEffectKind::ProtectedDelete,
-            scope: SecurityPermitScope {
-                target_path: Some(absolute_path_buf(normalized_path)?),
-                source_path: None,
-                destination_path: None,
-                tool_name: Some("request_security_override".to_string()),
-                process_name: Some("rm".to_string()),
-                trusted_identity: None,
-                recursive: normalized_path.is_dir(),
-            },
-            confidence: 92,
-            why: "Legacy endpoint override request anticipates deleting a protected path."
-                .to_string(),
-        }
-    };
-
-    Ok(security_host.arbitrate(
-        SecurityArbitrationContext {
-            thread_id: session.conversation_id.to_string(),
-            turn_id: turn.sub_id.clone(),
-            risk_score: 35,
-            rationale: format!(
-                "Legacy endpoint override request for {}",
-                normalized_path.display()
-            ),
-            issued_at: current_unix_timestamp(),
-        },
-        vec![effect],
-    ))
-}
-
-fn ensure_legacy_override_is_compatible(
-    decision: &SecurityArbitrationDecision,
-) -> Result<(), FunctionCallError> {
-    match decision {
-        SecurityArbitrationDecision::AllowWithPermit { .. } => Ok(()),
-        SecurityArbitrationDecision::AllowWithAmendedPermit { rationale, .. } => {
-            Err(FunctionCallError::RespondToModel(format!(
-                "security override request needs a narrower scoped permit than the legacy override file can express: {rationale}"
-            )))
-        }
-        SecurityArbitrationDecision::EscalateToHuman { rationale, .. } => {
-            Err(FunctionCallError::RespondToModel(format!(
-                "security override request requires Smart Access human escalation before issuing a legacy override: {rationale}"
-            )))
-        }
-        SecurityArbitrationDecision::Deny { rationale, .. } => {
-            Err(FunctionCallError::RespondToModel(format!(
-                "security override request was denied by Security Host: {rationale}"
-            )))
-        }
-        SecurityArbitrationDecision::DowngradeToDefault { rationale } => {
-            Err(FunctionCallError::RespondToModel(format!(
-                "security override request cannot be represented by the current endpoint security override flow: {rationale}"
-            )))
-        }
-    }
 }
 
 fn retain_active_overrides(policy: &mut SecurityPolicy, now: i64) {
@@ -319,15 +192,6 @@ impl ToolHandler for RequestSecurityOverrideHandler {
             )));
         }
 
-        let security_host_decision = security_host_decision_for_override(
-            session.as_ref(),
-            turn.as_ref(),
-            &policy,
-            &normalized_path,
-            &args,
-        )?;
-        ensure_legacy_override_is_compatible(&security_host_decision)?;
-
         let approval_reason = format!(
             "{} Reason: {}",
             args.justification.trim(),
@@ -430,7 +294,6 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
-    use std::time::SystemTime;
     use tokio::sync::Mutex;
 
     fn invocation(
@@ -587,196 +450,6 @@ mod tests {
             FunctionCallError::RespondToModel(
                 "security override request was denied by the user".to_string()
             )
-        );
-    }
-
-    #[test]
-    fn legacy_override_compatibility_rejects_non_direct_security_host_decisions() {
-        assert_eq!(
-            ensure_legacy_override_is_compatible(
-                &SecurityArbitrationDecision::AllowWithAmendedPermit {
-                    permits: Vec::new(),
-                    rationale: "narrower scope required".to_string(),
-                }
-            ),
-            Err(FunctionCallError::RespondToModel(
-                "security override request needs a narrower scoped permit than the legacy override file can express: narrower scope required".to_string()
-            ))
-        );
-        assert_eq!(
-            ensure_legacy_override_is_compatible(&SecurityArbitrationDecision::EscalateToHuman {
-                risk_score: 81,
-                rationale: "manual review required".to_string(),
-            }),
-            Err(FunctionCallError::RespondToModel(
-                "security override request requires Smart Access human escalation before issuing a legacy override: manual review required".to_string()
-            ))
-        );
-        assert_eq!(
-            ensure_legacy_override_is_compatible(&SecurityArbitrationDecision::Deny {
-                risk_score: 96,
-                rationale: "crosses trust boundary".to_string(),
-            }),
-            Err(FunctionCallError::RespondToModel(
-                "security override request was denied by Security Host: crosses trust boundary"
-                    .to_string()
-            ))
-        );
-        assert_eq!(
-            ensure_legacy_override_is_compatible(
-                &SecurityArbitrationDecision::DowngradeToDefault {
-                    rationale: "runtime gate unavailable".to_string(),
-                }
-            ),
-            Err(FunctionCallError::RespondToModel(
-                "security override request cannot be represented by the current endpoint security override flow: runtime gate unavailable".to_string()
-            ))
-        );
-    }
-
-    #[tokio::test]
-    async fn does_not_write_override_when_security_host_downgrades_move_request() {
-        let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy
-            .set(AskForApproval::OnRequest)
-            .expect("approval policy should allow OnRequest in tests");
-        let target_path = turn.cwd.join("move-target.txt");
-        let policy_path = turn.config.codex_home.join("es_policy.json");
-        std::fs::create_dir_all(
-            policy_path
-                .parent()
-                .expect("policy file should have parent directory"),
-        )
-        .expect("create policy dir");
-        let initial_policy = SecurityPolicy {
-            protected_zones: vec![
-                normalize_path_for_policy(&turn.cwd)
-                    .to_string_lossy()
-                    .to_string(),
-            ],
-            temporary_overrides: Vec::new(),
-            temporary_override_expirations: BTreeMap::new(),
-        };
-        std::fs::write(
-            &policy_path,
-            serde_json::to_string_pretty(&initial_policy).expect("serialize initial policy"),
-        )
-        .expect("write initial policy");
-
-        let session = Arc::new(session);
-        *session.active_turn.lock().await = Some(ActiveTurn::default());
-        let turn = Arc::new(turn);
-        let invocation = invocation(
-            Arc::clone(&session),
-            Arc::clone(&turn),
-            "call-downgraded",
-            json!({
-                "path": target_path,
-                "reason": "Move the protected file to Trash so the task can proceed.",
-                "sandbox_permissions": "require_escalated",
-                "justification": "Need a temporary kernel override for this move."
-            }),
-        );
-
-        let err = tokio::time::timeout(
-            Duration::from_secs(1),
-            RequestSecurityOverrideHandler.handle(invocation),
-        )
-        .await
-        .expect("security host downgrade should return without waiting for human approval");
-        let err = match err {
-            Ok(_) => panic!("downgraded override should fail"),
-            Err(err) => err,
-        };
-        assert_eq!(
-            err,
-            FunctionCallError::RespondToModel(
-                "security override request cannot be represented by the current endpoint security override flow: Smart Access cannot trust the current runtime state for this effect.".to_string()
-            )
-        );
-        assert_eq!(
-            serde_json::from_str::<SecurityPolicy>(
-                &std::fs::read_to_string(policy_path).expect("read policy after downgrade")
-            )
-            .expect("parse policy after downgrade"),
-            initial_policy
-        );
-    }
-
-    #[tokio::test]
-    async fn does_not_write_override_when_security_host_requires_narrower_scope() {
-        let (session, mut turn) = make_session_and_context().await;
-        turn.approval_policy
-            .set(AskForApproval::OnRequest)
-            .expect("approval policy should allow OnRequest in tests");
-        let target_path = turn.cwd.join(format!(
-            "override-dir-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after epoch")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&target_path).expect("create override directory");
-
-        let policy_path = turn.config.codex_home.join("es_policy.json");
-        std::fs::create_dir_all(
-            policy_path
-                .parent()
-                .expect("policy file should have parent directory"),
-        )
-        .expect("create policy dir");
-        let initial_policy = SecurityPolicy {
-            protected_zones: vec![
-                normalize_path_for_policy(&turn.cwd)
-                    .to_string_lossy()
-                    .to_string(),
-            ],
-            temporary_overrides: Vec::new(),
-            temporary_override_expirations: BTreeMap::new(),
-        };
-        std::fs::write(
-            &policy_path,
-            serde_json::to_string_pretty(&initial_policy).expect("serialize initial policy"),
-        )
-        .expect("write initial policy");
-
-        let session = Arc::new(session);
-        *session.active_turn.lock().await = Some(ActiveTurn::default());
-        let turn = Arc::new(turn);
-        let invocation = invocation(
-            Arc::clone(&session),
-            Arc::clone(&turn),
-            "call-amended",
-            json!({
-                "path": target_path,
-                "reason": "Delete the generated directory once verification is complete.",
-                "sandbox_permissions": "require_escalated",
-                "justification": "Need a temporary kernel override to clean up this directory."
-            }),
-        );
-
-        let err = tokio::time::timeout(
-            Duration::from_secs(1),
-            RequestSecurityOverrideHandler.handle(invocation),
-        )
-        .await
-        .expect("amended scope should return without waiting for human approval");
-        let err = match err {
-            Ok(_) => panic!("amended scope should fail"),
-            Err(err) => err,
-        };
-        assert_eq!(
-            err,
-            FunctionCallError::RespondToModel(
-                "security override request needs a narrower scoped permit than the legacy override file can express: Security Host narrowed a recursive request before approval.".to_string()
-            )
-        );
-        assert_eq!(
-            serde_json::from_str::<SecurityPolicy>(
-                &std::fs::read_to_string(policy_path).expect("read policy after amended denial")
-            )
-            .expect("parse policy after amended denial"),
-            initial_policy
         );
     }
 

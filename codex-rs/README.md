@@ -286,29 +286,6 @@ codex --sandbox danger-full-access
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 
-### Smart Access 模式
-
-如果你想把 `Default` 和 `Full Access` 之间再加一层“智能审批”，可以在
-`~/.codex/config.toml` 里启用：
-
-```toml
-security_mode = "smart-access"
-
-[features]
-smart_approvals = true
-```
-
-启用后：
-- `Smart Access` 会成为独立的顶层权限模式，而不是隐藏在 reviewer 配置后面。
-- 低风险操作可以自动放行；高风险操作会回退到人工审批，而不是直接扩大权限。
-- 如果同时启用 `endpoint_security = true`，Smart Access 会读取 `<codex_home>/es_policy.json`
-  中的能力边界，并在 shell / `apply_patch` / `unified_exec` 被后台 Endpoint Security daemon
-  拦住时，把拦截告警附加到工具输出里，同时记录一条 runtime mismatch trace，说明“预测可行，
-  但运行时被门禁拦住了”。
-- `request_security_override` 仍然是旧的临时放行通道；在 Smart Access 下，它依然要求显式
-  用户提权批准，并且如果 Security Host 判断旧 override 文件表达不了所需的窄权限范围，
-  就不会盲目下发 legacy override。
-
 ### macOS Endpoint Security Daemon（可选）
 
 如果你希望在 macOS 上启用内核级删除/移动拦截，可以在 `~/.codex/config.toml` 里打开：
@@ -322,11 +299,6 @@ endpoint_security = true
 - 仅在 `endpoint_security = true` 时向模型暴露 `request_security_override` 工具。
 - policy 文件位于 `<codex_home>/es_policy.json`，包含：
   - `protected_zones`
-  - `sensitive_zones`
-  - `sensitive_export_allow_zones`
-  - `exec_exfil_tool_blocklist`
-  - `trusted_tools`
-  - `trusted_tool_identities`
   - `temporary_overrides`
   - `temporary_override_expirations`
 - `request_security_override` 获批后会写入临时放行，默认 TTL 为 900 秒（15 分钟）。

@@ -19,7 +19,6 @@ use crate::config_types::CollaborationMode;
 use crate::config_types::ModeKind;
 use crate::config_types::Personality;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use crate::config_types::SecurityMode;
 use crate::config_types::WindowsSandboxLevel;
 use crate::custom_prompts::CustomPrompt;
 use crate::dynamic_tools::DynamicToolCallOutputContentItem;
@@ -214,10 +213,6 @@ pub enum Op {
         /// Updated `cwd` for sandbox/tool calls.
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,
-
-        /// Updated top-level security mode.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        security_mode: Option<SecurityMode>,
 
         /// Updated command approval policy.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -2782,10 +2777,6 @@ pub struct SessionConfiguredEvent {
 
     pub model_provider_id: String,
 
-    /// Top-level security posture selected for this session.
-    #[serde(default)]
-    pub security_mode: SecurityMode,
-
     /// When to escalate for approval for execution
     pub approval_policy: AskForApproval,
 
@@ -3583,7 +3574,6 @@ mod tests {
                 thread_name: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
-                security_mode: SecurityMode::Default,
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -3604,7 +3594,6 @@ mod tests {
                 "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                 "model": "codex-mini-latest",
                 "model_provider_id": "openai",
-                "security_mode": "default",
                 "approval_policy": "never",
                 "approvals_reviewer": "user",
                 "sandbox_policy": {

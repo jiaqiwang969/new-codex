@@ -12,7 +12,6 @@ use crate::file_watcher::FileWatcher;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::models_manager::manager::ModelsManager;
 use crate::skills::SkillsManager;
-use crate::smart_access::SmartAccessRuntimeContext;
 use crate::state_db::StateDbHandle;
 use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::runtimes::ExecveSessionApproval;
@@ -46,7 +45,6 @@ pub(crate) struct SessionServices {
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) otel_manager: OtelManager,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
-    pub(crate) smart_access_runtime_contexts: Mutex<HashMap<String, SmartAccessRuntimeContext>>,
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) execve_session_approvals: RwLock<HashMap<AbsolutePathBuf, ExecveSessionApproval>>,
     pub(crate) skills_manager: Arc<SkillsManager>,

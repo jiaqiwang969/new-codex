@@ -15,9 +15,6 @@ use crate::guardian::routes_approval_to_guardian;
 use crate::powershell::prefix_powershell_script_with_utf8;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::ShellType;
-use crate::smart_access::SmartAccessApprovalOutcome;
-use crate::smart_access::merge_human_approval_reason;
-use crate::smart_access::review_smart_access_request;
 use crate::tools::network_approval::NetworkApprovalMode;
 use crate::tools::network_approval::NetworkApprovalSpec;
 use crate::tools::runtimes::build_command_spec;
@@ -112,39 +109,27 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
         let command = req.command.clone();
         let cwd = req.cwd.clone();
         let retry_reason = ctx.retry_reason.clone();
-        let base_reason = ctx
+        let reason = ctx
             .retry_reason
             .clone()
             .or_else(|| req.justification.clone());
         Box::pin(async move {
-            let approval_request = GuardianApprovalRequest::ExecCommand {
-                id: call_id.clone(),
-                command: command.clone(),
-                cwd: cwd.clone(),
-                sandbox_permissions: req.sandbox_permissions,
-                additional_permissions: req.additional_permissions.clone(),
-                justification: req.justification.clone(),
-                tty: req.tty,
-            };
-            let mut reason = base_reason;
-            if let Some(outcome) = review_smart_access_request(
-                session,
-                turn,
-                approval_request.clone(),
-                retry_reason.clone(),
-            )
-            .await
-            {
-                match outcome {
-                    SmartAccessApprovalOutcome::Final(decision) => return decision,
-                    SmartAccessApprovalOutcome::FallbackToHuman { rationale } => {
-                        reason = merge_human_approval_reason(reason, rationale.as_str());
-                    }
-                }
-            }
             if routes_approval_to_guardian(turn) {
-                return review_approval_request(session, turn, approval_request, retry_reason)
-                    .await;
+                return review_approval_request(
+                    session,
+                    turn,
+                    GuardianApprovalRequest::ExecCommand {
+                        id: call_id,
+                        command,
+                        cwd,
+                        sandbox_permissions: req.sandbox_permissions,
+                        additional_permissions: req.additional_permissions.clone(),
+                        justification: req.justification.clone(),
+                        tty: req.tty,
+                    },
+                    retry_reason,
+                )
+                .await;
             }
             with_cached_approval(&session.services, "unified_exec", keys, || async move {
                 let available_decisions = None;
