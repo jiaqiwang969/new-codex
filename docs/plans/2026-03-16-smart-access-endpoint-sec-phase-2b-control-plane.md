@@ -1,6 +1,8 @@
-# Smart Access Phase 2B Control Plane Implementation Plan
+# Obsolete: Smart Access Phase 2B Control Plane Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+> **Status:** Historical and obsolete for current merge work. This plan extends the removed local Smart Access / `endpoint-sec` line and should not be used as active implementation guidance. Follow upstream approvals/guardian semantics instead.
 
 **Goal:** Replace Smart Access's session-local log scraping with a machine-wide security runtime control plane built around leases, permits, action scopes, and structured runtime events.
 

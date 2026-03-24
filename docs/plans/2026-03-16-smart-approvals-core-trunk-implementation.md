@@ -1,6 +1,8 @@
-# Smart Approvals Core Trunk Implementation Plan
+# Obsolete: Smart Approvals Core Trunk Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+> **Status:** Historical and obsolete for current merge work. This plan preserves the local `endpoint-sec` / `request_security_override` boundary, but the active direction is to remove that local flow and keep the upstream `approval_policy` + `approvals_reviewer` / guardian model.
 
 **Goal:** Import the official Smart Approvals core runtime trunk into this customized repository without changing the current Endpoint Security enforcement boundary or pulling in the unstable app-server guardian notification surface.
 

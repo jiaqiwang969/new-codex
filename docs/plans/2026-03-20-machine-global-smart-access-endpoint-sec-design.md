@@ -1,6 +1,8 @@
-# Machine-Global Smart Access + endpoint-sec Design
+# Obsolete: Machine-Global Smart Access + endpoint-sec Design
 
 **Date:** 2026-03-20
+
+> **Status:** Historical and obsolete for current merge work. This design depends on the deprecated local Smart Access + `endpoint-sec` direction. Do not use it for the upstream merge path; use upstream `approval_policy` + `approvals_reviewer` / guardian semantics instead.
 
 **Objective:** Turn Smart Access and `endpoint-sec` into one coordinated system where Codex predicts and arbitrates risk, while a machine-global `endpoint-sec` runtime enforces real system effects under a shared permit and feedback model.
 

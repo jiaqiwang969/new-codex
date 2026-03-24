@@ -95,7 +95,7 @@ pub enum Feature {
     /// Allow the model to request web searches that fetch cached content.
     /// Takes precedence over `WebSearchRequest`.
     WebSearchCached,
-    /// Allow creating NixOS/OrbStack clones for debugging behavioral anomalies via `/freeze` or panic hooks.
+    /// Legacy no-op freeze debug flag kept only for backward compatibility.
     FreezeSandboxDebug,
     /// Legacy search-tool feature flag kept for backward compatibility.
     SearchTool,
@@ -501,7 +501,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::FreezeSandboxDebug,
         key: "freeze_sandbox_debug",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -877,5 +877,11 @@ mod tests {
     fn collab_is_legacy_alias_for_multi_agent() {
         assert_eq!(feature_for_key("multi_agent"), Some(Feature::Collab));
         assert_eq!(feature_for_key("collab"), Some(Feature::Collab));
+    }
+
+    #[test]
+    fn freeze_sandbox_debug_is_removed() {
+        assert_eq!(Feature::FreezeSandboxDebug.stage(), Stage::Removed);
+        assert_eq!(Feature::FreezeSandboxDebug.default_enabled(), false);
     }
 }

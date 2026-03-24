@@ -60,8 +60,6 @@ where
 
 mod ephemeral_sandbox;
 pub use ephemeral_sandbox::EphemeralSandboxHandler;
-
-pub mod request_security_override;
 /// Validates feature/policy constraints for `with_additional_permissions` and
 /// normalizes any path-based permissions. Errors if the request is invalid.
 pub(super) fn normalize_and_validate_additional_permissions(

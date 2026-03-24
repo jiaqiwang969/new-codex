@@ -1,6 +1,8 @@
-# Machine-Global Smart Access + endpoint-sec Implementation Plan
+# Obsolete: Machine-Global Smart Access + endpoint-sec Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+> **Status:** Historical and obsolete for current merge work. This plan builds on the deprecated local Smart Access + `endpoint-sec` flow and should not be used as active implementation guidance. Follow upstream approvals/guardian semantics instead.
 
 **Goal:** Upgrade machine-global `endpoint-sec` into a Smart Access-aware security runtime, then connect `codex-rs` to it through leases, permits, action scopes, and structured runtime events.
 

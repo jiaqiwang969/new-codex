@@ -1,5 +1,7 @@
 # Smart Access Safe Local Read Implementation Plan
 
+> **Status:** Historical and obsolete for the current upstream merge work. This implementation plan belongs to the deprecated local Smart Access line; the active direction is to follow upstream approvals/guardian behavior.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make Smart Access silently auto-approve non-sensitive local read-only `shell` and `unified_exec` commands while preserving strict handling for sensitive reads, writes, destructive actions, transfers, and runtime mismatches.

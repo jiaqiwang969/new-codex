@@ -286,26 +286,15 @@ codex --sandbox danger-full-access
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 
-### macOS Endpoint Security Daemon（可选）
+### 审批配置（推荐）
 
-如果你希望在 macOS 上启用内核级删除/移动拦截，可以在 `~/.codex/config.toml` 里打开：
+上游方向是把“何时审批”和“谁审批”分开配置，而不是继续使用旧的本地特殊审批流。
 
-```toml
-endpoint_security = true
-```
+- `approval_policy`：定义什么时候需要审批
+- `approvals_reviewer`：定义谁来审核审批请求（`user` 或 `guardian_subagent`）
+- `smart_approvals`：只是 rollout / UI 开关，不会替代 `approval_policy`
 
-启用后：
-- CLI 会在启动时确保 Endpoint Security daemon 已运行（若未签名 entitlement，会警告并跳过）。
-- 仅在 `endpoint_security = true` 时向模型暴露 `request_security_override` 工具。
-- policy 文件位于 `<codex_home>/es_policy.json`，包含：
-  - `protected_zones`
-  - `temporary_overrides`
-  - `temporary_override_expirations`
-- `request_security_override` 获批后会写入临时放行，默认 TTL 为 900 秒（15 分钟）。
-
-要求：
-- macOS + `macos-endpoint-security` feature 构建。
-- 可执行文件带 `com.apple.developer.endpoint-security.client` entitlement。
+详细说明见 [`docs/config.md`](../docs/config.md#approvals-reviewer)。
 
 ### `~/.codex/config.toml` 的 `[features]` 配置说明
 

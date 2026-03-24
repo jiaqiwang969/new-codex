@@ -1,5 +1,7 @@
 # Smart Access Safe Local Read Fast Path
 
+> **Status:** Historical and obsolete for the current upstream merge work. This design belongs to the deprecated local Smart Access line; the active direction is to follow upstream approvals/guardian behavior.
+
 ## Goal
 
 Restore the original Smart Access product goal for shell-style tools:
@@ -125,8 +127,8 @@ The built-in fallback roots should be conservative and short:
 - `<codex_home>/auth.json`
 - `<codex_home>/.credentials.json`
 
-This keeps `cat ~/.ssh/id_rsa` on the strict path even when
-`endpoint_security = false`, while allowing ordinary repo-adjacent docs and
+This keeps `cat ~/.ssh/id_rsa` on the strict path even without the deprecated
+local Endpoint Security flow, while allowing ordinary repo-adjacent docs and
 config inspection to stay silent.
 
 ### 5. Make guardian review silent when Smart Access uses it internally

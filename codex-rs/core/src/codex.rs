@@ -736,7 +736,6 @@ impl TurnContext {
             features: &features,
             web_search_mode: self.tools_config.web_search_mode,
             is_gemini_wire_api: provider.wire_api == crate::model_provider_info::WireApi::Gemini,
-            endpoint_security: config.endpoint_security,
             session_source: self.session_source.clone(),
         })
         .with_allow_login_shell(self.tools_config.allow_login_shell)
@@ -1457,7 +1456,6 @@ impl Session {
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
             is_gemini_wire_api: provider_for_context.wire_api
                 == crate::model_provider_info::WireApi::Gemini,
-            endpoint_security: per_turn_config.endpoint_security,
             session_source: session_source.clone(),
         })
         .with_allow_login_shell(per_turn_config.permissions.allow_login_shell)
@@ -5588,7 +5586,6 @@ async fn spawn_review_thread(
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
         is_gemini_wire_api: provider.wire_api == crate::model_provider_info::WireApi::Gemini,
-        endpoint_security: per_turn_config.endpoint_security,
         session_source: parent_turn_context.session_source.clone(),
     })
     .with_allow_login_shell(config.permissions.allow_login_shell)

@@ -68,7 +68,6 @@ pub enum SlashCommand {
     Personality,
     Realtime,
     TestApproval,
-    Freeze,
     // Debugging commands.
     #[strum(serialize = "debug-m-drop")]
     MemoryDrop,
@@ -151,9 +150,6 @@ impl SlashCommand {
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
-            SlashCommand::Freeze => {
-                "snapshot this moment for auto-debugging a logic bug in a cloned sandbox"
-            }
         }
     }
 
@@ -180,7 +176,6 @@ impl SlashCommand {
                 | SlashCommand::ImageQuality
                 | SlashCommand::AspectRatio
                 | SlashCommand::SandboxReadRoot
-                | SlashCommand::Freeze
         )
     }
 
@@ -234,7 +229,6 @@ impl SlashCommand {
             | SlashCommand::Quit
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
-            SlashCommand::Freeze => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Realtime => true,
             SlashCommand::Collab => true,

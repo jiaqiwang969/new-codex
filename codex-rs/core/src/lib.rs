@@ -210,9 +210,6 @@ pub use thread_memory::build_thread_memory_trace_items;
 pub use tools::spec::parse_tool_input_schema;
 pub use turn_metadata::build_turn_metadata_header;
 pub mod compact;
-pub mod freeze_debug;
 pub mod git_side_effects;
 pub mod memory_trace;
 pub mod otel_init;
-
-pub mod es_daemon;

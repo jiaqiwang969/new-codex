@@ -1,6 +1,8 @@
-# Smart Approvals Core Trunk Import Design
+# Obsolete: Smart Approvals Core Trunk Import Design
 
 **Date:** 2026-03-16
+
+> **Status:** Historical and obsolete for current merge work. This design assumed the local `endpoint-sec` / `request_security_override` safety line would remain in place. The active direction is to remove that local flow and follow upstream `approval_policy` + `approvals_reviewer` / guardian semantics instead.
 
 **Objective:** Import the official Smart Approvals core runtime trunk into this customized Codex repository while preserving the existing local `endpoint-sec` / Endpoint Security enforcement model and avoiding the unstable app-server notification surface for now.
 

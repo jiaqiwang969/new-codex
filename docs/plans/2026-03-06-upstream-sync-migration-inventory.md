@@ -1,4 +1,4 @@
-# Upstream Sync Migration Inventory
+# Historical: Upstream Sync Migration Inventory
 
 **Date:** 2026-03-06
 **Source branch:** `feature/upstream-sync`
@@ -6,6 +6,8 @@
 **Checkpoint commit for current custom line:** `38c01b6a4`
 **Merge base:** `79d6f80e41806d61b8a5ce7dbaff4bb1d6e38a91`
 **Divergence:** `165` commits ahead of `upstream/main`, `221` commits behind `upstream/main`
+
+> **Status:** Historical inventory only. The `/freeze` and related sandbox customizations noted below are not part of the current upstream merge target and should not be reintroduced during merge prep.
 
 ## Branch Topology Summary
 

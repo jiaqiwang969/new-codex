@@ -224,7 +224,6 @@ pub struct Permissions {
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    pub endpoint_security: bool,
     /// Provenance for how this [`Config`] was derived (merged layers + enforced
     /// requirements).
     pub config_layer_stack: ConfigLayerStack,
@@ -1154,7 +1153,6 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigToml {
-    pub endpoint_security: Option<bool>,
     /// Optional override of model selection.
     pub model: Option<String>,
     /// Optional override of the utility ("sub") model used for internal tasks
@@ -2384,7 +2382,6 @@ impl Config {
         };
 
         let config = Self {
-            endpoint_security: cfg.endpoint_security.unwrap_or(false),
             model,
             model_sub,
             model_sub_responses,
@@ -5046,7 +5043,6 @@ model_verbosity = "high"
         )?;
         assert_eq!(
             Config {
-                endpoint_security: false,
                 model: Some("o3".to_string()),
                 model_sub: None,
                 model_sub_responses: None,
@@ -5177,7 +5173,6 @@ model_verbosity = "high"
             fixture.codex_home(),
         )?;
         let expected_gpt3_profile_config = Config {
-            endpoint_security: false,
             model: Some("gpt-3.5-turbo".to_string()),
             model_sub: None,
             model_sub_responses: None,
@@ -5306,7 +5301,6 @@ model_verbosity = "high"
             fixture.codex_home(),
         )?;
         let expected_zdr_profile_config = Config {
-            endpoint_security: false,
             model: Some("o3".to_string()),
             model_sub: None,
             model_sub_responses: None,
@@ -5421,7 +5415,6 @@ model_verbosity = "high"
             fixture.codex_home(),
         )?;
         let expected_gpt5_profile_config = Config {
-            endpoint_security: false,
             model: Some("gpt-5.1".to_string()),
             model_sub: None,
             model_sub_responses: None,
