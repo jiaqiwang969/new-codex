@@ -19,8 +19,8 @@ use crate::model_compat::is_anthropic_model_slug;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::normalized_grok_model_slug;
-use crate::truncate::approx_bytes_for_tokens;
 use codex_features::Feature;
+use codex_utils_output_truncation::approx_bytes_for_tokens;
 use tracing::warn;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");

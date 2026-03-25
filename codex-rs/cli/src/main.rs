@@ -756,7 +756,7 @@ async fn run_thread_memory_backfill(
         anyhow::bail!("Thread memory tooling is disabled. Re-run with --enable memories.");
     }
 
-    let Some(db) = state_db::init_state_db_if_enabled(&config, None).await else {
+    let Some(db) = state_db::init(&config).await else {
         anyhow::bail!("Failed to initialize state DB runtime.");
     };
 

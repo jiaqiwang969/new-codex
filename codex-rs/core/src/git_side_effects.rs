@@ -2,14 +2,16 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::SystemTime;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::git_info::get_git_repo_root;
-use crate::git_info::run_git_command_with_timeout;
 use crate::protocol::EventMsg;
 use crate::protocol::FileSystemMutatedEvent;
+use codex_git_utils::get_git_repo_root;
+use tokio::process::Command;
+use tokio::time::timeout;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitState {
@@ -169,4 +171,19 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
     }
 
     changed_files.into_iter().collect()
+}
+
+async fn run_git_command_with_timeout(args: &[&str], cwd: &Path) -> Option<std::process::Output> {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(args)
+        .current_dir(cwd)
+        .kill_on_drop(true);
+    let result = timeout(Duration::from_secs(5), command.output()).await;
+
+    match result {
+        Ok(Ok(output)) => Some(output),
+        _ => None,
+    }
 }

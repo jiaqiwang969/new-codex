@@ -115,9 +115,15 @@ fn request_permissions_tool_is_under_development() {
 }
 
 #[test]
-fn tool_suggest_is_under_development() {
-    assert_eq!(Feature::ToolSuggest.stage(), Stage::UnderDevelopment);
-    assert_eq!(Feature::ToolSuggest.default_enabled(), false);
+fn tool_suggest_is_stable_and_enabled_by_default() {
+    assert_eq!(Feature::ToolSuggest.stage(), Stage::Stable);
+    assert_eq!(Feature::ToolSuggest.default_enabled(), true);
+}
+
+#[test]
+fn tool_search_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::ToolSearch.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::ToolSearch.default_enabled(), false);
 }
 
 #[test]
@@ -142,6 +148,12 @@ fn freeze_sandbox_debug_is_removed() {
 fn image_generation_is_under_development() {
     assert_eq!(Feature::ImageGeneration.stage(), Stage::UnderDevelopment);
     assert_eq!(Feature::ImageGeneration.default_enabled(), false);
+}
+
+#[test]
+fn tool_call_mcp_elicitation_is_stable_and_enabled_by_default() {
+    assert_eq!(Feature::ToolCallMcpElicitation.stage(), Stage::Stable);
+    assert_eq!(Feature::ToolCallMcpElicitation.default_enabled(), true);
 }
 
 #[test]
