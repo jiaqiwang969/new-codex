@@ -483,6 +483,7 @@ fn server_notification_thread_events(
                     turn_id: notification.turn.id,
                     model_context_window: None,
                     collaboration_mode_kind: ModeKind::default(),
+                    memory: None,
                 }),
             }],
         )),
@@ -658,6 +659,7 @@ fn turn_snapshot_events(
             turn_id: turn.id.clone(),
             model_context_window: None,
             collaboration_mode_kind: ModeKind::default(),
+            memory: None,
         }),
     }];
 
@@ -721,6 +723,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn.id.clone(),
                 last_agent_message: None,
+                memory: None,
             }),
         }),
         TurnStatus::Interrupted => events.push(Event {
@@ -748,6 +751,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
                 msg: EventMsg::TurnComplete(TurnCompleteEvent {
                     turn_id: turn.id.clone(),
                     last_agent_message: None,
+                    memory: None,
                 }),
             });
         }
@@ -1097,6 +1101,7 @@ mod tests {
                 thread_id: thread_id.clone(),
                 turn: Turn {
                     id: turn_id.clone(),
+                    memory: None,
                     items: Vec::new(),
                     status: TurnStatus::Completed,
                     error: None,
@@ -1264,6 +1269,7 @@ mod tests {
             name: None,
             turns: vec![Turn {
                 id: "turn-1".to_string(),
+                memory: None,
                 items: vec![ThreadItem::CommandExecution {
                     id: "cmd-1".to_string(),
                     command: "printf 'hello world\\n'".to_string(),
@@ -1308,6 +1314,7 @@ mod tests {
                 thread_id: thread_id.clone(),
                 turn: Turn {
                     id: turn_id.clone(),
+                    memory: None,
                     items: Vec::new(),
                     status: TurnStatus::Interrupted,
                     error: None,
@@ -1340,6 +1347,7 @@ mod tests {
                 thread_id: thread_id.clone(),
                 turn: Turn {
                     id: turn_id.clone(),
+                    memory: None,
                     items: Vec::new(),
                     status: TurnStatus::Failed,
                     error: Some(TurnError {
@@ -1431,6 +1439,7 @@ mod tests {
                 turns: vec![
                     Turn {
                         id: "turn-complete".to_string(),
+                        memory: None,
                         items: vec![
                             ThreadItem::UserMessage {
                                 id: "user-1".to_string(),
@@ -1451,12 +1460,14 @@ mod tests {
                     },
                     Turn {
                         id: "turn-interrupted".to_string(),
+                        memory: None,
                         items: Vec::new(),
                         status: TurnStatus::Interrupted,
                         error: None,
                     },
                     Turn {
                         id: "turn-failed".to_string(),
+                        memory: None,
                         items: Vec::new(),
                         status: TurnStatus::Failed,
                         error: Some(TurnError {
@@ -1499,6 +1510,7 @@ mod tests {
             ThreadId::new(),
             &Turn {
                 id: "turn-complete".to_string(),
+                memory: None,
                 items: vec![
                     ThreadItem::Reasoning {
                         id: "reasoning-1".to_string(),
@@ -1559,6 +1571,7 @@ mod tests {
             ThreadId::new(),
             &Turn {
                 id: "turn-complete".to_string(),
+                memory: None,
                 items: vec![ThreadItem::Reasoning {
                     id: "reasoning-1".to_string(),
                     summary: vec!["Need to inspect config".to_string()],

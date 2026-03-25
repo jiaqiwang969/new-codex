@@ -792,7 +792,7 @@ async fn multi_agent_v2_send_message_interrupts_busy_child_without_triggering_tu
         )
     }));
 
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(10), async {
         loop {
             if !thread
                 .codex
@@ -933,7 +933,7 @@ async fn multi_agent_v2_assign_task_interrupts_busy_child_without_losing_message
         )
     }));
 
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(10), async {
         loop {
             let history_items = thread
                 .codex

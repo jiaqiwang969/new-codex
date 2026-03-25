@@ -674,6 +674,7 @@ mod tests {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: turn_id.to_string(),
+                memory: None,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
                 error: None,

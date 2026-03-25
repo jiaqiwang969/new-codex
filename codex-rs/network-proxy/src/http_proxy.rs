@@ -1030,15 +1030,17 @@ mod tests {
     #[tokio::test]
     async fn http_connect_accept_allows_allowlisted_host_in_full_mode() {
         let policy = NetworkProxySettings {
-            allowed_domains: vec!["example.com".to_string()],
+            // Use a public IP literal to avoid relying on ambient DNS behavior (some networks
+            // resolve hostnames to private IPs, which would trigger `not_allowed_local`).
+            allowed_domains: vec!["1.1.1.1".to_string()],
             ..Default::default()
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
 
         let mut req = Request::builder()
             .method(Method::CONNECT)
-            .uri("https://example.com:443")
-            .header("host", "example.com:443")
+            .uri("https://1.1.1.1:443")
+            .header("host", "1.1.1.1:443")
             .body(Body::empty())
             .unwrap();
         req.extensions_mut().insert(state);

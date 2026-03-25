@@ -7923,6 +7923,7 @@ guardian_approval = true
     fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
         Turn {
             id: turn_id.to_string(),
+            memory: None,
             items,
             status,
             error: None,
@@ -8919,6 +8920,7 @@ guardian_approval = true
                 turns: vec![
                     Turn {
                         id: "turn-1".to_string(),
+                        memory: None,
                         items: vec![ThreadItem::UserMessage {
                             id: "user-1".to_string(),
                             content: vec![AppServerUserInput::Text {
@@ -8931,6 +8933,7 @@ guardian_approval = true
                     },
                     Turn {
                         id: "turn-2".to_string(),
+                        memory: None,
                         items: vec![
                             ThreadItem::UserMessage {
                                 id: "user-2".to_string(),

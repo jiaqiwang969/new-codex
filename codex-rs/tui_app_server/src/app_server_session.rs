@@ -1159,6 +1159,7 @@ mod tests {
                 name: None,
                 turns: vec![Turn {
                     id: "turn-1".to_string(),
+                    memory: None,
                     items: vec![
                         codex_app_server_protocol::ThreadItem::UserMessage {
                             id: "user-1".to_string(),

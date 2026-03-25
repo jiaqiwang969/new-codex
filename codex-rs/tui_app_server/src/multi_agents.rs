@@ -611,12 +611,16 @@ mod tests {
             CollabAgentSpawnEndEvent {
                 call_id: "call-spawn".to_string(),
                 sender_thread_id,
+                memory: None,
+                agent_type: Some("explorer".to_string()),
+                model: Some("gpt-5".to_string()),
+                model_provider_id: None,
+                model_source: None,
+                model_source_detail: None,
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: "Compute 11! and reply with just the integer result.".to_string(),
-                model: "gpt-5".to_string(),
-                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {
@@ -628,6 +632,7 @@ mod tests {
         let send = interaction_end(CollabAgentInteractionEndEvent {
             call_id: "call-send".to_string(),
             sender_thread_id,
+            memory: None,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
@@ -637,6 +642,7 @@ mod tests {
 
         let waiting = waiting_begin(CollabWaitingBeginEvent {
             sender_thread_id,
+            memory: None,
             receiver_thread_ids: vec![robie_id],
             receiver_agents: vec![CollabAgentRef {
                 thread_id: robie_id,
@@ -654,6 +660,7 @@ mod tests {
         statuses.insert(bob_id, AgentStatus::Errored("tool timeout".to_string()));
         let finished = waiting_end(CollabWaitingEndEvent {
             sender_thread_id,
+            memory: None,
             call_id: "call-wait".to_string(),
             agent_statuses: vec![
                 CollabAgentStatusEntry {
@@ -675,6 +682,7 @@ mod tests {
         let close = close_end(CollabCloseEndEvent {
             call_id: "call-close".to_string(),
             sender_thread_id,
+            memory: None,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
@@ -749,12 +757,16 @@ mod tests {
             CollabAgentSpawnEndEvent {
                 call_id: "call-spawn".to_string(),
                 sender_thread_id,
+                memory: None,
+                agent_type: Some("explorer".to_string()),
+                model: Some("gpt-5".to_string()),
+                model_provider_id: None,
+                model_source: None,
+                model_source_detail: None,
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: String::new(),
-                model: "gpt-5".to_string(),
-                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {
@@ -785,6 +797,7 @@ mod tests {
         let cell = resume_end(CollabResumeEndEvent {
             call_id: "call-resume".to_string(),
             sender_thread_id,
+            memory: None,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),

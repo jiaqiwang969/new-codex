@@ -657,7 +657,7 @@ mod tests {
             Some(REASON_NOT_ALLOWED)
         );
         assert_eq!(event.field("network.transport.protocol"), Some("http"));
-        assert_eq!(event.field("server.address"), Some("example.com"));
+        assert_eq!(event.field("server.address"), Some("8.8.8.8"));
         assert_eq!(event.field("server.port"), Some("80"));
         assert_eq!(event.field("http.request.method"), Some(DEFAULT_METHOD));
         assert_eq!(event.field("client.address"), Some(DEFAULT_CLIENT_ADDRESS));
@@ -726,7 +726,9 @@ mod tests {
             Arc::new(|_req| async { NetworkDecision::ask(REASON_NOT_ALLOWED) });
         let request = NetworkPolicyRequest::new(NetworkPolicyRequestArgs {
             protocol: NetworkProtocol::Http,
-            host: "example.com".to_string(),
+            // Avoid relying on ambient DNS behavior (some networks resolve hostnames to private IPs,
+            // which would trigger `not_allowed_local` and bypass the decider path).
+            host: "8.8.8.8".to_string(),
             port: 80,
             client_addr: None,
             method: Some("GET".to_string()),

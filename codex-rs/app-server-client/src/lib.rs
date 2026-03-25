@@ -1454,6 +1454,7 @@ mod tests {
                         thread_id: "thread".to_string(),
                         turn: codex_app_server_protocol::Turn {
                             id: "turn".to_string(),
+                            memory: None,
                             items: Vec::new(),
                             status: codex_app_server_protocol::TurnStatus::Completed,
                             error: None,

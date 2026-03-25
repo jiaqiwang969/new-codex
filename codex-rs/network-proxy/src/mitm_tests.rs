@@ -27,14 +27,16 @@ fn policy_ctx(
 #[tokio::test]
 async fn mitm_policy_blocks_disallowed_method_and_records_telemetry() {
     let app_state = Arc::new(network_proxy_state_for_policy(NetworkProxySettings {
-        allowed_domains: vec!["example.com".to_string()],
+        // Use a public IP literal to avoid relying on ambient DNS behavior (some networks
+        // resolve hostnames to private IPs, which would trigger `not_allowed_local`).
+        allowed_domains: vec!["1.1.1.1".to_string()],
         ..NetworkProxySettings::default()
     }));
-    let ctx = policy_ctx(app_state.clone(), NetworkMode::Limited, "example.com", 443);
+    let ctx = policy_ctx(app_state.clone(), NetworkMode::Limited, "1.1.1.1", 443);
     let req = Request::builder()
         .method(Method::POST)
         .uri("/v1/responses?api_key=secret")
-        .header(HOST, "example.com")
+        .header(HOST, "1.1.1.1")
         .body(Body::empty())
         .unwrap();
 
@@ -53,7 +55,7 @@ async fn mitm_policy_blocks_disallowed_method_and_records_telemetry() {
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].reason, REASON_METHOD_NOT_ALLOWED);
     assert_eq!(blocked[0].method.as_deref(), Some("POST"));
-    assert_eq!(blocked[0].host, "example.com");
+    assert_eq!(blocked[0].host, "1.1.1.1");
     assert_eq!(blocked[0].port, Some(443));
 }
 

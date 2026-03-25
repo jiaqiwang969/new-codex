@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::collections::HashMap;
 use std::path::Path;
 
 use codex_app_server_protocol::AuthMode;
@@ -98,6 +100,8 @@ mod tests {
         let auth = AuthDotJson {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: None,
+            gemini_api_key: None,
+            provider_api_keys: HashMap::new(),
             tokens: Some(TokenData {
                 id_token: codex_core::token_data::parse_chatgpt_jwt_claims(&id_token)
                     .expect("id token should parse"),
@@ -146,6 +150,8 @@ mod tests {
             &AuthDotJson {
                 auth_mode: Some(AuthMode::ApiKey),
                 openai_api_key: Some("sk-test".to_string()),
+                gemini_api_key: None,
+                provider_api_keys: HashMap::new(),
                 tokens: None,
                 last_refresh: None,
             },

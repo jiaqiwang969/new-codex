@@ -11,6 +11,8 @@ use tempfile::TempDir;
 use uuid::Uuid;
 use wiremock::MockServer;
 
+const CLI_STREAM_TIMEOUT: Duration = Duration::from_secs(240);
+
 fn repo_root() -> std::path::PathBuf {
     #[expect(clippy::expect_used)]
     codex_utils_cargo_bin::repo_root().expect("failed to resolve repo root")
@@ -44,7 +46,7 @@ async fn responses_mode_stream_cli() {
     let mut cmd = AssertCommand::new(bin);
     // These tests care about request routing, not shutdown speed. Give the
     // full CLI subprocess plenty of slack under parallel test load.
-    cmd.timeout(Duration::from_secs(120));
+    cmd.timeout(CLI_STREAM_TIMEOUT);
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")
@@ -108,7 +110,7 @@ async fn responses_mode_stream_cli_supports_openai_base_url_env_fallback() {
     let home = TempDir::new().unwrap();
     let bin = codex_utils_cargo_bin::cargo_bin("codex").unwrap();
     let mut cmd = AssertCommand::new(bin);
-    cmd.timeout(Duration::from_secs(120));
+    cmd.timeout(CLI_STREAM_TIMEOUT);
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-C")
@@ -142,7 +144,7 @@ async fn responses_mode_stream_cli_supports_openai_base_url_config_override() {
     let home = TempDir::new().unwrap();
     let bin = codex_utils_cargo_bin::cargo_bin("codex").unwrap();
     let mut cmd = AssertCommand::new(bin);
-    cmd.timeout(Duration::from_secs(120));
+    cmd.timeout(CLI_STREAM_TIMEOUT);
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")

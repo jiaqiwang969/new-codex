@@ -863,6 +863,8 @@ mod tests {
     async fn add_allowed_domain_removes_matching_deny_entry() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             denied_domains: vec!["example.com".to_string()],
+            // Focus this test on allow/deny pattern updates rather than ambient DNS behavior.
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 
@@ -899,6 +901,8 @@ mod tests {
     async fn add_denied_domain_forces_block_with_global_wildcard_allowlist() {
         let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["*".to_string()],
+            // Focus this test on wildcard allowlist behavior rather than ambient DNS behavior.
+            allow_local_binding: true,
             ..NetworkProxySettings::default()
         });
 
@@ -1124,11 +1128,13 @@ mod tests {
         });
 
         assert_eq!(
-            state.host_blocked("example.com", 80).await.unwrap(),
+            // Use public IP literals to avoid relying on ambient DNS behavior (some networks
+            // resolve hostnames to private IPs, which would trigger `not_allowed_local`).
+            state.host_blocked("1.1.1.1", 80).await.unwrap(),
             HostBlockDecision::Allowed
         );
         assert_eq!(
-            state.host_blocked("api.openai.com", 443).await.unwrap(),
+            state.host_blocked("8.8.8.8", 443).await.unwrap(),
             HostBlockDecision::Allowed
         );
         assert_eq!(
