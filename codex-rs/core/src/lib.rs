@@ -9,10 +9,13 @@ mod analytics_client;
 pub mod api_bridge;
 mod apply_patch;
 mod apps;
-pub mod auth;
+mod arc_monitor;
+pub use codex_login as auth;
+mod auth_env_telemetry;
 mod client;
 mod client_common;
 pub mod codex;
+mod realtime_context;
 mod realtime_conversation;
 pub use codex::SteerInputError;
 mod codex_thread;
@@ -40,19 +43,22 @@ pub mod exec;
 pub mod exec_env;
 mod exec_policy;
 pub mod external_agent_config;
-pub mod features;
 mod file_watcher;
 mod flags;
 pub mod git_info;
 mod guardian;
 pub mod harness;
+mod hook_runtime;
 pub mod instructions;
 pub mod landlock;
 pub mod mcp;
 mod mcp_connection_manager;
+mod mcp_tool_approval_templates;
 pub mod models_manager;
 mod network_policy_decision;
 pub mod network_proxy_loader;
+mod original_image_detail;
+mod packages;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_CAPABILITY;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_METHOD;
 pub use mcp_connection_manager::SandboxState;
@@ -62,10 +68,12 @@ mod anthropic_types;
 mod gemini_content;
 mod gemini_streaming;
 mod gemini_types;
+pub use text_encoding::bytes_to_string_smart;
 mod mcp_tool_call;
 mod memories;
+pub mod mention_syntax;
 mod mentions;
-mod message_history;
+pub mod message_history;
 mod model_compat;
 mod model_provider_info;
 mod model_sub_vouch;
@@ -75,12 +83,13 @@ pub mod plugins;
 mod sandbox_tags;
 pub mod sandboxing;
 mod session_prefix;
+mod session_startup_prewarm;
 mod shell_detect;
 mod stream_events_utils;
 pub mod test_support;
 mod text_encoding;
 mod thread_memory;
-pub mod token_data;
+pub use codex_login::token_data;
 mod truncate;
 mod unified_exec;
 mod utility_model;
@@ -98,6 +107,7 @@ pub use model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 pub use model_provider_info::ModelProviderAccount;
 pub use model_provider_info::ModelProviderInfo;
 pub use model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+pub use model_provider_info::OPENAI_PROVIDER_ID;
 pub use model_provider_info::WireApi;
 pub use model_provider_info::built_in_model_providers;
 pub use model_provider_info::create_oss_provider_with_base_url;
@@ -118,12 +128,13 @@ pub fn utility_provider_for_model_slug(
     utility_model::provider_for_model_slug(config, model_slug)
 }
 mod event_mapping;
+mod response_debug_context;
 pub mod review_format;
 pub mod review_prompts;
-mod seatbelt_permissions;
 mod thread_manager;
 pub mod web_search;
 pub mod windows_sandbox_read_grants;
+pub use thread_manager::ForkSnapshot;
 pub use thread_manager::NewThread;
 pub use thread_manager::ThreadManager;
 #[deprecated(note = "use ThreadManager")]
@@ -133,9 +144,18 @@ pub type NewConversation = NewThread;
 #[deprecated(note = "use CodexThread")]
 pub type CodexConversation = CodexThread;
 // Re-export common auth types for workspace consumers
+pub use analytics_client::AnalyticsEventsClient;
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
-pub mod default_client;
+mod default_client_forwarding;
+
+/// Default Codex HTTP client headers and reqwest construction.
+///
+/// Implemented in [`codex_login::default_client`]; this module re-exports that API for crates
+/// that import `codex_core::default_client`.
+pub mod default_client {
+    pub use super::default_client_forwarding::*;
+}
 pub mod project_doc;
 mod rollout;
 pub(crate) mod safety;
@@ -145,16 +165,17 @@ pub mod shell_snapshot;
 pub mod skills;
 pub mod spawn;
 pub mod state_db;
-pub mod terminal;
 mod tools;
 pub mod turn_diff_tracker;
 mod turn_metadata;
+mod turn_timing;
 pub use rollout::ARCHIVED_SESSIONS_SUBDIR;
 pub use rollout::INTERACTIVE_SESSION_SOURCES;
 pub use rollout::RolloutRecorder;
 pub use rollout::RolloutRecorderParams;
 pub use rollout::SESSIONS_SUBDIR;
 pub use rollout::SessionMeta;
+pub use rollout::append_thread_name;
 pub use rollout::find_archived_thread_path_by_id_str;
 #[deprecated(note = "use find_thread_path_by_id_str")]
 pub use rollout::find_conversation_path_by_id_str;
@@ -185,9 +206,7 @@ pub(crate) use codex_shell_command::powershell;
 
 pub use client::ModelClient;
 pub use client::ModelClientSession;
-pub use client::ResponsesWebsocketVersion;
 pub use client::X_CODEX_TURN_METADATA_HEADER;
-pub use client::ws_version_from_features;
 pub use client_common::Prompt;
 pub use client_common::REVIEW_PROMPT;
 pub use client_common::ResponseEvent;

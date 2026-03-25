@@ -16,12 +16,14 @@ use axum::http::header::AUTHORIZATION;
 use axum::routing::get;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::McpElicitationSchema;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
@@ -185,26 +187,28 @@ async fn mcp_server_elicitation_round_trip() -> Result<()> {
     let ServerRequest::McpServerElicitationRequest { request_id, params } = server_req else {
         panic!("expected McpServerElicitationRequest request, got: {server_req:?}");
     };
-    let requested_schema = serde_json::to_value(
+    let requested_schema: McpElicitationSchema = serde_json::from_value(serde_json::to_value(
         ElicitationSchema::builder()
             .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
             .build()
             .map_err(anyhow::Error::msg)?,
-    )?;
+    )?)?;
 
     assert_eq!(
         params,
         McpServerElicitationRequestParams {
             thread_id: thread.id.clone(),
-            turn_id: None,
+            turn_id: Some(turn.id.clone()),
             server_name: "codex_apps".to_string(),
             request: McpServerElicitationRequest::Form {
+                meta: None,
                 message: ELICITATION_MESSAGE.to_string(),
                 requested_schema,
             },
         }
     );
 
+    let resolved_request_id = request_id.clone();
     mcp.send_response(
         request_id,
         serde_json::to_value(McpServerElicitationRequestResponse {
@@ -212,24 +216,46 @@ async fn mcp_server_elicitation_round_trip() -> Result<()> {
             content: Some(json!({
                 "confirmed": true,
             })),
+            meta: None,
         })?,
     )
     .await?;
 
+    let mut saw_resolved = false;
     loop {
         let message = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
         let JSONRPCMessage::Notification(notification) = message else {
             continue;
         };
 
-        if notification.method.as_str() == "turn/completed" {
-            let completed: TurnCompletedNotification = serde_json::from_value(
-                notification.params.clone().expect("turn/completed params"),
-            )?;
-            assert_eq!(completed.thread_id, thread.id);
-            assert_eq!(completed.turn.id, turn.id);
-            assert_eq!(completed.turn.status, TurnStatus::Completed);
-            break;
+        match notification.method.as_str() {
+            "serverRequest/resolved" => {
+                let resolved: ServerRequestResolvedNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .clone()
+                        .expect("serverRequest/resolved params"),
+                )?;
+                assert_eq!(
+                    resolved,
+                    ServerRequestResolvedNotification {
+                        thread_id: thread.id.clone(),
+                        request_id: resolved_request_id.clone(),
+                    }
+                );
+                saw_resolved = true;
+            }
+            "turn/completed" => {
+                let completed: TurnCompletedNotification = serde_json::from_value(
+                    notification.params.clone().expect("turn/completed params"),
+                )?;
+                assert!(saw_resolved, "serverRequest/resolved should arrive first");
+                assert_eq!(completed.thread_id, thread.id);
+                assert_eq!(completed.turn.id, turn.id);
+                assert_eq!(completed.turn.status, TurnStatus::Completed);
+                break;
+            }
+            _ => {}
         }
     }
 

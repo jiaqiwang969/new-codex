@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use codex_apply_patch::APPLY_PATCH_TOOL_INSTRUCTIONS;
-use codex_core::features::Feature;
 use codex_core::shell::Shell;
 use codex_core::shell::default_user_shell;
+use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
@@ -44,14 +44,32 @@ fn text_user_input_parts(texts: Vec<String>) -> serde_json::Value {
     })
 }
 
-fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
+fn assert_default_env_context(text: &str, cwd: &str, shell: &Shell) {
     let shell_name = shell.name();
-    format!(
-        r#"<environment_context>
-  <cwd>{cwd}</cwd>
-  <shell>{shell_name}</shell>
-</environment_context>"#
-    )
+    assert!(
+        text.starts_with(ENVIRONMENT_CONTEXT_OPEN_TAG),
+        "expected environment context fragment: {text}"
+    );
+    assert!(
+        text.contains(&format!("<cwd>{cwd}</cwd>")),
+        "expected cwd in environment context: {text}"
+    );
+    assert!(
+        text.contains(&format!("<shell>{shell_name}</shell>")),
+        "expected shell in environment context: {text}"
+    );
+    assert!(
+        text.contains("<current_date>") && text.contains("</current_date>"),
+        "expected current_date in environment context: {text}"
+    );
+    assert!(
+        text.contains("<timezone>") && text.contains("</timezone>"),
+        "expected timezone in environment context: {text}"
+    );
+    assert!(
+        text.ends_with("</environment_context>"),
+        "expected closing environment_context tag: {text}"
+    );
 }
 
 fn assert_tool_names(body: &serde_json::Value, expected_names: &[&str]) {
@@ -107,7 +125,10 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
                 .web_search_mode
                 .set(WebSearchMode::Cached)
                 .expect("test web_search_mode should satisfy constraints");
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await?;
@@ -156,6 +177,11 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "apply_patch",
         "web_search",
         "view_image",
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
     ]);
     let body0 = req1.single_request().body_json();
 
@@ -201,8 +227,14 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.features.disable(Feature::ApplyPatchFreeform);
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .disable(Feature::ApplyPatchFreeform)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
             config.model = Some("gpt-5".to_string());
         })
         .build(&server)
@@ -273,7 +305,10 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
     let TestCodex { codex, config, .. } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await?;
@@ -318,10 +353,13 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
 
     let shell = default_user_shell();
     let cwd_str = config.cwd.to_string_lossy();
-    let expected_env_text = default_env_context_str(&cwd_str, &shell);
+    let env_text = input1[1]["content"][1]["text"]
+        .as_str()
+        .expect("environment context text");
+    assert_default_env_context(env_text, &cwd_str, &shell);
     assert_eq!(
-        input1[1]["content"][1]["text"].as_str(),
-        Some(expected_env_text.as_str()),
+        input1[1]["content"][1]["type"].as_str(),
+        Some("input_text"),
         "expected environment context bundled after UI message in cached contextual message"
     );
     assert_eq!(input1[2], text_user_input("hello 1".to_string()));
@@ -358,7 +396,10 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await?;
@@ -393,6 +434,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
             model: None,
             effort: Some(Some(ReasoningEffort::High)),
             summary: Some(ReasoningSummary::Detailed),
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -475,6 +517,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
             model: Some("gpt-5.1-codex".to_string()),
             effort: Some(Some(ReasoningEffort::Low)),
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collaboration_mode),
             personality: None,
         })
@@ -524,6 +567,18 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
     assert!(
         !env_texts.is_empty(),
         "expected environment context to be emitted: {env_texts:?}"
+    );
+    assert!(
+        env_texts
+            .iter()
+            .any(|text| text.contains("<current_date>") && text.contains("</current_date>")),
+        "expected current_date in environment context: {env_texts:?}"
+    );
+    assert!(
+        env_texts
+            .iter()
+            .any(|text| text.contains("<timezone>") && text.contains("</timezone>")),
+        "expected timezone in environment context: {env_texts:?}"
     );
 
     let env_count = input
@@ -610,7 +665,10 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await?;
@@ -645,10 +703,12 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
             }],
             cwd: new_cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: new_policy.clone(),
             model: "o3".to_string(),
             effort: Some(ReasoningEffort::High),
-            summary: ReasoningSummary::Detailed,
+            summary: Some(ReasoningSummary::Detailed),
+            service_tier: None,
             collaboration_mode: None,
             final_output_json_schema: None,
             personality: None,
@@ -674,21 +734,6 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
-    let shell = default_user_shell();
-
-    let expected_env_text_2 = format!(
-        r#"<environment_context>
-  <cwd>{}</cwd>
-  <shell>{}</shell>
-</environment_context>"#,
-        new_cwd.path().display(),
-        shell.name()
-    );
-    let expected_env_msg_2 = serde_json::json!({
-        "type": "message",
-        "role": "user",
-        "content": [ { "type": "input_text", "text": expected_env_text_2 } ]
-    });
     let expected_permissions_msg = body1["input"][0].clone();
     let body1_input = body1["input"].as_array().expect("input array");
     let expected_settings_update_msg = body2["input"][body1_input.len()].clone();
@@ -706,6 +751,14 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
         }),
         "expected model switch section after model override: {expected_settings_update_msg:?}"
     );
+    let expected_env_msg_2 = body2["input"][body1_input.len() + 1].clone();
+    assert_eq!(expected_env_msg_2["role"].as_str(), Some("user"));
+    let env_text = expected_env_msg_2["content"][0]["text"]
+        .as_str()
+        .expect("environment context text");
+    let shell = default_user_shell();
+    let expected_cwd = new_cwd.path().display().to_string();
+    assert_default_env_context(env_text, &expected_cwd, &shell);
     let mut expected_body2 = body1_input.to_vec();
     expected_body2.push(expected_settings_update_msg);
     expected_body2.push(expected_env_msg_2);
@@ -740,7 +793,10 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
     } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await?;
@@ -760,10 +816,12 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
             }],
             cwd: default_cwd.clone(),
             approval_policy: default_approval_policy,
+            approvals_reviewer: None,
             sandbox_policy: default_sandbox_policy.clone(),
             model: default_model.clone(),
             effort: default_effort,
-            summary: default_summary,
+            summary: Some(default_summary.unwrap_or(ReasoningSummary::Auto)),
+            service_tier: None,
             collaboration_mode: None,
             final_output_json_schema: None,
             personality: None,
@@ -779,10 +837,12 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
             }],
             cwd: default_cwd.clone(),
             approval_policy: default_approval_policy,
+            approvals_reviewer: None,
             sandbox_policy: default_sandbox_policy.clone(),
             model: default_model.clone(),
             effort: default_effort,
-            summary: default_summary,
+            summary: Some(default_summary.unwrap_or(ReasoningSummary::Auto)),
+            service_tier: None,
             collaboration_mode: None,
             final_output_json_schema: None,
             personality: None,
@@ -800,13 +860,18 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
 
     let shell = default_user_shell();
     let default_cwd_lossy = default_cwd.to_string_lossy();
+    let expected_env_text_1 = expected_ui_msg["content"][1]["text"]
+        .as_str()
+        .expect("cached environment context text")
+        .to_string();
+    assert_default_env_context(&expected_env_text_1, &default_cwd_lossy, &shell);
 
     let expected_contextual_user_msg_1 = text_user_input_parts(vec![
         expected_ui_msg["content"][0]["text"]
             .as_str()
             .expect("cached user instructions text")
             .to_string(),
-        default_env_context_str(&default_cwd_lossy, &shell),
+        expected_env_text_1,
     ]);
     let expected_user_message_1 = text_user_input("hello 1".to_string());
 
@@ -854,7 +919,10 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
     } = test_codex()
         .with_config(|config| {
             config.user_instructions = Some("be consistent and helpful".to_string());
-            config.features.enable(Feature::CollaborationModes);
+            config
+                .features
+                .enable(Feature::CollaborationModes)
+                .expect("test config should allow feature update");
         })
         .build(&server)
         .await?;
@@ -874,10 +942,12 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
             }],
             cwd: default_cwd.clone(),
             approval_policy: default_approval_policy,
+            approvals_reviewer: None,
             sandbox_policy: default_sandbox_policy.clone(),
             model: default_model,
             effort: default_effort,
-            summary: default_summary,
+            summary: Some(default_summary.unwrap_or(ReasoningSummary::Auto)),
+            service_tier: None,
             collaboration_mode: None,
             final_output_json_schema: None,
             personality: None,
@@ -893,10 +963,12 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
             }],
             cwd: default_cwd.clone(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: "o3".to_string(),
             effort: Some(ReasoningEffort::High),
-            summary: ReasoningSummary::Detailed,
+            summary: Some(ReasoningSummary::Detailed),
+            service_tier: None,
             collaboration_mode: None,
             final_output_json_schema: None,
             personality: None,
@@ -913,7 +985,11 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
     let expected_ui_msg = body1["input"][1].clone();
 
     let shell = default_user_shell();
-    let expected_env_text_1 = default_env_context_str(&default_cwd.to_string_lossy(), &shell);
+    let expected_env_text_1 = expected_ui_msg["content"][1]["text"]
+        .as_str()
+        .expect("cached environment context text")
+        .to_string();
+    assert_default_env_context(&expected_env_text_1, &default_cwd.to_string_lossy(), &shell);
     let expected_contextual_user_msg_1 = text_user_input_parts(vec![
         expected_ui_msg["content"][0]["text"]
             .as_str()

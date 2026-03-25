@@ -16,17 +16,20 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
+pub(crate) const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 /// Hard cap for user-configured `stream_max_retries`.
 const MAX_STREAM_MAX_RETRIES: u64 = 100;
 /// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
+pub const OPENAI_PROVIDER_ID: &str = "openai";
 const GEMINI_PROVIDER_NAME: &str = "Gemini";
 const GEMMA_PROVIDER_NAME: &str = "Gemma";
 const GROK_PROVIDER_NAME: &str = "Grok";
@@ -54,6 +57,17 @@ pub enum WireApi {
     Gemini,
     /// Anthropic Messages API via `/v1/messages`.
     Anthropic,
+}
+
+impl fmt::Display for WireApi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Responses => "responses",
+            Self::Gemini => "gemini",
+            Self::Anthropic => "anthropic",
+        };
+        f.write_str(value)
+    }
 }
 
 impl<'de> Deserialize<'de> for WireApi {
@@ -131,6 +145,10 @@ pub struct ModelProviderInfo {
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
+
+    /// Maximum time (in milliseconds) to wait for a websocket connection attempt before treating
+    /// it as failed.
+    pub websocket_connect_timeout_ms: Option<u64>,
 
     /// Does this provider require an OpenAI API Key or ChatGPT login token? If true,
     /// user is presented with login screen on first run, and login preference and token/key
@@ -278,17 +296,18 @@ impl ModelProviderInfo {
             .map(Duration::from_millis)
             .unwrap_or(Duration::from_millis(DEFAULT_STREAM_IDLE_TIMEOUT_MS))
     }
-    pub fn create_openai_provider() -> ModelProviderInfo {
+
+    /// Effective timeout for websocket connect attempts.
+    pub fn websocket_connect_timeout(&self) -> Duration {
+        self.websocket_connect_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS))
+    }
+
+    pub fn create_openai_provider(base_url: Option<String>) -> ModelProviderInfo {
         ModelProviderInfo {
             name: OPENAI_PROVIDER_NAME.into(),
-            // Allow users to override the default OpenAI endpoint by
-            // exporting `OPENAI_BASE_URL`. This is useful when pointing
-            // Codex at a proxy, mock server, or Azure-style deployment
-            // without requiring a full TOML override for the built-in
-            // OpenAI provider.
-            base_url: std::env::var("OPENAI_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            base_url,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
@@ -314,6 +333,7 @@ impl ModelProviderInfo {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
             account_pool: Vec::new(),
@@ -404,6 +424,7 @@ impl ModelProviderInfo {
             request_max_retries: Some(3),
             stream_max_retries: Some(3),
             stream_idle_timeout_ms: Some(300_000),
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
             account_pool: Vec::new(),
@@ -431,6 +452,7 @@ impl ModelProviderInfo {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
             account_pool: Vec::new(),
@@ -451,6 +473,7 @@ impl ModelProviderInfo {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: false,
             account_pool: Vec::new(),
@@ -475,6 +498,7 @@ impl ModelProviderInfo {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: false,
             account_pool: Vec::new(),
@@ -507,6 +531,7 @@ impl ModelProviderInfo {
             request_max_retries: Some(3),
             stream_max_retries: Some(3),
             stream_idle_timeout_ms: Some(300_000),
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
             account_pool: Vec::new(),
@@ -533,6 +558,7 @@ impl ModelProviderInfo {
             stream_max_retries: Some(3),
             // Local Gemma stacks often have long first-token latency for large prompts.
             stream_idle_timeout_ms: Some(900_000),
+            websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
             account_pool: Vec::new(),
@@ -547,13 +573,16 @@ pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
 /// Built-in default provider list.
-pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
+pub fn built_in_model_providers(
+    openai_base_url: Option<String>,
+) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
+    let openai_provider = P::create_openai_provider(openai_base_url);
 
     // Keep the built-in set intentionally small. Users can add or override
     // providers at runtime via `model_providers` in config.toml.
     [
-        ("openai", P::create_openai_provider()),
+        (OPENAI_PROVIDER_ID, openai_provider),
         (GEMINI_PROVIDER_ID, P::create_gemini_provider()),
         (GEMMA_PROVIDER_ID, P::create_gemma_provider()),
         (GROK_PROVIDER_ID, P::create_grok_provider()),
@@ -613,6 +642,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         account_pool: Vec::new(),
@@ -620,175 +650,5 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn test_deserialize_ollama_model_provider_toml() {
-        let azure_provider_toml = r#"
-name = "Ollama"
-base_url = "http://localhost:11434/v1"
-        "#;
-        let expected_provider = ModelProviderInfo {
-            name: "Ollama".into(),
-            base_url: Some("http://localhost:11434/v1".into()),
-            env_key: None,
-            env_key_instructions: None,
-            experimental_bearer_token: None,
-            wire_api: WireApi::Responses,
-            query_params: None,
-            http_headers: None,
-            env_http_headers: None,
-            request_max_retries: None,
-            stream_max_retries: None,
-            stream_idle_timeout_ms: None,
-            requires_openai_auth: false,
-            supports_websockets: false,
-            account_pool: Vec::new(),
-        };
-
-        let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
-        assert_eq!(expected_provider, provider);
-    }
-
-    #[test]
-    fn test_deserialize_azure_model_provider_toml() {
-        let azure_provider_toml = r#"
-name = "Azure"
-base_url = "https://xxxxx.openai.azure.com/openai"
-env_key = "AZURE_OPENAI_API_KEY"
-query_params = { api-version = "2025-04-01-preview" }
-        "#;
-        let expected_provider = ModelProviderInfo {
-            name: "Azure".into(),
-            base_url: Some("https://xxxxx.openai.azure.com/openai".into()),
-            env_key: Some("AZURE_OPENAI_API_KEY".into()),
-            env_key_instructions: None,
-            experimental_bearer_token: None,
-            wire_api: WireApi::Responses,
-            query_params: Some(maplit::hashmap! {
-                "api-version".to_string() => "2025-04-01-preview".to_string(),
-            }),
-            http_headers: None,
-            env_http_headers: None,
-            request_max_retries: None,
-            stream_max_retries: None,
-            stream_idle_timeout_ms: None,
-            requires_openai_auth: false,
-            supports_websockets: false,
-            account_pool: Vec::new(),
-        };
-
-        let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
-        assert_eq!(expected_provider, provider);
-    }
-
-    #[test]
-    fn test_deserialize_example_model_provider_toml() {
-        let azure_provider_toml = r#"
-name = "Example"
-base_url = "https://example.com"
-env_key = "API_KEY"
-http_headers = { "X-Example-Header" = "example-value" }
-env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
-        "#;
-        let expected_provider = ModelProviderInfo {
-            name: "Example".into(),
-            base_url: Some("https://example.com".into()),
-            env_key: Some("API_KEY".into()),
-            env_key_instructions: None,
-            experimental_bearer_token: None,
-            wire_api: WireApi::Responses,
-            query_params: None,
-            http_headers: Some(maplit::hashmap! {
-                "X-Example-Header".to_string() => "example-value".to_string(),
-            }),
-            env_http_headers: Some(maplit::hashmap! {
-                "X-Example-Env-Header".to_string() => "EXAMPLE_ENV_VAR".to_string(),
-            }),
-            request_max_retries: None,
-            stream_max_retries: None,
-            stream_idle_timeout_ms: None,
-            requires_openai_auth: false,
-            supports_websockets: false,
-            account_pool: Vec::new(),
-        };
-
-        let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
-        assert_eq!(expected_provider, provider);
-    }
-
-    #[test]
-    fn test_deserialize_chat_wire_api_shows_helpful_error() {
-        let provider_toml = r#"
-name = "OpenAI using Chat Completions"
-base_url = "https://api.openai.com/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "chat"
-        "#;
-
-        let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-        assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
-    }
-
-    #[test]
-    fn built_in_model_providers_include_grok() {
-        let providers = built_in_model_providers();
-        let grok = providers
-            .get(GROK_PROVIDER_ID)
-            .expect("built-in providers should include grok");
-        let expected_base_url = std::env::var("XAI_BASE_URL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "https://api.x.ai/v1".to_string());
-
-        assert_eq!(grok.name, GROK_PROVIDER_NAME);
-        assert_eq!(grok.env_key.as_deref(), Some("XAI_API_KEY"));
-        assert_eq!(grok.base_url.as_deref(), Some(expected_base_url.as_str()));
-        assert_eq!(grok.wire_api, WireApi::Responses);
-        assert!(!grok.requires_openai_auth);
-        assert!(!grok.supports_websockets);
-    }
-
-    #[test]
-    fn built_in_model_providers_include_gemma() {
-        let providers = built_in_model_providers();
-        let gemma = providers
-            .get(GEMMA_PROVIDER_ID)
-            .expect("built-in providers should include gemma");
-        let expected_base_url = std::env::var("GEMMA_BASE_URL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "http://localhost:5001/v1beta".to_string());
-
-        assert_eq!(gemma.name, GEMMA_PROVIDER_NAME);
-        assert_eq!(gemma.base_url.as_deref(), Some(expected_base_url.as_str()));
-        assert_eq!(gemma.wire_api, WireApi::Gemini);
-        assert_eq!(gemma.env_key, None);
-        assert!(!gemma.requires_openai_auth);
-        assert!(!gemma.supports_websockets);
-    }
-
-    #[test]
-    fn built_in_model_providers_include_anthropic() {
-        let providers = built_in_model_providers();
-        let anthropic = providers
-            .get(ANTHROPIC_PROVIDER_ID)
-            .expect("built-in providers should include anthropic");
-        let expected_base_url = std::env::var("ANTHROPIC_BASE_URL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
-
-        assert_eq!(anthropic.name, ANTHROPIC_PROVIDER_NAME);
-        assert_eq!(anthropic.env_key.as_deref(), Some("ANTHROPIC_API_KEY"));
-        assert_eq!(
-            anthropic.base_url.as_deref(),
-            Some(expected_base_url.as_str())
-        );
-        assert_eq!(anthropic.wire_api, WireApi::Anthropic);
-        assert!(!anthropic.requires_openai_auth);
-        assert!(!anthropic.supports_websockets);
-    }
-}
+#[path = "model_provider_info_tests.rs"]
+mod tests;

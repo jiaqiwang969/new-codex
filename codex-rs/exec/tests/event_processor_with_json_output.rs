@@ -35,6 +35,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::WebSearchAction;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
@@ -95,6 +96,7 @@ fn session_configured_produces_thread_started_event() {
             thread_name: None,
             model: "codex-mini-latest".to_string(),
             model_provider_id: "test-provider".to_string(),
+            service_tier: None,
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
@@ -553,6 +555,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             memory: None,
             agent_type: Some("explorer".to_string()),
             prompt: prompt.clone(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     );
     let begin_events = ep.collect_thread_events(&begin);
@@ -636,6 +640,8 @@ fn collab_wait_end_reuses_spawned_agent_metadata() {
             memory: None,
             agent_type: Some("explorer".to_string()),
             prompt: prompt.clone(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     );
     let _ = ep.collect_thread_events(&begin);
@@ -718,6 +724,8 @@ fn collab_wait_end_after_rollback_clears_agent_metadata_cache() {
             memory: None,
             agent_type: Some("explorer".to_string()),
             prompt: prompt.clone(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     );
     let _ = ep.collect_thread_events(&spawn_begin);
@@ -814,6 +822,8 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
             memory: None,
             agent_type: Some("explorer".to_string()),
             prompt: "inspect crate a".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -860,6 +870,8 @@ fn collab_wait_end_after_partial_rollback_preserves_earlier_agent_metadata() {
             memory: None,
             agent_type: Some("worker".to_string()),
             prompt: "inspect crate b".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -951,6 +963,8 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
             memory: None,
             agent_type: Some("explorer".to_string()),
             prompt: "inspect old".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -997,6 +1011,8 @@ fn collab_wait_end_after_rollback_restores_previous_metadata_for_same_thread_id(
             memory: None,
             agent_type: Some("worker".to_string()),
             prompt: "inspect new".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::default(),
         }),
     ));
     let _ = ep.collect_thread_events(&event(
@@ -1210,6 +1226,7 @@ fn agent_message_produces_item_completed_agent_message() {
         EventMsg::AgentMessage(AgentMessageEvent {
             message: "hello".to_string(),
             phase: None,
+            memory_citation: None,
         }),
     );
     let out = ep.collect_thread_events(&ev);

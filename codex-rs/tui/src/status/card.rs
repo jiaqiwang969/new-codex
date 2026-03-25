@@ -231,7 +231,10 @@ impl StatusHistoryCell {
             config_entries.push(("reasoning effort", effort_value));
             config_entries.push((
                 "reasoning summaries",
-                config.model_reasoning_summary.to_string(),
+                config
+                    .model_reasoning_summary
+                    .map(|summary| summary.to_string())
+                    .unwrap_or_else(|| "auto".to_string()),
             ));
         }
         let (model_name, model_details) = compose_model_display(model_name, &config_entries);
@@ -303,7 +306,10 @@ impl StatusHistoryCell {
 
         let utility_model_vouch = if config.model_sub.is_none() && utility_routing_hint.is_none() {
             let vouch_snapshot = model_sub_vouch::load_model_sub_vouch(&config.codex_home);
-            model_sub_vouch::recommended_model_sub_from_snapshot(&vouch_snapshot, None)
+            model_sub_vouch::recommended_model_sub_from_snapshot(
+                &vouch_snapshot,
+                /*task_bucket*/ None,
+            )
         } else {
             None
         };
@@ -326,7 +332,7 @@ impl StatusHistoryCell {
                 entry.losses,
                 entry.net_score()
             );
-            if let Some(recent) = entry.recent_signal(None)
+            if let Some(recent) = entry.recent_signal(/*task_bucket*/ None)
                 && recent.sample_count() > 0
             {
                 summary.push_str(" | recent +");
@@ -372,7 +378,8 @@ impl StatusHistoryCell {
             Some(summary)
         });
         let team_profile_auto = if active_team_profile.is_some() && vouch_snapshot.has_signal() {
-            let general = team_profile::recommended_profile(&vouch_snapshot, None).label;
+            let general =
+                team_profile::recommended_profile(&vouch_snapshot, /*task_bucket*/ None).label;
             let debug = team_profile::recommended_profile(
                 &vouch_snapshot,
                 Some(team_profile_vouch::TeamProfileTaskBucket::Debug),
@@ -430,13 +437,13 @@ impl StatusHistoryCell {
         );
         let memory_phase_two = resolve_memory_model_display(
             config.memories.phase_2_model.as_deref(),
-            None,
+            /*model_sub*/ None,
             codex_core::DEFAULT_MEMORY_PHASE_TWO_MODEL,
             "memories.phase_2_model",
         );
         let entire_summary_model = resolve_memory_model_display(
             config.memories.entire_summary_model.as_deref(),
-            None,
+            /*model_sub*/ None,
             codex_core::DEFAULT_ENTIRE_SUMMARY_MODEL,
             "memories.entire_summary_model",
         );

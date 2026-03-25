@@ -179,7 +179,7 @@ fn profile_rank_tuple(
         .map(|value| (value.net_score(), value.wins, value.sample_count()))
         .unwrap_or((0, 0, 0));
     let (recent_global_score, recent_global_wins, recent_global_samples) = entry
-        .and_then(|value| value.recent_signal(None))
+        .and_then(|value| value.recent_signal(/*task_bucket*/ None))
         .map(|signal| (signal.weighted_score, signal.wins, signal.sample_count()))
         .unwrap_or((global_score, global_wins, global_samples));
     let (task_score, task_wins, task_samples) = match (entry, task_bucket) {

@@ -282,7 +282,9 @@ fn vline(grid: &mut Grid, (from, to): (usize, usize), column: usize, color: u8, 
             HOR_U | HOR_D => {
                 grid.set_opt(column * 2, i, Some(CROSS), Some(color), Some(pers));
             }
-            CROSS | VER | VER_L | VER_R => grid.set_opt(column * 2, i, None, new_col, new_pers),
+            CROSS | VER | VER_L | VER_R => {
+                grid.set_opt(column * 2, i, /*character*/ None, new_col, new_pers)
+            }
             L_D | L_U => {
                 grid.set_opt(column * 2, i, Some(VER_L), new_col, new_pers);
             }
@@ -323,9 +325,15 @@ fn hline(
                 };
                 match curr {
                     DOT | CIRCLE => {}
-                    VER => grid.set_opt(column, index, Some(CROSS), None, None),
+                    VER => grid.set_opt(
+                        column,
+                        index,
+                        Some(CROSS),
+                        /*color*/ None,
+                        /*pers*/ None,
+                    ),
                     HOR | CROSS | HOR_U | HOR_D => {
-                        grid.set_opt(column, index, None, new_col, new_pers)
+                        grid.set_opt(column, index, /*character*/ None, new_col, new_pers)
                     }
                     L_U | R_U => grid.set_opt(column, index, Some(HOR_U), new_col, new_pers),
                     L_D | R_D => grid.set_opt(column, index, Some(HOR_D), new_col, new_pers),
@@ -345,7 +353,13 @@ fn hline(
         match left {
             DOT | CIRCLE => {}
             VER => grid.set_opt(from_2, index, Some(VER_R), new_col, new_pers),
-            VER_L => grid.set_opt(from_2, index, Some(CROSS), None, None),
+            VER_L => grid.set_opt(
+                from_2,
+                index,
+                Some(CROSS),
+                /*color*/ None,
+                /*pers*/ None,
+            ),
             VER_R => {}
             HOR | L_U => grid.set_opt(from_2, index, Some(HOR_U), new_col, new_pers),
             _ => {
@@ -361,8 +375,14 @@ fn hline(
         };
         match right {
             DOT | CIRCLE => {}
-            VER => grid.set_opt(to_2, index, Some(VER_L), None, None),
-            VER_L | HOR_U => grid.set_opt(to_2, index, None, new_col, new_pers),
+            VER => grid.set_opt(
+                to_2,
+                index,
+                Some(VER_L),
+                /*color*/ None,
+                /*pers*/ None,
+            ),
+            VER_L | HOR_U => grid.set_opt(to_2, index, /*character*/ None, new_col, new_pers),
             HOR | R_U => grid.set_opt(to_2, index, Some(HOR_U), new_col, new_pers),
             _ => {
                 grid.set_opt(to_2, index, Some(L_U), new_col, new_pers);
@@ -381,9 +401,15 @@ fn hline(
                 };
                 match curr {
                     DOT | CIRCLE => {}
-                    VER => grid.set_opt(column, index, Some(CROSS), None, None),
+                    VER => grid.set_opt(
+                        column,
+                        index,
+                        Some(CROSS),
+                        /*color*/ None,
+                        /*pers*/ None,
+                    ),
                     HOR | CROSS | HOR_U | HOR_D => {
-                        grid.set_opt(column, index, None, new_col, new_pers)
+                        grid.set_opt(column, index, /*character*/ None, new_col, new_pers)
                     }
                     L_U | R_U => grid.set_opt(column, index, Some(HOR_U), new_col, new_pers),
                     L_D | R_D => grid.set_opt(column, index, Some(HOR_D), new_col, new_pers),
@@ -402,8 +428,14 @@ fn hline(
         };
         match left {
             DOT | CIRCLE => {}
-            VER => grid.set_opt(to_2, index, Some(VER_R), None, None),
-            VER_R => grid.set_opt(to_2, index, None, new_col, new_pers),
+            VER => grid.set_opt(
+                to_2,
+                index,
+                Some(VER_R),
+                /*color*/ None,
+                /*pers*/ None,
+            ),
+            VER_R => grid.set_opt(to_2, index, /*character*/ None, new_col, new_pers),
             HOR | L_U => grid.set_opt(to_2, index, Some(HOR_U), new_col, new_pers),
             _ => {
                 grid.set_opt(to_2, index, Some(R_U), new_col, new_pers);
@@ -419,8 +451,14 @@ fn hline(
         match right {
             DOT | CIRCLE => {}
             VER => grid.set_opt(from_2, index, Some(VER_L), new_col, new_pers),
-            VER_R => grid.set_opt(from_2, index, Some(CROSS), None, None),
-            VER_L => grid.set_opt(from_2, index, None, new_col, new_pers),
+            VER_R => grid.set_opt(
+                from_2,
+                index,
+                Some(CROSS),
+                /*color*/ None,
+                /*pers*/ None,
+            ),
+            VER_L => grid.set_opt(from_2, index, /*character*/ None, new_col, new_pers),
             HOR | R_D => grid.set_opt(from_2, index, Some(HOR_D), new_col, new_pers),
             _ => {
                 grid.set_opt(from_2, index, Some(L_D), new_col, new_pers);

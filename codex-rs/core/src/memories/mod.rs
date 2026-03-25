@@ -5,6 +5,7 @@
 //! - Phase 2: claim a global consolidation lock, materialize consolidation inputs, and dispatch one consolidation agent.
 
 pub(crate) mod citations;
+mod control;
 mod phase1;
 mod phase2;
 pub(crate) mod prompts;
@@ -29,7 +30,7 @@ pub(crate) const MEMORY_SCOPE_KEY_USER: &str = "user";
 const MEMORY_SUBDIR: &str = "memory";
 const MEMORY_SUMMARY_FILENAME: &str = "memory_summary.md";
 const CWD_MEMORY_BUCKET_HEX_LEN: usize = 16;
-
+pub(crate) use control::clear_memory_root_contents;
 /// Starts the memory startup pipeline for eligible root sessions.
 /// This is the single entrypoint that `codex` uses to trigger memory startup.
 ///
@@ -69,6 +70,8 @@ mod phase_one {
     pub(super) const JOB_RETRY_DELAY_SECONDS: i64 = 3_600;
     /// Maximum number of threads to scan.
     pub(super) const THREAD_SCAN_LIMIT: usize = 5_000;
+    /// Size of the batches when pruning old thread memories.
+    pub(super) const PRUNE_BATCH_SIZE: usize = 200;
 }
 
 /// Phase 2 (aka `Consolidation`).

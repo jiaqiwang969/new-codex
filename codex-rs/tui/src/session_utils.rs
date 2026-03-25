@@ -147,7 +147,7 @@ pub fn get_cwd_sessions_for(codex_home: &Path, cwd_raw: &Path) -> Result<Vec<Ses
         &mut candidates,
         &mut seen_paths,
         &mut cache_dirty,
-        4,
+        /*max_depth*/ 4,
     )?;
 
     let cache_len_before = details_cache.entries.len();
@@ -410,7 +410,7 @@ fn extract_session_details(path: &Path) -> SessionDetails {
                 details.last_role = message.role.clone();
             }
             if message.role == "User" {
-                details.last_user_snippet = snippet_words(&message.content, 5);
+                details.last_user_snippet = snippet_words(&message.content, /*max_words*/ 5);
             }
         }
     }

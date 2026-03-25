@@ -5,7 +5,7 @@ use codex_core::built_in_model_providers;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
-use codex_protocol::config_types::ReasoningSummary;
+use codex_features::Feature;
 use codex_protocol::items::TurnItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
@@ -94,9 +94,10 @@ fn json_fragment(text: &str) -> String {
 }
 
 fn non_openai_model_provider(server: &MockServer) -> ModelProviderInfo {
-    let mut provider = built_in_model_providers()["openai"].clone();
+    let mut provider = built_in_model_providers(/* openai_base_url */ None)["openai"].clone();
     provider.name = "OpenAI (test)".into();
     provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.supports_websockets = false;
     provider
 }
 
@@ -182,6 +183,7 @@ async fn assert_compaction_uses_turn_lifecycle_id(codex: &std::sync::Arc<codex_c
 }
 fn context_snapshot_options() -> ContextSnapshotOptions {
     ContextSnapshotOptions::default()
+        .strip_capability_instructions()
         .render_mode(ContextSnapshotRenderMode::KindWithTextPrefix { max_chars: 64 })
 }
 
@@ -363,7 +365,7 @@ async fn summarize_context_three_requests_and_instructions() {
     codex.submit(Op::Shutdown).await.unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
-    // Verify rollout contains regular sampling TurnContext entries and a Compacted entry.
+    // Verify rollout contains user-turn TurnContext entries and a Compacted entry.
     println!("rollout path: {}", rollout_path.display());
     let text = std::fs::read_to_string(&rollout_path).unwrap_or_else(|e| {
         panic!(
@@ -394,9 +396,9 @@ async fn summarize_context_three_requests_and_instructions() {
         }
     }
 
-    assert!(
-        regular_turn_context_count == 2,
-        "expected two regular sampling TurnContext entries in rollout"
+    assert_eq!(
+        regular_turn_context_count, 2,
+        "rollout should contain one TurnContext entry per real user turn"
     );
     assert!(
         saw_compacted_summary,
@@ -1657,10 +1659,12 @@ async fn auto_compact_runs_after_resume_when_token_usage_is_over_limit() {
             final_output_json_schema: None,
             cwd: resumed.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: resumed.session_configured.model.clone(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1746,10 +1750,12 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
             final_output_json_schema: None,
             cwd: test.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: previous_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1769,10 +1775,12 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
             final_output_json_schema: None,
             cwd: test.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: next_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1878,10 +1886,12 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
             final_output_json_schema: None,
             cwd: initial.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: previous_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1925,10 +1935,12 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
             final_output_json_schema: None,
             cwd: resumed.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: next_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2082,9 +2094,9 @@ async fn auto_compact_persists_rollout_entries() {
         }
     }
 
-    assert!(
-        turn_context_count >= 2,
-        "expected at least two turn context entries, got {turn_context_count}"
+    assert_eq!(
+        turn_context_count, 3,
+        "rollout should contain one TurnContext entry per real user turn"
     );
 }
 
@@ -3017,6 +3029,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -3111,9 +3124,7 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
         .with_config(move |config| {
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
-            config
-                .features
-                .enable(codex_core::features::Feature::RemoteModels);
+            let _ = config.features.enable(Feature::RemoteModels);
             config.model_auto_compact_token_limit = Some(200);
         })
         .build(&server)
@@ -3129,10 +3140,12 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
             final_output_json_schema: None,
             cwd: test.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: previous_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -3152,10 +3165,12 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
             final_output_json_schema: None,
             cwd: test.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: next_model.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })

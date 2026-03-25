@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -64,6 +63,8 @@ enum UserNotification {
         thread_id: String,
         turn_id: String,
         cwd: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
 
         /// Messages that the user sent to the agent to initiate the turn.
         input_messages: Vec<String>,
@@ -282,13 +283,14 @@ fn apply_notify_env(command: &mut Command, payload: &HookPayload) -> bool {
     }
 }
 
-pub fn legacy_notify_json(hook_event: &HookEvent, cwd: &Path) -> Result<String, serde_json::Error> {
-    match hook_event {
+pub fn legacy_notify_json(payload: &HookPayload) -> Result<String, serde_json::Error> {
+    match &payload.hook_event {
         HookEvent::AfterAgent { event } => {
             serde_json::to_string(&UserNotification::AgentTurnComplete {
                 thread_id: event.thread_id.to_string(),
                 turn_id: event.turn_id.clone(),
-                cwd: cwd.display().to_string(),
+                cwd: payload.cwd.display().to_string(),
+                client: payload.client.clone(),
                 input_messages: event.input_messages.clone(),
                 last_assistant_message: event.last_assistant_message.clone(),
                 provider_name: event.provider_name.clone(),
@@ -342,7 +344,7 @@ pub fn notify_hook(argv: Vec<String>) -> Hook {
                 if !apply_notify_env(&mut command, payload) {
                     return HookResult::Success;
                 }
-                if let Ok(notify_payload) = legacy_notify_json(&payload.hook_event, &payload.cwd) {
+                if let Ok(notify_payload) = legacy_notify_json(payload) {
                     command.arg(notify_payload);
                 }
 
@@ -400,6 +402,7 @@ mod tests {
             "thread-id": "b5f6c1c2-1111-2222-3333-444455556666",
             "turn-id": "12345",
             "cwd": "/Users/example/project",
+            "client": "codex-tui",
             "input-messages": ["Rename `foo` to `bar` and update the callsites."],
             "last-assistant-message": "Rename complete and verified `cargo build` succeeds.",
             "provider-name": "Gemini",
@@ -433,6 +436,7 @@ mod tests {
             thread_id: "b5f6c1c2-1111-2222-3333-444455556666".to_string(),
             turn_id: "12345".to_string(),
             cwd: "/Users/example/project".to_string(),
+            client: Some("codex-tui".to_string()),
             input_messages: vec!["Rename `foo` to `bar` and update the callsites.".to_string()],
             last_assistant_message: Some(
                 "Rename complete and verified `cargo build` succeeds.".to_string(),
@@ -482,56 +486,62 @@ mod tests {
 
     #[test]
     fn legacy_notify_json_matches_historical_wire_shape() -> Result<()> {
-        let hook_event = HookEvent::AfterAgent {
-            event: crate::HookEventAfterAgent {
-                thread_id: ThreadId::from_string("b5f6c1c2-1111-2222-3333-444455556666")
-                    .expect("valid thread id"),
-                turn_id: "12345".to_string(),
-                input_messages: vec!["Rename `foo` to `bar` and update the callsites.".to_string()],
-                last_assistant_message: Some(
-                    "Rename complete and verified `cargo build` succeeds.".to_string(),
-                ),
-                provider_name: "Gemini".to_string(),
-                model_slug: "gemini-2.5-pro".to_string(),
-                memory: None,
-                memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                memory_scope_kind: Some("cwd".to_string()),
-                memory_summary_sha256: Some("a".repeat(64)),
-                memory_binding_key: Some(
-                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_string(),
-                ),
-                memory_context: Some(crate::HookEventMemoryContext {
-                    cwd_scope_key: "/Users/example/project".to_string(),
-                    cwd_memory_root: "/Users/example/.codex/memories/cwd-bucket/memory".to_string(),
-                    cwd_memory_summary_path:
-                        "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
-                            .to_string(),
-                    cwd_memory_summary_exists: true,
-                    user_memory_root: "/Users/example/.codex/memories/user/memory".to_string(),
-                    user_memory_summary_path:
-                        "/Users/example/.codex/memories/user/memory/memory_summary.md".to_string(),
-                    user_memory_summary_exists: false,
-                    active_scope_kind: Some("cwd".to_string()),
-                    active_memory_root: Some(
-                        "/Users/example/.codex/memories/cwd-bucket/memory".to_string(),
+        let payload = HookPayload {
+            session_id: ThreadId::new(),
+            cwd: std::path::Path::new("/Users/example/project").to_path_buf(),
+            client: Some("codex-tui".to_string()),
+            triggered_at: chrono::Utc::now(),
+            hook_event: HookEvent::AfterAgent {
+                event: crate::HookEventAfterAgent {
+                    thread_id: ThreadId::from_string("b5f6c1c2-1111-2222-3333-444455556666")
+                        .expect("valid thread id"),
+                    turn_id: "12345".to_string(),
+                    input_messages: vec!["Rename `foo` to `bar` and update the callsites.".to_string()],
+                    last_assistant_message: Some(
+                        "Rename complete and verified `cargo build` succeeds.".to_string(),
                     ),
-                    active_memory_summary_path: Some(
-                        "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
-                            .to_string(),
-                    ),
-                    active_memory_summary_sha256: Some("a".repeat(64)),
-                    active_memory_summary_bytes: Some(123),
-                    active_memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                    active_memory_binding_key: Some(
+                    provider_name: "Gemini".to_string(),
+                    model_slug: "gemini-2.5-pro".to_string(),
+                    memory: None,
+                    memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                    memory_scope_kind: Some("cwd".to_string()),
+                    memory_summary_sha256: Some("a".repeat(64)),
+                    memory_binding_key: Some(
                         "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                             .to_string(),
                     ),
-                }),
+                    memory_context: Some(crate::HookEventMemoryContext {
+                        cwd_scope_key: "/Users/example/project".to_string(),
+                        cwd_memory_root: "/Users/example/.codex/memories/cwd-bucket/memory".to_string(),
+                        cwd_memory_summary_path:
+                            "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
+                                .to_string(),
+                        cwd_memory_summary_exists: true,
+                        user_memory_root: "/Users/example/.codex/memories/user/memory".to_string(),
+                        user_memory_summary_path:
+                            "/Users/example/.codex/memories/user/memory/memory_summary.md".to_string(),
+                        user_memory_summary_exists: false,
+                        active_scope_kind: Some("cwd".to_string()),
+                        active_memory_root: Some(
+                            "/Users/example/.codex/memories/cwd-bucket/memory".to_string(),
+                        ),
+                        active_memory_summary_path: Some(
+                            "/Users/example/.codex/memories/cwd-bucket/memory/memory_summary.md"
+                                .to_string(),
+                        ),
+                        active_memory_summary_sha256: Some("a".repeat(64)),
+                        active_memory_summary_bytes: Some(123),
+                        active_memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+                        active_memory_binding_key: Some(
+                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                        ),
+                    }),
+                },
             },
         };
 
-        let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
+        let serialized = legacy_notify_json(&payload)?;
         let actual: Value = serde_json::from_str(&serialized)?;
         assert_eq!(actual, expected_notification_json());
 
@@ -592,7 +602,14 @@ mod tests {
             },
         };
 
-        let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
+        let payload = HookPayload {
+            session_id: ThreadId::new(),
+            cwd: Path::new("/Users/example/project").to_path_buf(),
+            client: Some("codex-tui".to_string()),
+            triggered_at: chrono::Utc::now(),
+            hook_event,
+        };
+        let serialized = legacy_notify_json(&payload)?;
         let actual: Value = serde_json::from_str(&serialized)?;
         let expected = json!({
             "type": "mcp-tool-call-complete",
@@ -657,7 +674,14 @@ mod tests {
             },
         };
 
-        let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
+        let payload = HookPayload {
+            session_id: ThreadId::new(),
+            cwd: Path::new("/Users/example/project").to_path_buf(),
+            client: Some("codex-tui".to_string()),
+            triggered_at: chrono::Utc::now(),
+            hook_event,
+        };
+        let serialized = legacy_notify_json(&payload)?;
         let actual: Value = serde_json::from_str(&serialized)?;
         let expected = json!({
             "type": "mcp-tool-call-complete",
@@ -702,7 +726,14 @@ mod tests {
             },
         };
 
-        let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
+        let payload = HookPayload {
+            session_id: ThreadId::new(),
+            cwd: Path::new("/Users/example/project").to_path_buf(),
+            client: Some("codex-tui".to_string()),
+            triggered_at: chrono::Utc::now(),
+            hook_event,
+        };
+        let serialized = legacy_notify_json(&payload)?;
         let actual: Value = serde_json::from_str(&serialized)?;
         let expected = json!({
             "type": "mcp-tool-call-complete",
@@ -758,7 +789,14 @@ mod tests {
                 },
             };
 
-            let serialized = legacy_notify_json(&hook_event, Path::new("/Users/example/project"))?;
+            let payload = HookPayload {
+                session_id: ThreadId::new(),
+                cwd: Path::new("/Users/example/project").to_path_buf(),
+                client: Some("codex-tui".to_string()),
+                triggered_at: chrono::Utc::now(),
+                hook_event,
+            };
+            let serialized = legacy_notify_json(&payload)?;
             let actual: Value = serde_json::from_str(&serialized)?;
             let expected = json!({
                 "type": "mcp-tool-call-complete",

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_core::ForkSnapshot;
 use codex_core::config::Constrained;
 use codex_execpolicy::Policy;
 use codex_protocol::models::DeveloperInstructions;
@@ -121,6 +122,7 @@ async fn permissions_message_added_on_override_change() -> Result<()> {
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -264,6 +266,7 @@ async fn resume_replays_permissions_messages() -> Result<()> {
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -364,6 +367,7 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -416,7 +420,13 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
     fork_config.permissions.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
     let forked = initial
         .thread_manager
-        .fork_thread(usize::MAX, fork_config, rollout_path, false)
+        .fork_thread(
+            ForkSnapshot::Interrupted,
+            fork_config,
+            rollout_path,
+            /*persist_extended_history*/ false,
+            /*parent_trace*/ None,
+        )
         .await?;
     forked
         .thread
@@ -490,8 +500,10 @@ async fn permissions_message_includes_writable_roots() -> Result<()> {
     let expected = DeveloperInstructions::from_policy(
         &sandbox_policy,
         AskForApproval::OnRequest,
+        test.config.approvals_reviewer,
         &Policy::empty(),
         test.config.cwd.as_path(),
+        false,
         false,
     )
     .into_text();

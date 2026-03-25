@@ -1,5 +1,16 @@
+use codex_config::ConfigLayerStack;
 use tokio::process::Command;
 
+use crate::engine::ClaudeHooksEngine;
+use crate::engine::CommandShell;
+use crate::events::pre_tool_use::PreToolUseOutcome;
+use crate::events::pre_tool_use::PreToolUseRequest;
+use crate::events::session_start::SessionStartOutcome;
+use crate::events::session_start::SessionStartRequest;
+use crate::events::stop::StopOutcome;
+use crate::events::stop::StopRequest;
+use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
+use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 use crate::types::Hook;
 use crate::types::HookEvent;
 use crate::types::HookPayload;
@@ -8,6 +19,10 @@ use crate::types::HookResponse;
 #[derive(Default, Clone)]
 pub struct HooksConfig {
     pub legacy_notify_argv: Option<Vec<String>>,
+    pub feature_enabled: bool,
+    pub config_layer_stack: Option<ConfigLayerStack>,
+    pub shell_program: Option<String>,
+    pub shell_args: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -15,6 +30,7 @@ pub struct Hooks {
     after_agent: Vec<Hook>,
     after_mcp_tool_call: Vec<Hook>,
     after_tool_use: Vec<Hook>,
+    engine: ClaudeHooksEngine,
 }
 
 impl Default for Hooks {
@@ -23,22 +39,34 @@ impl Default for Hooks {
     }
 }
 
-// Hooks are arbitrary, user-specified functions that are deterministically
-// executed after specific events in the Codex lifecycle.
 impl Hooks {
     pub fn new(config: HooksConfig) -> Self {
-        let legacy_notify = config
+        let legacy_notify: Vec<Hook> = config
             .legacy_notify_argv
             .filter(|argv| !argv.is_empty() && !argv[0].is_empty())
             .map(crate::notify_hook)
-            .into_iter();
-        let after_agent = legacy_notify.clone().collect();
-        let after_mcp_tool_call = legacy_notify.collect();
+            .into_iter()
+            .collect();
+        let after_agent = legacy_notify.clone();
+        let after_mcp_tool_call = legacy_notify;
+        let engine = ClaudeHooksEngine::new(
+            config.feature_enabled,
+            config.config_layer_stack.as_ref(),
+            CommandShell {
+                program: config.shell_program.unwrap_or_default(),
+                args: config.shell_args,
+            },
+        );
         Self {
             after_agent,
             after_mcp_tool_call,
             after_tool_use: Vec::new(),
+            engine,
         }
+    }
+
+    pub fn startup_warnings(&self) -> &[String] {
+        self.engine.warnings()
     }
 
     fn hooks_for_event(&self, hook_event: &HookEvent) -> &[Hook] {
@@ -62,6 +90,57 @@ impl Hooks {
         }
 
         outcomes
+    }
+
+    pub fn preview_session_start(
+        &self,
+        request: &SessionStartRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_session_start(request)
+    }
+
+    pub fn preview_pre_tool_use(
+        &self,
+        request: &PreToolUseRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_pre_tool_use(request)
+    }
+
+    pub async fn run_session_start(
+        &self,
+        request: SessionStartRequest,
+        turn_id: Option<String>,
+    ) -> SessionStartOutcome {
+        self.engine.run_session_start(request, turn_id).await
+    }
+
+    pub async fn run_pre_tool_use(&self, request: PreToolUseRequest) -> PreToolUseOutcome {
+        self.engine.run_pre_tool_use(request).await
+    }
+
+    pub fn preview_user_prompt_submit(
+        &self,
+        request: &UserPromptSubmitRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_user_prompt_submit(request)
+    }
+
+    pub async fn run_user_prompt_submit(
+        &self,
+        request: UserPromptSubmitRequest,
+    ) -> UserPromptSubmitOutcome {
+        self.engine.run_user_prompt_submit(request).await
+    }
+
+    pub fn preview_stop(
+        &self,
+        request: &StopRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_stop(request)
+    }
+
+    pub async fn run_stop(&self, request: StopRequest) -> StopOutcome {
+        self.engine.run_stop(request).await
     }
 }
 
@@ -110,6 +189,7 @@ mod tests {
         HookPayload {
             session_id: ThreadId::new(),
             cwd: PathBuf::from(CWD),
+            client: None,
             triggered_at: Utc
                 .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
                 .single()
@@ -137,6 +217,7 @@ mod tests {
         HookPayload {
             session_id: ThreadId::new(),
             cwd: PathBuf::from(CWD),
+            client: None,
             triggered_at: Utc
                 .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
                 .single()
@@ -218,6 +299,7 @@ mod tests {
         HookPayload {
             session_id: ThreadId::new(),
             cwd: PathBuf::from(CWD),
+            client: None,
             triggered_at: Utc
                 .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
                 .single()
@@ -281,6 +363,7 @@ mod tests {
         assert!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec![]),
+                ..Default::default()
             })
             .after_agent
             .is_empty()
@@ -288,6 +371,7 @@ mod tests {
         assert!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec![]),
+                ..Default::default()
             })
             .after_mcp_tool_call
             .is_empty()
@@ -295,6 +379,7 @@ mod tests {
         assert!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec!["".to_string()]),
+                ..Default::default()
             })
             .after_agent
             .is_empty()
@@ -302,6 +387,7 @@ mod tests {
         assert!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec!["".to_string()]),
+                ..Default::default()
             })
             .after_mcp_tool_call
             .is_empty()
@@ -309,6 +395,7 @@ mod tests {
         assert_eq!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec!["notify-send".to_string()]),
+                ..Default::default()
             })
             .after_agent
             .len(),
@@ -317,6 +404,7 @@ mod tests {
         assert_eq!(
             Hooks::new(HooksConfig {
                 legacy_notify_argv: Some(vec!["notify-send".to_string()]),
+                ..Default::default()
             })
             .after_mcp_tool_call
             .len(),

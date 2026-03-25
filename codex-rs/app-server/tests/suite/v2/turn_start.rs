@@ -13,6 +13,9 @@ use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::ByteRange;
 use codex_app_server_protocol::ClientInfo;
+use codex_app_server_protocol::CollabAgentStatus;
+use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionStatus;
@@ -22,12 +25,14 @@ use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::TextElement;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStartParams;
@@ -39,9 +44,9 @@ use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::config::ConfigToml;
-use codex_core::features::FEATURES;
-use codex_core::features::Feature;
 use codex_core::personality_migration::PERSONALITY_MIGRATION_FILENAME;
+use codex_features::FEATURES;
+use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
@@ -60,11 +65,17 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 #[cfg(windows)]
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const TEST_ORIGINATOR: &str = "codex_vscode";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+
+fn body_contains(req: &wiremock::Request, text: &str) -> bool {
+    String::from_utf8(req.body.clone())
+        .ok()
+        .is_some_and(|body| body.contains(text))
+}
 
 #[tokio::test]
 async fn turn_start_sends_originator_header() -> Result<()> {
@@ -432,6 +443,21 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
         started.turn.status,
         codex_app_server_protocol::TurnStatus::InProgress
     );
+    assert_eq!(started.turn.id, turn.id);
+
+    let completed_notif: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    let completed: TurnCompletedNotification = serde_json::from_value(
+        completed_notif
+            .params
+            .expect("turn/completed params must be present"),
+    )?;
+    assert_eq!(completed.thread_id, thread.id);
+    assert_eq!(completed.turn.id, turn.id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
 
     // Send a second turn that exercises the overrides path: change the model.
     let turn_req2 = mcp
@@ -455,12 +481,16 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
     // Ensure the second turn has a different id than the first.
     assert_ne!(turn.id, turn2.id);
 
-    // Expect a second turn/started notification as well.
-    let _notif2: JSONRPCNotification = timeout(
+    let notif2: JSONRPCNotification = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/started"),
     )
     .await??;
+    let started2: TurnStartedNotification =
+        serde_json::from_value(notif2.params.expect("params must be present"))?;
+    assert_eq!(started2.thread_id, thread.id);
+    assert_eq!(started2.turn.id, turn2.id);
+    assert_eq!(started2.turn.status, TurnStatus::InProgress);
 
     let mut saw_second_turn_completed = false;
     for _ in 0..3 {
@@ -1087,6 +1117,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         panic!("expected CommandExecutionRequestApproval request");
     };
     assert_eq!(params.item_id, "call1");
+    let resolved_request_id = request_id.clone();
 
     // Approve and wait for task completion
     mcp.send_response(
@@ -1096,16 +1127,31 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         })?,
     )
     .await?;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
-    )
-    .await??;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
+    let mut saw_resolved = false;
+    loop {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
+        let JSONRPCMessage::Notification(notification) = message else {
+            continue;
+        };
+        match notification.method.as_str() {
+            "serverRequest/resolved" => {
+                let resolved: ServerRequestResolvedNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .clone()
+                        .expect("serverRequest/resolved params"),
+                )?;
+                assert_eq!(resolved.thread_id, thread.id);
+                assert_eq!(resolved.request_id, resolved_request_id);
+                saw_resolved = true;
+            }
+            "turn/completed" => {
+                assert!(saw_resolved, "serverRequest/resolved should arrive first");
+                break;
+            }
+            _ => {}
+        }
+    }
 
     // Second turn with approval_policy=never should not elicit approval
     let second_turn_id = mcp
@@ -1130,11 +1176,6 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     .await??;
 
     // Ensure we do NOT receive a CommandExecutionRequestApproval request before task completes
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
-    )
-    .await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -1353,6 +1394,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             }],
             cwd: Some(first_cwd.clone()),
             approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            approvals_reviewer: None,
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![first_cwd.try_into()?],
                 read_only_access: codex_app_server_protocol::ReadOnlyAccess::FullAccess,
@@ -1363,6 +1405,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             model: Some("mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
+            service_tier: None,
             personality: None,
             output_schema: None,
             collaboration_mode: None,
@@ -1390,10 +1433,12 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             }],
             cwd: Some(second_cwd.clone()),
             approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            approvals_reviewer: None,
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
             model: Some("mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
+            service_tier: None,
             personality: None,
             output_schema: None,
             collaboration_mode: None,
@@ -1438,7 +1483,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
 
     timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
+        mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
 
@@ -1543,6 +1588,7 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
     assert_eq!(params.item_id, "patch-call");
     assert_eq!(params.thread_id, thread.id);
     assert_eq!(params.turn_id, turn.id);
+    let resolved_request_id = request_id.clone();
     let expected_readme_path = workspace.join("README.md");
     let expected_readme_path = expected_readme_path.to_string_lossy().into_owned();
     pretty_assertions::assert_eq!(
@@ -1561,18 +1607,49 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
         })?,
     )
     .await?;
-
-    let output_delta_notif = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("item/fileChange/outputDelta"),
-    )
-    .await??;
-    let output_delta: FileChangeOutputDeltaNotification = serde_json::from_value(
-        output_delta_notif
-            .params
-            .clone()
-            .expect("item/fileChange/outputDelta params"),
-    )?;
+    let mut saw_resolved = false;
+    let mut output_delta: Option<FileChangeOutputDeltaNotification> = None;
+    let mut completed_file_change: Option<ThreadItem> = None;
+    while !(output_delta.is_some() && completed_file_change.is_some()) {
+        let message = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
+        let JSONRPCMessage::Notification(notification) = message else {
+            continue;
+        };
+        match notification.method.as_str() {
+            "serverRequest/resolved" => {
+                let resolved: ServerRequestResolvedNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .clone()
+                        .expect("serverRequest/resolved params"),
+                )?;
+                assert_eq!(resolved.thread_id, thread.id);
+                assert_eq!(resolved.request_id, resolved_request_id);
+                saw_resolved = true;
+            }
+            "item/fileChange/outputDelta" => {
+                assert!(saw_resolved, "serverRequest/resolved should arrive first");
+                let notification: FileChangeOutputDeltaNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .clone()
+                        .expect("item/fileChange/outputDelta params"),
+                )?;
+                output_delta = Some(notification);
+            }
+            "item/completed" => {
+                let completed: ItemCompletedNotification = serde_json::from_value(
+                    notification.params.clone().expect("item/completed params"),
+                )?;
+                if let ThreadItem::FileChange { .. } = completed.item {
+                    assert!(saw_resolved, "serverRequest/resolved should arrive first");
+                    completed_file_change = Some(completed.item);
+                }
+            }
+            _ => {}
+        }
+    }
+    let output_delta = output_delta.expect("file change output delta should be observed");
     assert_eq!(output_delta.thread_id, thread.id);
     assert_eq!(output_delta.turn_id, turn.id);
     assert_eq!(output_delta.item_id, "patch-call");
@@ -1582,37 +1659,404 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
         output_delta.delta
     );
 
-    let completed_file_change = timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let completed_notif = mcp
-                .read_stream_until_notification_message("item/completed")
-                .await?;
-            let completed: ItemCompletedNotification = serde_json::from_value(
-                completed_notif
-                    .params
-                    .clone()
-                    .expect("item/completed params"),
-            )?;
-            if let ThreadItem::FileChange { .. } = completed.item {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
-            }
-        }
-    })
-    .await??;
+    let completed_file_change =
+        completed_file_change.expect("file change completion should be observed");
     let ThreadItem::FileChange { ref id, status, .. } = completed_file_change else {
         unreachable!("loop ensures we break on file change items");
     };
     assert_eq!(id, "patch-call");
     assert_eq!(status, PatchApplyStatus::Completed);
 
+    let readme_contents = std::fs::read_to_string(expected_readme_path)?;
+    assert_eq!(readme_contents, "new line\n");
+
     timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
+        mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
 
-    let readme_contents = std::fs::read_to_string(expected_readme_path)?;
-    assert_eq!(readme_contents, "new line\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const CHILD_PROMPT: &str = "child: do work";
+    const PARENT_PROMPT: &str = "spawn a child and continue";
+    const SPAWN_CALL_ID: &str = "spawn-call-1";
+    const REQUESTED_MODEL: &str = "gpt-5.1";
+    const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
+
+    let server = responses::start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "model": REQUESTED_MODEL,
+        "reasoning_effort": REQUESTED_REASONING_EFFORT,
+    }))?;
+    let _parent_turn = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, PARENT_PROMPT),
+        responses::sse(vec![
+            responses::ev_response_created("resp-turn1-1"),
+            responses::ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            responses::ev_completed("resp-turn1-1"),
+        ]),
+    )
+    .await;
+    let _child_turn = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-child-1"),
+            responses::ev_assistant_message("msg-child-1", "child done"),
+            responses::ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    let _parent_follow_up = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("resp-turn1-2"),
+            responses::ev_assistant_message("msg-turn1-2", "parent done"),
+            responses::ev_completed("resp-turn1-2"),
+        ]),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Collab, true)]),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: PARENT_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    let spawn_started = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let started_notif = mcp
+                .read_stream_until_notification_message("item/started")
+                .await?;
+            let started: ItemStartedNotification =
+                serde_json::from_value(started_notif.params.expect("item/started params"))?;
+            if let ThreadItem::CollabAgentToolCall { id, .. } = &started.item
+                && id == SPAWN_CALL_ID
+            {
+                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(
+        spawn_started,
+        ThreadItem::CollabAgentToolCall {
+            id: SPAWN_CALL_ID.to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: thread.id.clone(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some(CHILD_PROMPT.to_string()),
+            model: Some(REQUESTED_MODEL.to_string()),
+            reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            agents_states: HashMap::new(),
+            memory: None,
+        }
+    );
+
+    let spawn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed_notif = mcp
+                .read_stream_until_notification_message("item/completed")
+                .await?;
+            let completed: ItemCompletedNotification =
+                serde_json::from_value(completed_notif.params.expect("item/completed params"))?;
+            if let ThreadItem::CollabAgentToolCall { id, .. } = &completed.item
+                && id == SPAWN_CALL_ID
+            {
+                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            }
+        }
+    })
+    .await??;
+    let ThreadItem::CollabAgentToolCall {
+        id,
+        tool,
+        status,
+        sender_thread_id,
+        receiver_thread_ids,
+        prompt,
+        model,
+        reasoning_effort,
+        agents_states,
+        memory,
+    } = spawn_completed
+    else {
+        unreachable!("loop ensures we break on collab agent tool call items");
+    };
+    let receiver_thread_id = receiver_thread_ids
+        .first()
+        .cloned()
+        .expect("spawn completion should include child thread id");
+    assert_eq!(id, SPAWN_CALL_ID);
+    assert_eq!(tool, CollabAgentTool::SpawnAgent);
+    assert_eq!(status, CollabAgentToolCallStatus::Completed);
+    assert_eq!(sender_thread_id, thread.id);
+    assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
+    assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
+    assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(reasoning_effort, None);
+    assert_eq!(memory, None);
+    let agent_state = agents_states
+        .get(&receiver_thread_id)
+        .expect("spawn completion should include child agent state");
+    assert!(
+        matches!(
+            agent_state.status,
+            CollabAgentStatus::PendingInit | CollabAgentStatus::Running
+        ),
+        "child agent should still be initializing or already running, got {:?}",
+        agent_state.status
+    );
+    assert_eq!(agent_state.message, None);
+
+    let turn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let turn_completed_notif = mcp
+                .read_stream_until_notification_message("turn/completed")
+                .await?;
+            let turn_completed: TurnCompletedNotification = serde_json::from_value(
+                turn_completed_notif.params.expect("turn/completed params"),
+            )?;
+            if turn_completed.thread_id == thread.id && turn_completed.turn.id == turn.turn.id {
+                return Ok::<TurnCompletedNotification, anyhow::Error>(turn_completed);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(turn_completed.thread_id, thread.id);
+    assert_eq!(turn_completed.turn.id, turn.turn.id);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_emits_spawn_agent_item_with_effective_role_model_metadata_v2() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const CHILD_PROMPT: &str = "child: do work";
+    const PARENT_PROMPT: &str = "spawn a child and continue";
+    const SPAWN_CALL_ID: &str = "spawn-call-1";
+    const REQUESTED_MODEL: &str = "gpt-5.1";
+    const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
+    const ROLE_MODEL: &str = "gpt-5.1-codex-max";
+    const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
+
+    let server = responses::start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "agent_type": "custom",
+        "model": REQUESTED_MODEL,
+        "reasoning_effort": REQUESTED_REASONING_EFFORT,
+    }))?;
+    let _parent_turn = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, PARENT_PROMPT),
+        responses::sse(vec![
+            responses::ev_response_created("resp-turn1-1"),
+            responses::ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            responses::ev_completed("resp-turn1-1"),
+        ]),
+    )
+    .await;
+    let _child_turn = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-child-1"),
+            responses::ev_assistant_message("msg-child-1", "child done"),
+            responses::ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    let _parent_follow_up = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("resp-turn1-2"),
+            responses::ev_assistant_message("msg-turn1-2", "parent done"),
+            responses::ev_completed("resp-turn1-2"),
+        ]),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::from([(Feature::Collab, true)]),
+    )?;
+    std::fs::write(
+        codex_home.path().join("custom-role.toml"),
+        format!("model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",),
+    )?;
+    let config_path = codex_home.path().join("config.toml");
+    let base_config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{base_config}
+
+[agents.custom]
+description = "Custom role"
+config_file = "./custom-role.toml"
+"#
+        ),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: PARENT_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    let spawn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed_notif = mcp
+                .read_stream_until_notification_message("item/completed")
+                .await?;
+            let completed: ItemCompletedNotification =
+                serde_json::from_value(completed_notif.params.expect("item/completed params"))?;
+            if let ThreadItem::CollabAgentToolCall { id, .. } = &completed.item
+                && id == SPAWN_CALL_ID
+            {
+                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            }
+        }
+    })
+    .await??;
+    let ThreadItem::CollabAgentToolCall {
+        id,
+        tool,
+        status,
+        sender_thread_id,
+        receiver_thread_ids,
+        prompt,
+        model,
+        reasoning_effort,
+        agents_states,
+        memory,
+    } = spawn_completed
+    else {
+        unreachable!("loop ensures we break on collab agent tool call items");
+    };
+    let receiver_thread_id = receiver_thread_ids
+        .first()
+        .cloned()
+        .expect("spawn completion should include child thread id");
+    assert_eq!(id, SPAWN_CALL_ID);
+    assert_eq!(tool, CollabAgentTool::SpawnAgent);
+    assert_eq!(status, CollabAgentToolCallStatus::Completed);
+    assert_eq!(sender_thread_id, thread.id);
+    assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
+    assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
+    assert_eq!(model, Some(ROLE_MODEL.to_string()));
+    assert_eq!(reasoning_effort, None);
+    assert_eq!(memory, None);
+    let agent_state = agents_states
+        .get(&receiver_thread_id)
+        .expect("spawn completion should include child agent state");
+    assert!(
+        matches!(
+            agent_state.status,
+            CollabAgentStatus::PendingInit | CollabAgentStatus::Running
+        ),
+        "child agent should still be initializing or already running, got {:?}",
+        agent_state.status
+    );
+    assert_eq!(agent_state.message, None);
+
+    let turn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let turn_completed_notif = mcp
+                .read_stream_until_notification_message("turn/completed")
+                .await?;
+            let turn_completed: TurnCompletedNotification = serde_json::from_value(
+                turn_completed_notif.params.expect("turn/completed params"),
+            )?;
+            if turn_completed.thread_id == thread.id && turn_completed.turn.id == turn.turn.id {
+                return Ok::<TurnCompletedNotification, anyhow::Error>(turn_completed);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(turn_completed.thread_id, thread.id);
 
     Ok(())
 }
@@ -1741,7 +2185,7 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
     .await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
+        mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
 
@@ -1799,7 +2243,7 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
     .await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
+        mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
 
@@ -1950,7 +2394,7 @@ async fn turn_start_file_change_approval_decline_v2() -> Result<()> {
 
     timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("codex/event/task_complete"),
+        mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
 

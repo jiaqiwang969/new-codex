@@ -280,7 +280,7 @@ pub(crate) fn recommended_model_sub<'a>(
     for candidate in candidates {
         let rank = if let Some(entry) = vouch_snapshot.entry_for(candidate) {
             let (global_recent_score, global_recent_wins, global_recent_samples) = entry
-                .recent_signal(None)
+                .recent_signal(/*task_bucket*/ None)
                 .map(|signal| (signal.weighted_score, signal.wins, signal.sample_count()))
                 .unwrap_or((entry.net_score(), entry.wins, entry.sample_count()));
             let (task_recent_score, task_recent_wins, task_recent_samples) = task_bucket
@@ -480,7 +480,7 @@ mod tests {
         )
         .expect("write vouch file");
         let snapshot = load_model_sub_vouch(home.path());
-        let recommended = recommended_model_sub_from_snapshot(&snapshot, None);
+        let recommended = recommended_model_sub_from_snapshot(&snapshot, /*task_bucket*/ None);
         assert_eq!(recommended.as_deref(), Some("claude-sonnet-4-6"));
     }
 }

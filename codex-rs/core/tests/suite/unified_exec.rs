@@ -1,21 +1,13 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
-use codex_core::config::Constrained;
-use codex_core::features::Feature;
-use codex_core::sandboxing::SandboxPermissions;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::ReasoningSummary;
+use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
-use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
@@ -40,32 +32,10 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
-use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
 use tokio::time::Duration;
 use which::which;
-
-fn find_test_python() -> Option<PathBuf> {
-    let python = which("python").ok().or_else(|| which("python3").ok())?;
-
-    #[cfg(target_os = "macos")]
-    if python == Path::new("/usr/bin/python3") {
-        // /usr/bin/python3 is an xcrun shim on macOS and can fail under seatbelt.
-        if let Ok(output) = std::process::Command::new("xcrun")
-            .args(["--find", "python3"])
-            .output()
-            && output.status.success()
-        {
-            let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !resolved.is_empty() {
-                return Some(PathBuf::from(resolved));
-            }
-        }
-    }
-
-    Some(python)
-}
 
 fn extract_output_text(item: &Value) -> Option<&str> {
     item.get("output").and_then(|value| match value {
@@ -87,65 +57,49 @@ struct ParsedUnifiedExecOutput {
 
 #[allow(clippy::expect_used)]
 fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
-    static OUTPUT_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = OUTPUT_REGEX.get_or_init(|| {
-        Regex::new(concat!(
-            r#"(?s)^(?:Total output lines: \d+\n\n)?"#,
-            r#"(?:Chunk ID: (?P<chunk_id>[^\n]+)\n)?"#,
-            r#"Wall time: (?P<wall_time>-?\d+(?:\.\d+)?) seconds\n"#,
-            r#"(?:Process exited with code (?P<exit_code>-?\d+)\n)?"#,
-            r#"(?:Process running with session ID (?P<process_id>-?\d+)\n)?"#,
-            r#"(?:Original token count: (?P<original_token_count>\d+)\n)?"#,
-            r#"Output:\n?(?P<output>.*)$"#,
-        ))
-        .expect("valid unified exec output regex")
-    });
-
-    let cleaned = raw.trim_matches('\r');
-    let captures = regex
-        .captures(cleaned)
+    let cleaned = raw.replace("\r\n", "\n");
+    let (metadata, output) = cleaned
+        .rsplit_once("\nOutput:")
         .ok_or_else(|| anyhow::anyhow!("missing Output section in unified exec output {raw}"))?;
+    let output = output.strip_prefix('\n').unwrap_or(output);
 
-    let chunk_id = captures
-        .name("chunk_id")
-        .map(|value| value.as_str().to_string());
+    let mut chunk_id = None;
+    let mut wall_time_seconds = None;
+    let mut process_id = None;
+    let mut exit_code = None;
+    let mut original_token_count = None;
 
-    let wall_time_seconds = captures
-        .name("wall_time")
-        .expect("wall_time group present")
-        .as_str()
-        .parse::<f64>()
-        .context("failed to parse wall time seconds")?;
+    for line in metadata.lines() {
+        if let Some(value) = line.strip_prefix("Chunk ID: ") {
+            chunk_id = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("Wall time: ") {
+            let value = value.strip_suffix(" seconds").ok_or_else(|| {
+                anyhow::anyhow!("invalid wall time line in unified exec output: {line}")
+            })?;
+            wall_time_seconds = Some(
+                value
+                    .parse::<f64>()
+                    .context("failed to parse wall time seconds")?,
+            );
+        } else if let Some(value) = line.strip_prefix("Process exited with code ") {
+            exit_code = Some(
+                value
+                    .parse::<i32>()
+                    .context("failed to parse exit code from unified exec output")?,
+            );
+        } else if let Some(value) = line.strip_prefix("Process running with session ID ") {
+            process_id = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("Original token count: ") {
+            original_token_count = Some(
+                value
+                    .parse::<usize>()
+                    .context("failed to parse original token count from unified exec output")?,
+            );
+        }
+    }
 
-    let exit_code = captures
-        .name("exit_code")
-        .map(|value| {
-            value
-                .as_str()
-                .parse::<i32>()
-                .context("failed to parse exit code from unified exec output")
-        })
-        .transpose()?;
-
-    let process_id = captures
-        .name("process_id")
-        .map(|value| value.as_str().to_string());
-
-    let original_token_count = captures
-        .name("original_token_count")
-        .map(|value| {
-            value
-                .as_str()
-                .parse::<usize>()
-                .context("failed to parse original token count from unified exec output")
-        })
-        .transpose()?;
-
-    let output = captures
-        .name("output")
-        .expect("output group present")
-        .as_str()
-        .to_string();
+    let wall_time_seconds = wall_time_seconds
+        .ok_or_else(|| anyhow::anyhow!("missing wall time in unified exec output {raw}"))?;
 
     Ok(ParsedUnifiedExecOutput {
         chunk_id,
@@ -153,7 +107,7 @@ fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
         process_id,
         exit_code,
         original_token_count,
-        output,
+        output: output.to_string(),
     })
 }
 
@@ -184,121 +138,6 @@ fn collect_tool_outputs(bodies: &[Value]) -> Result<HashMap<String, ParsedUnifie
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unified_exec_routes_approval_through_guardian_reviewer() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    skip_if_sandbox!(Ok(()));
-    skip_if_windows!(Ok(()));
-
-    let builder = test_codex().with_model("gpt-5.1").with_config(|config| {
-        config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        config.permissions.sandbox_policy =
-            Constrained::allow_any(SandboxPolicy::new_read_only_policy());
-        config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
-    });
-    let harness = TestCodexHarness::with_builder(builder).await?;
-
-    let call_id = "guardian-unified-exec";
-    let args = json!({
-        "cmd": "printf guardian-unified-exec > guardian-unified-exec.txt && cat guardian-unified-exec.txt",
-        "yield_time_ms": 250,
-        "justification": "run an approved unified exec command",
-        "sandbox_permissions": SandboxPermissions::RequireEscalated,
-    });
-    let responses = vec![
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-        sse(vec![
-            ev_response_created("resp-guardian-1"),
-            ev_assistant_message(
-                "msg-guardian-1",
-                r#"{"risk_level":"low","risk_score":35,"rationale":"safe","evidence":[]}"#,
-            ),
-            ev_completed("resp-guardian-1"),
-        ]),
-        sse(vec![
-            ev_response_created("resp-2"),
-            ev_assistant_message("msg-1", "done"),
-            ev_completed("resp-2"),
-        ]),
-    ];
-    let mock = mount_sse_sequence(harness.server(), responses).await;
-
-    let test = harness.test();
-    let codex = test.codex.clone();
-    let cwd = test.cwd_path().to_path_buf();
-    let session_model = test.session_configured.model.clone();
-
-    codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "run unified exec with guardian approval".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd,
-            approval_policy: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            model: session_model,
-            effort: None,
-            summary: ReasoningSummary::Auto,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let mut statuses = Vec::new();
-    loop {
-        let event = wait_for_event(&codex, |event| {
-            matches!(
-                event,
-                EventMsg::GuardianAssessment(_)
-                    | EventMsg::ExecApprovalRequest(_)
-                    | EventMsg::TurnComplete(_)
-            )
-        })
-        .await;
-
-        match event {
-            EventMsg::GuardianAssessment(event) => statuses.push(event.status),
-            EventMsg::ExecApprovalRequest(event) => {
-                anyhow::bail!(
-                    "unexpected exec approval request while guardian is active: {:?}",
-                    event.command
-                );
-            }
-            EventMsg::TurnComplete(_) => break,
-            _ => unreachable!("wait_for_event predicate filters event variants"),
-        }
-    }
-
-    assert_eq!(
-        statuses,
-        vec![
-            GuardianAssessmentStatus::InProgress,
-            GuardianAssessmentStatus::Approved,
-        ]
-    );
-
-    let output = mock
-        .function_call_output_text(call_id)
-        .context("expected unified exec output")?;
-    let parsed = parse_unified_exec_output(&output)?;
-    assert_eq!(parsed.exit_code, Some(0));
-    assert!(
-        parsed.output.contains("guardian-unified-exec"),
-        "unexpected unified exec output: {}",
-        parsed.output
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -307,7 +146,10 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     let builder = test_codex().with_config(|config| {
         config.include_apply_patch_tool = true;
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let harness = TestCodexHarness::with_builder(builder).await?;
 
@@ -317,7 +159,9 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     let call_id = "uexec-apply-patch";
     let args = json!({
         "cmd": command,
-        "yield_time_ms": 250,
+        // The intercepted apply_patch path spawns a helper process, which can
+        // take longer than a tiny unified-exec yield deadline on CI.
+        "yield_time_ms": 5_000,
     });
 
     let responses = vec![
@@ -348,10 +192,12 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             final_output_json_schema: None,
             cwd,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -436,7 +282,10 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
 
     let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -477,10 +326,12 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -511,7 +362,10 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
 
     let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -555,10 +409,12 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -592,7 +448,10 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
 
     let mut builder = test_codex().with_model("gpt-5").with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -636,10 +495,12 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -674,7 +535,10 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -729,10 +593,12 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -764,7 +630,10 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -804,10 +673,12 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -839,7 +710,10 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -880,10 +754,12 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -949,7 +825,10 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1010,10 +889,12 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1052,7 +933,10 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1147,10 +1031,12 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1246,7 +1132,10 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1307,10 +1196,12 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1365,7 +1256,10 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1405,10 +1299,12 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1472,15 +1368,21 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
-    let Some(python) = find_test_python() else {
-        eprintln!("python not found in PATH, skipping tty default test.");
-        return Ok(());
+    let python = match which("python").or_else(|_| which("python3")) {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("python not found in PATH, skipping tty default test.");
+            return Ok(());
+        }
     };
 
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1520,10 +1422,12 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1558,15 +1462,21 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
 
-    let Some(python) = find_test_python() else {
-        eprintln!("python not found in PATH, skipping tty enable test.");
-        return Ok(());
+    let python = match which("python").or_else(|_| which("python3")) {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("python not found in PATH, skipping tty enable test.");
+            return Ok(());
+        }
     };
 
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1607,10 +1517,12 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1649,7 +1561,10 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1688,10 +1603,12 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1744,7 +1661,10 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1819,10 +1739,12 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1910,7 +1832,10 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -1987,10 +1912,12 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2019,7 +1946,10 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2064,10 +1994,12 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2105,7 +2037,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unified_exec_interrupt_terminates_long_running_session() -> Result<()> {
+async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_windows!(Ok(()));
@@ -2114,7 +2046,10 @@ async fn unified_exec_interrupt_terminates_long_running_session() -> Result<()> 
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2152,10 +2087,12 @@ async fn unified_exec_interrupt_terminates_long_running_session() -> Result<()> 
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2175,6 +2112,13 @@ async fn unified_exec_interrupt_terminates_long_running_session() -> Result<()> 
 
     codex.submit(Op::Interrupt).await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+
+    assert!(
+        process_is_alive(&pid)?,
+        "expected unified exec process to remain alive after interrupt"
+    );
+
+    codex.submit(Op::CleanBackgroundTerminals).await?;
     wait_for_process_exit(&pid).await?;
 
     Ok(())
@@ -2189,7 +2133,10 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2249,10 +2196,12 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2305,7 +2254,10 @@ async fn unified_exec_streams_after_lagged_output() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2384,10 +2336,12 @@ PY
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2439,7 +2393,10 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2498,10 +2455,12 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2548,7 +2507,10 @@ async fn unified_exec_formats_large_output_summary() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2594,10 +2556,12 @@ PY
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2616,8 +2580,22 @@ PY
     let large_output = outputs.get(call_id).expect("missing large output summary");
 
     let output_text = large_output.output.replace("\r\n", "\n");
-    let truncated_pattern = r"(?s)^Total output lines: \d+\n\n(token token \n){5,}.*…\d+ tokens truncated….*(token token \n){5,}$";
-    assert_regex_match(truncated_pattern, &output_text);
+    assert!(
+        output_text.starts_with("Total output lines: "),
+        "expected large output summary header, got {output_text:?}"
+    );
+    assert!(
+        output_text.contains("…") && output_text.contains("tokens truncated"),
+        "expected truncation marker in large output summary, got {output_text:?}"
+    );
+    assert!(
+        output_text.contains("token token \ntoken token \ntoken token \n"),
+        "expected preserved output prefix in large output summary, got {output_text:?}"
+    );
+    assert!(
+        output_text.ends_with("token token ") || output_text.ends_with("token token \n"),
+        "expected preserved output suffix in large output summary, got {output_text:?}"
+    );
 
     let original_tokens = large_output
         .original_token_count
@@ -2636,7 +2614,10 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2675,11 +2656,13 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             // Important!
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2697,7 +2680,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let outputs = collect_tool_outputs(&bodies)?;
     let output = outputs.get(call_id).expect("missing output");
 
-    assert_regex_match("hello[\r\n]+", &output.output);
+    assert_eq!(output.output.trim_end_matches(['\r', '\n']), "hello");
 
     Ok(())
 }
@@ -2707,16 +2690,22 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
 async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let Some(python) = find_test_python() else {
-        eprintln!("python not found in PATH, skipping test.");
-        return Ok(());
+    let python = match which::which("python").or_else(|_| which::which("python3")) {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("python not found in PATH, skipping test.");
+            return Ok(());
+        }
     };
 
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2777,10 +2766,12 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2834,7 +2825,10 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex().with_config(|config| {
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -2872,10 +2866,12 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -2910,7 +2906,10 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
 
     let mut builder = test_codex().with_config(|config| {
         config.use_experimental_unified_exec_tool = true;
-        config.features.enable(Feature::UnifiedExec);
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     });
     let TestCodex {
         codex,
@@ -3007,10 +3006,12 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })

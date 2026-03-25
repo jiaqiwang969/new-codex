@@ -5,11 +5,11 @@ Executes shell requests under the orchestrator: asks for approval when needed,
 builds a CommandSpec, and runs it under the current SandboxAttempt.
 */
 #[cfg(unix)]
-mod unix_escalation;
+pub(crate) mod unix_escalation;
+pub(crate) mod zsh_fork_backend;
 
 use crate::command_canonicalization::canonicalize_command_for_approval;
 use crate::exec::ExecToolCallOutput;
-use crate::features::Feature;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
@@ -50,6 +50,8 @@ pub struct ShellRequest {
     pub network: Option<NetworkProxy>,
     pub sandbox_permissions: SandboxPermissions,
     pub additional_permissions: Option<PermissionProfile>,
+    #[cfg(unix)]
+    pub additional_permissions_preapproved: bool,
     pub justification: Option<String>,
     pub exec_approval_requirement: ExecApprovalRequirement,
 }
@@ -83,7 +85,6 @@ pub(crate) enum ShellRuntimeBackend {
 
 #[derive(Default)]
 pub struct ShellRuntime {
-    #[cfg_attr(not(unix), allow(dead_code))]
     backend: ShellRuntimeBackend,
 }
 
@@ -145,10 +146,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
         let command = req.command.clone();
         let cwd = req.cwd.clone();
         let retry_reason = ctx.retry_reason.clone();
-        let reason = ctx
-            .retry_reason
-            .clone()
-            .or_else(|| req.justification.clone());
+        let reason = retry_reason.clone().or_else(|| req.justification.clone());
         let session = ctx.session;
         let turn = ctx.turn;
         let call_id = ctx.call_id.to_string();
@@ -175,7 +173,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
                     .request_command_approval(
                         turn,
                         call_id,
-                        None,
+                        /*approval_id*/ None,
                         command,
                         cwd,
                         reason,
@@ -184,6 +182,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
                             .proposed_execpolicy_amendment()
                             .cloned(),
                         req.additional_permissions.clone(),
+                        /*skill_metadata*/ None,
                         available_decisions,
                     )
                     .await
@@ -227,17 +226,14 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             &req.cwd,
             &req.explicit_env_overrides,
         );
-        let command = if matches!(session_shell.shell_type, ShellType::PowerShell)
-            && ctx.session.features().enabled(Feature::PowershellUtf8)
-        {
+        let command = if matches!(session_shell.shell_type, ShellType::PowerShell) {
             prefix_powershell_script_with_utf8(&command)
         } else {
             command
         };
 
-        #[cfg(unix)]
         if self.backend == ShellRuntimeBackend::ShellCommandZshFork {
-            match unix_escalation::try_run_zsh_fork(req, attempt, ctx, &command).await? {
+            match zsh_fork_backend::maybe_run_shell_command(req, attempt, ctx, &command).await? {
                 Some(out) => return Ok(out),
                 None => {
                     tracing::warn!(

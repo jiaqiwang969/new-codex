@@ -546,6 +546,7 @@ async fn process_anthropic_sse<S>(
                         let item = ResponseItem::FunctionCall {
                             id: None,
                             name,
+                            namespace: None,
                             arguments,
                             call_id,
                             thought_signature: None,
@@ -643,6 +644,7 @@ async fn process_anthropic_sse<S>(
                     let item = ResponseItem::FunctionCall {
                         id: None,
                         name,
+                        namespace: None,
                         arguments,
                         call_id,
                         thought_signature: None,
@@ -690,7 +692,6 @@ async fn process_anthropic_sse<S>(
         .send(Ok(ResponseEvent::Completed {
             response_id,
             token_usage,
-            can_append: false,
         }))
         .await;
 }

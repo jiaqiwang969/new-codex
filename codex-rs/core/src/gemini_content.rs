@@ -152,8 +152,7 @@ pub(crate) fn build_gemini_tool_config(
             matches!(
                 item,
                 ResponseItem::Message {
-                    role, content, ..
-                } if role == "user"
+                    role, content, .. } if role == "user"
                     && content.iter().any(|c| matches!(c, ContentItem::InputText { .. }))
             )
         });
@@ -593,7 +592,7 @@ fn split_function_output_content(
                     text_parts.push(text.clone());
                 }
             }
-            FunctionCallOutputContentItem::InputImage { image_url } => {
+            FunctionCallOutputContentItem::InputImage { image_url, .. } => {
                 if let Some((mime, data)) = parse_data_url(image_url) {
                     inline_parts.push(gemini_inline_data_part(mime, data));
                 } else if !image_url.trim().is_empty() {
@@ -832,11 +831,13 @@ mod tests {
         ToolSpec::Function(ResponsesApiTool {
             name: name.to_string(),
             description: format!("tool {name}"),
+            defer_loading: None,
             parameters: JsonSchema::Object {
                 properties: Default::default(),
                 required: None,
                 additional_properties: None,
             },
+            output_schema: None,
             strict: false,
         })
     }
@@ -1055,6 +1056,10 @@ mod tests {
             function_tool("shell_command"),
             ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
             },
         ];
 
@@ -1073,6 +1078,10 @@ mod tests {
             function_tool("shell_command"),
             ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
             },
         ];
 

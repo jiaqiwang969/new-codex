@@ -77,21 +77,22 @@ pub(crate) async fn generate_entire_summary_with_client_and_model(
         .stream(
             &prompt_struct,
             model_info,
-            &codex_otel::OtelManager::new(
+            &codex_otel::SessionTelemetry::new(
                 ThreadId::new(),
                 model_slug,
                 model_slug,
-                None,
-                None,
-                None,
+                /*account_id*/ None,
+                /*account_email*/ None,
+                /*auth_mode*/ None,
                 "entire-summary".to_string(),
-                false,
+                /*log_user_prompts*/ false,
                 "cli".to_string(),
                 SessionSource::Cli,
             ),
-            None,
+            /*effort*/ None,
             codex_protocol::config_types::ReasoningSummary::default(),
-            None,
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
         )
         .await
         .context("Failed to start model stream")?;

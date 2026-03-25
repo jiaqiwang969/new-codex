@@ -422,10 +422,9 @@ mod tests {
             config.model_provider.clone(),
             SessionSource::Exec,
             config.model_verbosity,
-            None,
-            false,
-            false,
-            None,
+            /*enable_request_compression*/ false,
+            /*include_timing_metrics*/ false,
+            /*beta_features_header*/ None,
         );
 
         let (model_client, _model_info, provider_id) =

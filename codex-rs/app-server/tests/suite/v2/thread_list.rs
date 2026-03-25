@@ -556,12 +556,9 @@ sqlite = true
     // `thread/list` only applies `search_term` on the sqlite path. In this test we
     // create rollouts manually, so we must also create the sqlite DB and mark backfill
     // complete; otherwise app-server will permanently use filesystem fallback.
-    let state_db = codex_state::StateRuntime::init(
-        codex_home.path().to_path_buf(),
-        "mock_provider".into(),
-        None,
-    )
-    .await?;
+    let state_db =
+        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
+            .await?;
     state_db.mark_backfill_complete(None).await?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
@@ -664,6 +661,7 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_path: None,
             agent_nickname: None,
             agent_role: None,
         }),
@@ -727,6 +725,7 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_path: None,
             agent_nickname: None,
             agent_role: None,
         }),

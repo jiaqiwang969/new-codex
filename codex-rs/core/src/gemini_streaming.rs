@@ -311,7 +311,6 @@ pub(crate) fn spawn_gemini_response_stream(
             .send(Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
-                can_append: false,
             }))
             .await;
     });
@@ -458,7 +457,10 @@ async fn process_gemini_sse<S>(
                         }
                     }
 
-                    for (idx, uri) in top_grounding_uris(meta, 3).into_iter().enumerate() {
+                    for (idx, uri) in top_grounding_uris(meta, /*limit*/ 3)
+                        .into_iter()
+                        .enumerate()
+                    {
                         let key = format!("open:{uri}");
                         if emitted_web_search_calls.insert(key) {
                             let item = ResponseItem::WebSearchCall {
@@ -728,6 +730,7 @@ async fn process_gemini_sse<S>(
         let item = ResponseItem::FunctionCall {
             id: None,
             name,
+            namespace: None,
             arguments,
             call_id,
             thought_signature,
@@ -739,7 +742,6 @@ async fn process_gemini_sse<S>(
         .send(Ok(ResponseEvent::Completed {
             response_id: last_response_id,
             token_usage: last_token_usage,
-            can_append: false,
         }))
         .await;
 }

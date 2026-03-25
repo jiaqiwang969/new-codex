@@ -78,7 +78,7 @@ Return a JSON object with this structure:
 Focus on decision rationale and context that helps future developers understand "why this way?"
 Keep it concise but informative. Return ONLY the JSON object."#,
         user_prompt = input.user_prompt,
-        ai_response = truncate_response(&input.ai_response, 8000),
+        ai_response = truncate_response(&input.ai_response, /*max_chars*/ 8000),
         files_list = files_list
     )
 }

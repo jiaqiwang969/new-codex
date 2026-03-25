@@ -13,9 +13,9 @@ use tracing::warn;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::compact;
-use crate::features::Feature;
 use crate::state_db;
 use crate::utility_model;
+use codex_features::Feature;
 
 const THREAD_MEMORY_MAX_TRACE_ITEMS: usize = 200;
 const THREAD_MEMORY_MAX_TRACE_BYTES: usize = 60_000;
@@ -140,7 +140,10 @@ pub fn build_thread_memory_trace_items(history: &[ResponseItem]) -> Vec<Value> {
             | ResponseItem::Reasoning { .. }
             | ResponseItem::FunctionCallOutput { .. }
             | ResponseItem::CustomToolCallOutput { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::GhostSnapshot { .. }
             | ResponseItem::Compaction { .. }
             | ResponseItem::Other => {}
@@ -297,7 +300,7 @@ async fn summarize_trace_items(
             }],
             &turn_context.model_info,
             turn_context.reasoning_effort,
-            &turn_context.otel_manager,
+            &turn_context.session_telemetry,
         )
         .await;
 
@@ -351,7 +354,7 @@ async fn summarize_trace_items(
                     }],
                     &utility_model_info,
                     turn_context.reasoning_effort,
-                    &turn_context.otel_manager,
+                    &turn_context.session_telemetry,
                 )
                 .await
             {
@@ -447,6 +450,8 @@ mod tests {
                 arguments: "{\"cmd\":\"echo hi\"}".to_string(),
                 call_id: "call-1".to_string(),
                 thought_signature: None,
+
+                namespace: None,
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),

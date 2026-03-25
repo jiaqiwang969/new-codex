@@ -20,6 +20,7 @@ pub enum SlashCommand {
     ModelEntire,
     ModelMemoryPhase1,
     ModelMemoryPhase2,
+    Fast,
     Approvals,
     Permissions,
     #[strum(serialize = "setup-default-sandbox")]
@@ -53,21 +54,27 @@ pub enum SlashCommand {
     Mention,
     Status,
     DebugConfig,
+    Title,
     Statusline,
     Theme,
     Mcp,
     Apps,
+    Plugins,
     Logout,
     Quit,
     Exit,
     Feedback,
     Rollout,
     Ps,
-    Clean,
+    #[strum(to_string = "stop", serialize = "clean")]
+    Stop,
     Clear,
     Personality,
     Realtime,
+    Settings,
     TestApproval,
+    #[strum(serialize = "subagents")]
+    MultiAgents,
     // Debugging commands.
     #[strum(serialize = "debug-m-drop")]
     MemoryDrop,
@@ -96,10 +103,11 @@ impl SlashCommand {
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
+            SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
             SlashCommand::Theme => "choose a syntax highlighting theme",
             SlashCommand::Ps => "list background terminals",
-            SlashCommand::Clean => "stop all background terminals",
+            SlashCommand::Stop => "stop all background terminals",
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
@@ -122,11 +130,13 @@ impl SlashCommand {
             SlashCommand::ModelMemoryPhase2 => {
                 "choose model for Memory phase-2 (deep code analysis)"
             }
+            SlashCommand::Fast => "toggle Fast mode to enable fastest inference at 2X plan usage",
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Realtime => "toggle realtime voice mode (experimental)",
+            SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
-            SlashCommand::Collab => "change collaboration mode (Default / Collaborative / Plan)",
-            SlashCommand::Agent => "switch the active agent thread",
+            SlashCommand::Collab => "change collaboration mode (experimental)",
+            SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::RalphLoop => {
                 "start a Ralph loop that repeats the same prompt until done (/ralph-loop --help)"
             }
@@ -138,7 +148,7 @@ impl SlashCommand {
             SlashCommand::ClearRef => "clear the active reference images",
             SlashCommand::PdfUpdate => "process PDF pages + batch image processing",
             SlashCommand::OpenImage => "open the most recently generated image",
-            SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::Approvals => "choose what Codex is allowed to do",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
             SlashCommand::SandboxReadRoot => {
@@ -147,6 +157,7 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Apps => "manage apps",
+            SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
@@ -175,6 +186,7 @@ impl SlashCommand {
                 | SlashCommand::PdfUpdate
                 | SlashCommand::ImageQuality
                 | SlashCommand::AspectRatio
+                | SlashCommand::Fast
                 | SlashCommand::SandboxReadRoot
         )
     }
@@ -196,6 +208,7 @@ impl SlashCommand {
             | SlashCommand::ModelEntire
             | SlashCommand::ModelMemoryPhase1
             | SlashCommand::ModelMemoryPhase2
+            | SlashCommand::Fast
             | SlashCommand::Personality
             | SlashCommand::Approvals
             | SlashCommand::Permissions
@@ -216,7 +229,7 @@ impl SlashCommand {
             | SlashCommand::Status
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
-            | SlashCommand::Clean
+            | SlashCommand::Stop
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::CancelRalph
@@ -225,19 +238,22 @@ impl SlashCommand {
             | SlashCommand::AspectRatio
             | SlashCommand::ClearRef
             | SlashCommand::OpenImage
+            | SlashCommand::Plugins
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Realtime => true,
+            SlashCommand::Settings => true,
             SlashCommand::Collab => true,
-            SlashCommand::Agent => true,
+            SlashCommand::Agent | SlashCommand::MultiAgents => true,
             SlashCommand::Statusline => false,
             SlashCommand::RalphLoop => false,
             SlashCommand::RefImageBatch => true,
             SlashCommand::PdfUpdate => true,
             SlashCommand::Theme => false,
+            SlashCommand::Title => false,
         }
     }
 
@@ -257,4 +273,22 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
         .filter(|command| command.is_visible())
         .map(|c| (c.command(), c))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use std::str::FromStr;
+
+    use super::SlashCommand;
+
+    #[test]
+    fn stop_command_is_canonical_name() {
+        assert_eq!(SlashCommand::Stop.command(), "stop");
+    }
+
+    #[test]
+    fn clean_alias_parses_to_stop_command() {
+        assert_eq!(SlashCommand::from_str("clean"), Ok(SlashCommand::Stop));
+    }
 }

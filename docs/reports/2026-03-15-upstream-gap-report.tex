@@ -29,6 +29,8 @@
 \begin{document}
 \maketitle
 
+\noindent\textbf{状态说明（2026-03-24 更新）}：本文是当时的差距分析快照。其中涉及的 macOS Endpoint Security、本地 Smart Access、\texttt{/freeze} 等内容，已不属于当前 upstream merge 目标。当前方向是移除本地 \texttt{endpoint-sec} / \texttt{request\_security\_override} / \texttt{freeze} 方案，保留账号池等定制能力，并继续向官方 \texttt{approval\_policy} + \texttt{approvals\_reviewer} / guardian 语义收敛。
+
 \begin{abstract}
 本文基于 \href{https://github.com/openai/codex}{OpenAI Codex 官方仓库}当前最新主线，以及本地当前定制版 \texttt{main} 分支的实际代码状态，对两者的功能差距、架构漂移和合并风险进行一次决策导向的梳理。
 
@@ -148,13 +150,13 @@
 
 \section{当前定制版相比官方主线的独有优势}
 
-\subsection{macOS Endpoint Security + 人工批准式安全放行}
-当前定制版最有代表性的差异化能力之一，是围绕 macOS Endpoint Security 的本机安全拦截与放行工作流。其意义不在于“多一个工具”，而在于把系统级安全事件与代理执行流程联动起来。
+\subsection{历史：macOS Endpoint Security + 人工批准式安全放行}
+这是当时定制版最有代表性的差异化能力之一，围绕 macOS Endpoint Security 的本机安全拦截与放行工作流展开。其意义不在于“多一个工具”，而在于把系统级安全事件与代理执行流程联动起来。
 
 这类能力属于强平台绑定、本机控制链路型能力，官方主线目前没有等价替代。
 
-\subsection{\texttt{/freeze} 时间冻结 / 快照调试工作流}
-当前定制版增加了 \texttt{/freeze} 调试路径，可以将问题现场冻结成可分析快照，用于回放和排障。这类能力更接近“复杂代理工作流的法医式调试工具”，官方主线没有直接同类物。
+\subsection{历史：\texttt{/freeze} 时间冻结 / 快照调试工作流}
+这是当时定制版引入的一条实验性调试路径：通过 \texttt{/freeze} 将问题现场冻结成可分析快照，用于回放和排障。这类能力更接近“复杂代理工作流的法医式调试工具”，官方主线没有直接同类物。
 
 \subsection{子代理隔离 worktree 的 lease / resume 机制}
 当前定制版对子代理和线程切分的处理更偏工程执行流：不仅能 spawn 子代理，还可以把它们绑定到独立 worktree，并对 worktree 与 thread 的关系做 lease / resume 持久化。

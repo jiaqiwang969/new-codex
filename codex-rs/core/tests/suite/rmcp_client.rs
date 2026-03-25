@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::net::TcpListener;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -11,7 +12,6 @@ use std::time::UNIX_EPOCH;
 use codex_core::CodexAuth;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
-use codex_core::features::Feature;
 use codex_core::models_manager::manager::RefreshStrategy;
 
 use codex_protocol::config_types::ReasoningSummary;
@@ -31,18 +31,19 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::responses;
-use core_test_support::responses::mount_function_call_agent_response;
 use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
+use reqwest::Client;
+use reqwest::StatusCode;
 use serde_json::Value;
 use serde_json::json;
 use serial_test::serial;
 use tempfile::tempdir;
-use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::time::Instant;
@@ -106,18 +107,13 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    oauth_resource: None,
                 },
             );
             config
                 .mcp_servers
                 .set(servers)
                 .expect("test mcp servers should accept any configuration");
-            config.project_doc_max_bytes = 32 * 1024;
-            std::fs::write(
-                config.cwd.join("AGENTS.override.md"),
-                "test user instructions: follow AGENTS.md",
-            )
-            .expect("should write test AGENTS.md");
         })
         .build(&server)
         .await?;
@@ -133,10 +129,12 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -190,527 +188,6 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     assert_eq!(env_value, expected_env_value);
 
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    server.verify().await;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[serial(mcp_test_value)]
-async fn stdio_claude_code_injects_context_and_work_folder() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-
-    let call_id = "claude-ctx-1";
-    let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__claude_code");
-
-    let mocks =
-        mount_function_call_agent_response(&server, call_id, "{\"prompt\":\"ping\"}", &tool_name)
-            .await;
-
-    let rmcp_test_server_bin = stdio_server_bin()?;
-
-    let fixture = test_codex()
-        .with_pre_build_hook(|codex_home| {
-            let user_memory_root = codex_home.join("memories").join("user").join("memory");
-            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
-            std::fs::write(
-                user_memory_root.join("memory_summary.md"),
-                "user memory summary",
-            )
-            .expect("write user memory summary");
-        })
-        .with_config(move |config| {
-            config.features.enable(Feature::MemoryTool);
-            let mut servers = config.mcp_servers.get().clone();
-            servers.insert(
-                server_name.to_string(),
-                McpServerConfig {
-                    transport: McpServerTransportConfig::Stdio {
-                        command: rmcp_test_server_bin,
-                        args: Vec::new(),
-                        env: None,
-                        env_vars: Vec::new(),
-                        cwd: None,
-                    },
-                    enabled: true,
-                    required: false,
-                    disabled_reason: None,
-                    startup_timeout_sec: Some(Duration::from_secs(10)),
-                    tool_timeout_sec: None,
-                    enabled_tools: None,
-                    disabled_tools: None,
-                    scopes: None,
-                },
-            );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
-            config.project_doc_max_bytes = 32 * 1024;
-            std::fs::write(
-                config.cwd.join("AGENTS.override.md"),
-                "test user instructions: follow AGENTS.md",
-            )
-            .expect("should write test AGENTS.md");
-        })
-        .build(&server)
-        .await?;
-    fixture
-        .submit_turn_with_policies(
-            "call the rmcp claude_code tool",
-            AskForApproval::Never,
-            SandboxPolicy::new_read_only_policy(),
-        )
-        .await?;
-
-    let completion_request = mocks.completion.single_request();
-    let content = completion_request
-        .function_call_output_text(call_id)
-        .expect("function_call_output should be present");
-    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
-        panic!("failed to parse claude_code tool output as JSON: {err}. output={content:?}");
-    });
-    let Value::Object(map) = payload else {
-        panic!("function_call_output should be an object: {payload:?}");
-    };
-
-    let prompt = map
-        .get("prompt")
-        .and_then(Value::as_str)
-        .expect("prompt present");
-    assert_eq!(prompt, "ping");
-
-    let work_folder = map
-        .get("workFolder")
-        .and_then(Value::as_str)
-        .expect("workFolder present");
-    assert_eq!(work_folder, fixture.cwd.path().to_string_lossy().as_ref());
-
-    let context = map
-        .get("context")
-        .and_then(Value::as_str)
-        .expect("context present");
-    let expected_working_dir = format!("Working directory: {}", fixture.cwd.path().display());
-    assert!(
-        context.contains(&expected_working_dir),
-        "context should include working dir. expected substring={expected_working_dir:?} actual={context:?}"
-    );
-    assert!(
-        context.contains("test user instructions: follow AGENTS.md"),
-        "context should include user instructions. actual={context:?}"
-    );
-    assert!(
-        context.contains("Active memory scope: user"),
-        "context should include active memory scope. actual={context:?}"
-    );
-
-    let memory_scope_kind = map
-        .get("memoryScopeKind")
-        .and_then(Value::as_str)
-        .expect("memoryScopeKind present");
-    assert_eq!(memory_scope_kind, "user");
-    let memory_scope_version = map
-        .get("memoryScopeVersion")
-        .and_then(Value::as_str)
-        .expect("memoryScopeVersion present");
-    assert!(
-        memory_scope_version.starts_with("user:"),
-        "memoryScopeVersion should have user scope prefix. actual={memory_scope_version:?}"
-    );
-    let memory_summary_sha256 = map
-        .get("memorySummarySha256")
-        .and_then(Value::as_str)
-        .expect("memorySummarySha256 present");
-    assert_eq!(memory_summary_sha256.len(), 64);
-    assert_eq!(&memory_summary_sha256[..12], &memory_scope_version[5..17]);
-    let memory_binding_key = map
-        .get("memoryBindingKey")
-        .and_then(Value::as_str)
-        .expect("memoryBindingKey present");
-    assert_eq!(
-        memory_binding_key,
-        format!("{memory_scope_version}:{memory_summary_sha256}")
-    );
-    let expected_scope_version_line =
-        format!("Active memory scope version: {memory_scope_version}");
-    assert!(
-        context.contains(&expected_scope_version_line),
-        "context should include exact memory scope version line. expected={expected_scope_version_line:?} actual={context:?}"
-    );
-
-    server.verify().await;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[serial(mcp_test_value)]
-async fn stdio_generic_agent_tool_injects_context_and_memory_scope() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-
-    let call_id = "agent-ctx-1";
-    let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__agent_context_echo");
-    let mocks =
-        mount_function_call_agent_response(&server, call_id, "{\"message\":\"ping\"}", &tool_name)
-            .await;
-
-    let rmcp_test_server_bin = stdio_server_bin()?;
-
-    let fixture = test_codex()
-        .with_pre_build_hook(|codex_home| {
-            let user_memory_root = codex_home.join("memories").join("user").join("memory");
-            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
-            std::fs::write(
-                user_memory_root.join("memory_summary.md"),
-                "user memory summary",
-            )
-            .expect("write user memory summary");
-        })
-        .with_config(move |config| {
-            config.features.enable(Feature::MemoryTool);
-            let mut servers = config.mcp_servers.get().clone();
-            servers.insert(
-                server_name.to_string(),
-                McpServerConfig {
-                    transport: McpServerTransportConfig::Stdio {
-                        command: rmcp_test_server_bin,
-                        args: Vec::new(),
-                        env: None,
-                        env_vars: Vec::new(),
-                        cwd: None,
-                    },
-                    enabled: true,
-                    required: false,
-                    disabled_reason: None,
-                    startup_timeout_sec: Some(Duration::from_secs(10)),
-                    tool_timeout_sec: None,
-                    enabled_tools: None,
-                    disabled_tools: None,
-                    scopes: None,
-                },
-            );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
-            config.project_doc_max_bytes = 32 * 1024;
-            std::fs::write(
-                config.cwd.join("AGENTS.override.md"),
-                "test user instructions: follow AGENTS.md",
-            )
-            .expect("should write test AGENTS.md");
-        })
-        .build(&server)
-        .await?;
-    fixture
-        .submit_turn_with_policies(
-            "call the generic rmcp agent_context_echo tool",
-            AskForApproval::Never,
-            SandboxPolicy::new_read_only_policy(),
-        )
-        .await?;
-
-    let completion_request = mocks.completion.single_request();
-    let content = completion_request
-        .function_call_output_text(call_id)
-        .expect("function_call_output should be present");
-    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
-        panic!("failed to parse agent_context_echo output as JSON: {err}. output={content:?}");
-    });
-    let Value::Object(map) = payload else {
-        panic!("function_call_output should be an object: {payload:?}");
-    };
-
-    let message = map
-        .get("message")
-        .and_then(Value::as_str)
-        .expect("message present");
-    assert_eq!(message, "ping");
-    let work_folder = map
-        .get("workFolder")
-        .and_then(Value::as_str)
-        .expect("workFolder present");
-    assert_eq!(work_folder, fixture.cwd.path().to_string_lossy().as_ref());
-    let context = map
-        .get("context")
-        .and_then(Value::as_str)
-        .expect("context present");
-    assert!(
-        context.contains("Active memory scope: user"),
-        "context should include active memory scope. actual={context:?}"
-    );
-    let memory_scope_kind = map
-        .get("memoryScopeKind")
-        .and_then(Value::as_str)
-        .expect("memoryScopeKind present");
-    assert_eq!(memory_scope_kind, "user");
-    let memory_scope_version = map
-        .get("memoryScopeVersion")
-        .and_then(Value::as_str)
-        .expect("memoryScopeVersion present");
-    assert!(memory_scope_version.starts_with("user:"));
-    let memory_summary_sha256 = map
-        .get("memorySummarySha256")
-        .and_then(Value::as_str)
-        .expect("memorySummarySha256 present");
-    assert_eq!(memory_summary_sha256.len(), 64);
-    assert_eq!(&memory_summary_sha256[..12], &memory_scope_version[5..17]);
-    let memory_binding_key = map
-        .get("memoryBindingKey")
-        .and_then(Value::as_str)
-        .expect("memoryBindingKey present");
-    assert_eq!(
-        memory_binding_key,
-        format!("{memory_scope_version}:{memory_summary_sha256}")
-    );
-
-    server.verify().await;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[serial(mcp_test_value)]
-async fn stdio_snake_case_agent_tool_injects_context_and_memory_scope() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-
-    let call_id = "agent-ctx-snake-1";
-    let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__agent_context_echo_snake");
-    let mocks =
-        mount_function_call_agent_response(&server, call_id, "{\"message\":\"ping\"}", &tool_name)
-            .await;
-
-    let rmcp_test_server_bin = stdio_server_bin()?;
-
-    let fixture = test_codex()
-        .with_pre_build_hook(|codex_home| {
-            let user_memory_root = codex_home.join("memories").join("user").join("memory");
-            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
-            std::fs::write(
-                user_memory_root.join("memory_summary.md"),
-                "user memory summary",
-            )
-            .expect("write user memory summary");
-        })
-        .with_config(move |config| {
-            config.features.enable(Feature::MemoryTool);
-            let mut servers = config.mcp_servers.get().clone();
-            servers.insert(
-                server_name.to_string(),
-                McpServerConfig {
-                    transport: McpServerTransportConfig::Stdio {
-                        command: rmcp_test_server_bin,
-                        args: Vec::new(),
-                        env: None,
-                        env_vars: Vec::new(),
-                        cwd: None,
-                    },
-                    enabled: true,
-                    required: false,
-                    disabled_reason: None,
-                    startup_timeout_sec: Some(Duration::from_secs(10)),
-                    tool_timeout_sec: None,
-                    enabled_tools: None,
-                    disabled_tools: None,
-                    scopes: None,
-                },
-            );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
-        })
-        .build(&server)
-        .await?;
-    fixture
-        .submit_turn_with_policies(
-            "call the generic rmcp agent_context_echo_snake tool",
-            AskForApproval::Never,
-            SandboxPolicy::new_read_only_policy(),
-        )
-        .await?;
-
-    let completion_request = mocks.completion.single_request();
-    let content = completion_request
-        .function_call_output_text(call_id)
-        .expect("function_call_output should be present");
-    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
-        panic!(
-            "failed to parse agent_context_echo_snake output as JSON: {err}. output={content:?}"
-        );
-    });
-    let Value::Object(map) = payload else {
-        panic!("function_call_output should be an object: {payload:?}");
-    };
-
-    let message = map
-        .get("message")
-        .and_then(Value::as_str)
-        .expect("message present");
-    assert_eq!(message, "ping");
-    let workdir = map
-        .get("workdir")
-        .and_then(Value::as_str)
-        .expect("workdir present");
-    assert_eq!(workdir, fixture.cwd.path().to_string_lossy().as_ref());
-    let context = map
-        .get("context")
-        .and_then(Value::as_str)
-        .expect("context present");
-    assert!(
-        context.contains("Active memory scope: user"),
-        "context should include active memory scope. actual={context:?}"
-    );
-    let memory_scope_kind = map
-        .get("memory_scope_kind")
-        .and_then(Value::as_str)
-        .expect("memory_scope_kind present");
-    assert_eq!(memory_scope_kind, "user");
-    let memory_scope_version = map
-        .get("memory_scope_version")
-        .and_then(Value::as_str)
-        .expect("memory_scope_version present");
-    assert!(memory_scope_version.starts_with("user:"));
-    let memory_summary_sha256 = map
-        .get("memory_summary_sha256")
-        .and_then(Value::as_str)
-        .expect("memory_summary_sha256 present");
-    assert_eq!(memory_summary_sha256.len(), 64);
-    assert_eq!(&memory_summary_sha256[..12], &memory_scope_version[5..17]);
-    let memory_binding_key = map
-        .get("memory_binding_key")
-        .and_then(Value::as_str)
-        .expect("memory_binding_key present");
-    assert_eq!(
-        memory_binding_key,
-        format!("{memory_scope_version}:{memory_summary_sha256}")
-    );
-
-    server.verify().await;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[serial(mcp_test_value)]
-async fn stdio_agent_tool_does_not_override_explicit_context_inputs() -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-
-    let call_id = "agent-ctx-explicit-1";
-    let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__agent_context_echo");
-    let args = json!({
-        "message": "ping",
-        "context": "external context from caller",
-        "workFolder": "/tmp/external-workdir",
-        "memoryScopeVersion": "external:123",
-        "memoryScopeKind": "external",
-        "memorySummarySha256": "b".repeat(64),
-        "memoryBindingKey": "external:123:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    });
-    let mocks =
-        mount_function_call_agent_response(&server, call_id, &args.to_string(), &tool_name).await;
-
-    let rmcp_test_server_bin = stdio_server_bin()?;
-
-    let fixture = test_codex()
-        .with_pre_build_hook(|codex_home| {
-            let user_memory_root = codex_home.join("memories").join("user").join("memory");
-            std::fs::create_dir_all(&user_memory_root).expect("create user memory root");
-            std::fs::write(
-                user_memory_root.join("memory_summary.md"),
-                "user memory summary",
-            )
-            .expect("write user memory summary");
-        })
-        .with_config(move |config| {
-            config.features.enable(Feature::MemoryTool);
-            let mut servers = config.mcp_servers.get().clone();
-            servers.insert(
-                server_name.to_string(),
-                McpServerConfig {
-                    transport: McpServerTransportConfig::Stdio {
-                        command: rmcp_test_server_bin,
-                        args: Vec::new(),
-                        env: None,
-                        env_vars: Vec::new(),
-                        cwd: None,
-                    },
-                    enabled: true,
-                    required: false,
-                    disabled_reason: None,
-                    startup_timeout_sec: Some(Duration::from_secs(10)),
-                    tool_timeout_sec: None,
-                    enabled_tools: None,
-                    disabled_tools: None,
-                    scopes: None,
-                },
-            );
-            config
-                .mcp_servers
-                .set(servers)
-                .expect("test mcp servers should accept any configuration");
-        })
-        .build(&server)
-        .await?;
-    fixture
-        .submit_turn_with_policies(
-            "call the generic rmcp agent_context_echo tool with explicit inputs",
-            AskForApproval::Never,
-            SandboxPolicy::new_read_only_policy(),
-        )
-        .await?;
-
-    let completion_request = mocks.completion.single_request();
-    let content = completion_request
-        .function_call_output_text(call_id)
-        .expect("function_call_output should be present");
-    let payload: Value = serde_json::from_str(&content).unwrap_or_else(|err| {
-        panic!("failed to parse agent_context_echo output as JSON: {err}. output={content:?}");
-    });
-    let Value::Object(map) = payload else {
-        panic!("function_call_output should be an object: {payload:?}");
-    };
-
-    assert_eq!(
-        map.get("context"),
-        Some(&Value::String("external context from caller".to_string()))
-    );
-    assert_eq!(
-        map.get("workFolder"),
-        Some(&Value::String("/tmp/external-workdir".to_string()))
-    );
-    assert_eq!(
-        map.get("memoryScopeVersion"),
-        Some(&Value::String("external:123".to_string()))
-    );
-    assert_eq!(
-        map.get("memoryScopeKind"),
-        Some(&Value::String("external".to_string()))
-    );
-    assert_eq!(
-        map.get("memorySummarySha256"),
-        Some(&Value::String("b".repeat(64)))
-    );
-    assert_eq!(
-        map.get("memoryBindingKey"),
-        Some(&Value::String(
-            "external:123:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                .to_string()
-        ))
-    );
 
     server.verify().await;
 
@@ -775,6 +252,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    oauth_resource: None,
                 },
             );
             config
@@ -789,7 +267,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
     let tools_ready_deadline = Instant::now() + Duration::from_secs(30);
     loop {
         fixture.codex.submit(Op::ListMcpTools).await?;
-        let list_event = core_test_support::wait_for_event_with_timeout(
+        let list_event = wait_for_event_with_timeout(
             &fixture.codex,
             |ev| matches!(ev, EventMsg::McpListToolsResponse(_)),
             Duration::from_secs(10),
@@ -821,10 +299,12 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -927,18 +407,22 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 base_instructions: "base instructions".to_string(),
                 model_messages: None,
                 supports_reasoning_summaries: false,
+                default_reasoning_summary: ReasoningSummary::Auto,
                 support_verbosity: false,
                 default_verbosity: None,
+                availability_nux: None,
                 apply_patch_tool_type: None,
+                web_search_tool_type: Default::default(),
                 truncation_policy: TruncationPolicyConfig::bytes(10_000),
                 supports_parallel_tool_calls: false,
+                supports_image_detail_original: false,
                 context_window: Some(272_000),
                 auto_compact_token_limit: None,
                 effective_context_window_percent: 95,
                 experimental_supported_tools: Vec::new(),
                 input_modalities: vec![InputModality::Text],
-                prefer_websockets: false,
                 used_fallback_model_metadata: false,
+                supports_search_tool: false,
             }],
         },
     )
@@ -991,6 +475,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    oauth_resource: None,
                 },
             );
             config
@@ -1018,10 +503,12 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: text_only_model_slug.to_string(),
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1109,6 +596,7 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    oauth_resource: None,
                 },
             );
             config
@@ -1130,10 +618,12 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1268,6 +758,7 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    oauth_resource: None,
                 },
             );
             config
@@ -1289,10 +780,12 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1368,8 +861,8 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
 
 /// This test writes to a fallback credentials file in CODEX_HOME.
 /// Ideally, we wouldn't need to serialize the test but it's much more cumbersome to wire CODEX_HOME through the code.
-#[serial(codex_home)]
 #[test]
+#[serial(codex_home)]
 fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1451,8 +944,8 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     wait_for_streamable_http_server(&mut http_server_child, &bind_addr, Duration::from_secs(5))
         .await?;
 
-    let temp_home = tempdir()?;
-    let _guard = EnvVarGuard::set("CODEX_HOME", temp_home.path().as_os_str());
+    let temp_home = Arc::new(tempdir()?);
+    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", temp_home.path().as_os_str());
     write_fallback_oauth_tokens(
         temp_home.path(),
         server_name,
@@ -1463,10 +956,10 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     )?;
 
     let fixture = test_codex()
+        .with_home(temp_home.clone())
         .with_config(move |config| {
-            // This test seeds OAuth tokens in CODEX_HOME/.credentials.json and
-            // validates file-backed OAuth loading. Force file mode so Linux
-            // keyring backend quirks do not affect this test.
+            // Keep OAuth credentials isolated to this test home because Bazel
+            // runs the full core suite in one process.
             config.mcp_oauth_credentials_store_mode = serde_json::from_value(json!("file"))
                 .expect("`file` should deserialize as OAuthCredentialsStoreMode");
             let mut servers = config.mcp_servers.get().clone();
@@ -1487,6 +980,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
                     enabled_tools: None,
                     disabled_tools: None,
                     scopes: None,
+                    oauth_resource: None,
                 },
             );
             config
@@ -1498,6 +992,31 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         .await?;
     let session_model = fixture.session_configured.model.clone();
 
+    let tools_ready_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        fixture.codex.submit(Op::ListMcpTools).await?;
+        let list_event = wait_for_event_with_timeout(
+            &fixture.codex,
+            |ev| matches!(ev, EventMsg::McpListToolsResponse(_)),
+            Duration::from_secs(10),
+        )
+        .await;
+        let EventMsg::McpListToolsResponse(tool_list) = list_event else {
+            unreachable!("event guard guarantees McpListToolsResponse");
+        };
+        if tool_list.tools.contains_key(&tool_name) {
+            break;
+        }
+
+        let available_tools: Vec<&str> = tool_list.tools.keys().map(String::as_str).collect();
+        if Instant::now() >= tools_ready_deadline {
+            panic!(
+                "timed out waiting for MCP tool {tool_name} to become available; discovered tools: {available_tools:?}"
+            );
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+
     fixture
         .codex
         .submit(Op::UserTurn {
@@ -1508,10 +1027,12 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: fixture.cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -1591,7 +1112,8 @@ async fn wait_for_streamable_http_server(
     timeout: Duration,
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
-
+    let metadata_url = format!("http://{address}/.well-known/oauth-authorization-server/mcp");
+    let client = Client::builder().no_proxy().build()?;
     loop {
         if let Some(status) = server_child.try_wait()? {
             return Err(anyhow::anyhow!(
@@ -1603,22 +1125,30 @@ async fn wait_for_streamable_http_server(
 
         if remaining.is_zero() {
             return Err(anyhow::anyhow!(
-                "timed out waiting for streamable HTTP server at {address}: deadline reached"
+                "timed out waiting for streamable HTTP server metadata at {metadata_url}: deadline reached"
             ));
         }
 
-        match tokio::time::timeout(remaining, TcpStream::connect(address)).await {
-            Ok(Ok(_)) => return Ok(()),
+        match tokio::time::timeout(remaining, client.get(&metadata_url).send()).await {
+            Ok(Ok(response)) if response.status() == StatusCode::OK => return Ok(()),
+            Ok(Ok(response)) => {
+                if Instant::now() >= deadline {
+                    return Err(anyhow::anyhow!(
+                        "timed out waiting for streamable HTTP server metadata at {metadata_url}: HTTP {}",
+                        response.status()
+                    ));
+                }
+            }
             Ok(Err(error)) => {
                 if Instant::now() >= deadline {
                     return Err(anyhow::anyhow!(
-                        "timed out waiting for streamable HTTP server at {address}: {error}"
+                        "timed out waiting for streamable HTTP server metadata at {metadata_url}: {error}"
                     ));
                 }
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "timed out waiting for streamable HTTP server at {address}: connect call timed out"
+                    "timed out waiting for streamable HTTP server metadata at {metadata_url}: request timed out"
                 ));
             }
         }

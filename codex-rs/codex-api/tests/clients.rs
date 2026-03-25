@@ -265,6 +265,7 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         store: false,
         stream: true,
         include: Vec::new(),
+        service_tier: None,
         prompt_cache_key: None,
         text: None,
     };
@@ -307,6 +308,7 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
         store: true,
         stream: true,
         include: Vec::new(),
+        service_tier: None,
         prompt_cache_key: None,
         text: None,
     };

@@ -523,7 +523,7 @@ impl EventProcessorWithJsonOutput {
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            None,
+            /*prompt*/ None,
         )
     }
 
@@ -554,7 +554,7 @@ impl EventProcessorWithJsonOutput {
             CollabTool::Wait,
             ev.sender_thread_id.to_string(),
             receiver_thread_ids,
-            None,
+            /*prompt*/ None,
             agents_states,
             status,
         )
@@ -566,7 +566,7 @@ impl EventProcessorWithJsonOutput {
             CollabTool::CloseAgent,
             ev.sender_thread_id.to_string(),
             vec![ev.receiver_thread_id.to_string()],
-            None,
+            /*prompt*/ None,
         )
     }
 
@@ -584,7 +584,7 @@ impl EventProcessorWithJsonOutput {
             CollabTool::CloseAgent,
             ev.sender_thread_id.to_string(),
             vec![receiver_id.clone()],
-            None,
+            /*prompt*/ None,
             [(receiver_id, agent_state)].into_iter().collect(),
             status,
         )
@@ -912,6 +912,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
         let (status, message) = match value {
             CoreAgentStatus::PendingInit => (CollabAgentStatus::PendingInit, None),
             CoreAgentStatus::Running => (CollabAgentStatus::Running, None),
+            CoreAgentStatus::Interrupted => (CollabAgentStatus::Interrupted, None),
             CoreAgentStatus::Completed(message) => (CollabAgentStatus::Completed, message),
             CoreAgentStatus::Errored(message) => (CollabAgentStatus::Errored, Some(message)),
             CoreAgentStatus::Shutdown => (CollabAgentStatus::Shutdown, None),

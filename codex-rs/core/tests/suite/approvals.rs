@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
+use codex_core::CodexThread;
 use codex_core::config::Constrained;
 use codex_core::config_loader::ConfigLayerStack;
 use codex_core::config_loader::ConfigLayerStackOrdering;
@@ -8,31 +9,27 @@ use codex_core::config_loader::NetworkConstraints;
 use codex_core::config_loader::NetworkRequirementsToml;
 use codex_core::config_loader::RequirementSource;
 use codex_core::config_loader::Sourced;
-use codex_core::features::Feature;
 use codex_core::sandboxing::SandboxPermissions;
+use codex_features::Feature;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
-use codex_protocol::config_types::ApprovalsReviewer;
-use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::ExecPolicyAmendment;
-use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
-use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_apply_patch_function_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
-use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -40,6 +37,9 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
+use core_test_support::zsh_fork::build_zsh_fork_test;
+use core_test_support::zsh_fork::restrictive_workspace_write_policy;
+use core_test_support::zsh_fork::zsh_fork_runtime;
 use pretty_assertions::assert_eq;
 use regex_lite::Regex;
 use serde_json::Value;
@@ -48,9 +48,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Request;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -124,8 +126,12 @@ impl ActionKind {
             ActionKind::WriteFile { target, content } => {
                 let (path, _) = target.resolve_for_patch(test);
                 let _ = fs::remove_file(&path);
-                let command = format!("printf {content:?} > {path:?} && cat {path:?}");
-                let event = shell_event(call_id, &command, 1_000, sandbox_permissions)?;
+                let path_str = path.display().to_string();
+                let script = format!(
+                    "from pathlib import Path; path = Path({path_str:?}); content = {content:?}; path.write_text(content, encoding='utf-8'); print(path.read_text(encoding='utf-8'), end='')",
+                );
+                let command = format!("python3 -c {script:?}");
+                let event = shell_event(call_id, &command, 5_000, sandbox_permissions)?;
                 Ok((event, Some(command)))
             }
             ActionKind::FetchUrl {
@@ -241,7 +247,7 @@ fn shell_event_with_prefix_rule(
         "command": command,
         "timeout_ms": timeout_ms,
     });
-    if sandbox_permissions.requires_additional_permissions() {
+    if sandbox_permissions.requests_sandbox_override() {
         args["sandbox_permissions"] = json!(sandbox_permissions);
     }
     if let Some(prefix_rule) = prefix_rule {
@@ -264,7 +270,7 @@ fn exec_command_event(
     if let Some(yield_time_ms) = yield_time_ms {
         args["yield_time_ms"] = json!(yield_time_ms);
     }
-    if sandbox_permissions.requires_additional_permissions() {
+    if sandbox_permissions.requests_sandbox_override() {
         args["sandbox_permissions"] = json!(sandbox_permissions);
         let reason = justification.unwrap_or(DEFAULT_UNIFIED_EXEC_JUSTIFICATION);
         args["justification"] = json!(reason);
@@ -552,10 +558,12 @@ async fn submit_turn(
             final_output_json_schema: None,
             cwd: test.cwd.path().to_path_buf(),
             approval_policy,
+            approvals_reviewer: None,
             sandbox_policy,
             model: session_model,
             effort: None,
-            summary: ReasoningSummary::Auto,
+            summary: None,
+            service_tier: None,
             collaboration_mode: None,
             personality: None,
         })
@@ -678,47 +686,45 @@ async fn wait_for_completion(test: &TestCodex) {
     .await;
 }
 
-async fn wait_for_completion_via_guardian(test: &TestCodex) -> Vec<GuardianAssessmentStatus> {
-    let mut statuses = Vec::new();
-    loop {
-        let event = wait_for_event(&test.codex, |event| {
-            matches!(
-                event,
-                EventMsg::GuardianAssessment(_)
-                    | EventMsg::ExecApprovalRequest(_)
-                    | EventMsg::ApplyPatchApprovalRequest(_)
-                    | EventMsg::RequestUserInput(_)
-                    | EventMsg::TurnComplete(_)
-            )
-        })
-        .await;
-
-        match event {
-            EventMsg::GuardianAssessment(event) => statuses.push(event.status),
-            EventMsg::ExecApprovalRequest(event) => {
-                panic!("unexpected exec approval request: {:?}", event.command);
-            }
-            EventMsg::ApplyPatchApprovalRequest(event) => {
-                panic!("unexpected patch approval request: {:?}", event.call_id);
-            }
-            EventMsg::RequestUserInput(event) => {
-                panic!(
-                    "unexpected request_user_input prompt: {:?}",
-                    event.questions
-                );
-            }
-            EventMsg::TurnComplete(_) => return statuses,
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
+fn body_contains(req: &Request, text: &str) -> bool {
+    let is_zstd = req
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
+        });
+    let bytes = if is_zstd {
+        zstd::stream::decode_all(std::io::Cursor::new(&req.body)).ok()
+    } else {
+        Some(req.body.clone())
+    };
+    bytes
+        .and_then(|body| String::from_utf8(body).ok())
+        .is_some_and(|body| body.contains(text))
 }
 
-fn output_item_for_call(mock: &ResponseMock, call_id: &str) -> Value {
-    mock.requests()
-        .into_iter()
-        .find(|request| request.function_call_output_text(call_id).is_some())
-        .unwrap_or_else(|| panic!("expected function_call_output for {call_id}"))
-        .function_call_output(call_id)
+async fn wait_for_spawned_thread(test: &TestCodex) -> Result<Arc<CodexThread>> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let ids = test.thread_manager.list_thread_ids().await;
+        if let Some(thread_id) = ids
+            .iter()
+            .find(|id| **id != test.session_configured.session_id)
+        {
+            return test
+                .thread_manager
+                .get_thread(*thread_id)
+                .await
+                .map_err(anyhow::Error::from);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for spawned thread");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn scenarios() -> Vec<ScenarioSpec> {
@@ -1365,7 +1371,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             expectation: Expectation::FileNotCreated {
                 target: TargetPath::Workspace("ro_never.txt"),
                 message_contains: if cfg!(target_os = "linux") {
-                    &["Permission denied"]
+                    &["Permission denied|Read-only file system"]
                 } else {
                     &[
                         "Permission denied|Operation not permitted|operation not permitted|\
@@ -1512,7 +1518,7 @@ fn scenarios() -> Vec<ScenarioSpec> {
             expectation: Expectation::FileNotCreated {
                 target: TargetPath::OutsideWorkspace("ww_never.txt"),
                 message_contains: if cfg!(target_os = "linux") {
-                    &["Permission denied"]
+                    &["Permission denied|Read-only file system"]
                 } else {
                     &[
                         "Permission denied|Operation not permitted|operation not permitted|\
@@ -1629,277 +1635,6 @@ async fn approval_matrix_covers_all_modes() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn guardian_reviewer_auto_approves_shell_without_user_prompt() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let approval_policy = AskForApproval::OnRequest;
-    let sandbox_policy = SandboxPolicy::new_read_only_policy();
-    let sandbox_policy_for_config = sandbox_policy.clone();
-    let mut builder = test_codex()
-        .with_model("gpt-5.1")
-        .with_config(move |config| {
-            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
-            config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
-        });
-    let test = builder.build(&server).await?;
-
-    let call_id = "guardian-shell-auto-approve";
-    let target = TargetPath::Workspace("guardian_shell.txt");
-    let (event, _) = ActionKind::WriteFile {
-        target,
-        content: "guardian-shell",
-    }
-    .prepare(
-        &test,
-        &server,
-        call_id,
-        SandboxPermissions::RequireEscalated,
-    )
-    .await?;
-
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-shell-1"),
-                event,
-                ev_completed("resp-shell-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-guardian-1"),
-                ev_assistant_message(
-                    "msg-guardian-1",
-                    r#"{"risk_level":"low","risk_score":42,"rationale":"safe","evidence":[]}"#,
-                ),
-                ev_completed("resp-guardian-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-shell-2"),
-                ev_assistant_message("msg-shell-1", "done"),
-                ev_completed("resp-shell-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
-
-    let statuses = wait_for_completion_via_guardian(&test).await;
-    assert_eq!(
-        statuses,
-        vec![
-            GuardianAssessmentStatus::InProgress,
-            GuardianAssessmentStatus::Approved,
-        ]
-    );
-
-    let result = parse_result(&output_item_for_call(&responses, call_id));
-    Expectation::FileCreated {
-        target,
-        content: "guardian-shell",
-    }
-    .verify(&test, &result)?;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn guardian_reviewer_denies_apply_patch_without_user_prompt() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let approval_policy = AskForApproval::OnRequest;
-    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: vec![],
-        read_only_access: Default::default(),
-        network_access: false,
-        exclude_tmpdir_env_var: false,
-        exclude_slash_tmp: false,
-    };
-    let sandbox_policy_for_config = sandbox_policy.clone();
-    let mut builder = test_codex()
-        .with_model("gpt-5.1-codex")
-        .with_config(move |config| {
-            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
-            config.include_apply_patch_tool = true;
-            config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
-        });
-    let test = builder.build(&server).await?;
-
-    let call_id = "guardian-apply-patch-denied";
-    let target = TargetPath::OutsideWorkspace("guardian_apply_patch_denied.txt");
-    let (event, _) = ActionKind::ApplyPatchFunction {
-        target,
-        content: "guardian-patch",
-    }
-    .prepare(&test, &server, call_id, SandboxPermissions::UseDefault)
-    .await?;
-
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-patch-1"),
-                event,
-                ev_completed("resp-patch-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-guardian-2"),
-                ev_assistant_message(
-                    "msg-guardian-2",
-                    r#"{"risk_level":"high","risk_score":95,"rationale":"destructive","evidence":[]}"#,
-                ),
-                ev_completed("resp-guardian-2"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-patch-2"),
-                ev_assistant_message("msg-patch-1", "done"),
-                ev_completed("resp-patch-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
-
-    let statuses = wait_for_completion_via_guardian(&test).await;
-    assert_eq!(
-        statuses,
-        vec![
-            GuardianAssessmentStatus::InProgress,
-            GuardianAssessmentStatus::Denied,
-        ]
-    );
-
-    let result = parse_result(&output_item_for_call(&responses, call_id));
-    Expectation::FileNotCreated {
-        target,
-        message_contains: &["patch rejected by user"],
-    }
-    .verify(&test, &result)?;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn guardian_reviewer_denies_managed_network_request_without_user_prompt() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let home = Arc::new(TempDir::new()?);
-    fs::write(
-        home.path().join("config.toml"),
-        r#"[permissions.network]
-enabled = true
-mode = "limited"
-allow_local_binding = true
-"#,
-    )?;
-    let approval_policy = AskForApproval::OnRequest;
-    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: vec![],
-        read_only_access: Default::default(),
-        network_access: true,
-        exclude_tmpdir_env_var: false,
-        exclude_slash_tmp: false,
-    };
-    let sandbox_policy_for_config = sandbox_policy.clone();
-    let mut builder = test_codex().with_home(home).with_config(move |config| {
-        config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-        config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
-        config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
-        let layers = config
-            .config_layer_stack
-            .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
-            .into_iter()
-            .cloned()
-            .collect();
-        let mut requirements = config.config_layer_stack.requirements().clone();
-        requirements.network = Some(Sourced::new(
-            NetworkConstraints {
-                enabled: Some(true),
-                allow_local_binding: Some(true),
-                ..Default::default()
-            },
-            RequirementSource::CloudRequirements,
-        ));
-        let mut requirements_toml = config.config_layer_stack.requirements_toml().clone();
-        requirements_toml.network = Some(NetworkRequirementsToml {
-            enabled: Some(true),
-            allow_local_binding: Some(true),
-            ..Default::default()
-        });
-        config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
-            .expect("rebuild config layer stack with network requirements");
-    });
-    let test = builder.build(&server).await?;
-
-    let runtime_proxy = test
-        .session_configured
-        .network_proxy
-        .as_ref()
-        .expect("expected runtime managed network proxy addresses");
-    let proxy_addr = runtime_proxy.http_addr.as_str();
-    let call_id = "guardian-network-denied";
-    let fetch_command = format!(
-        "python3 -c \"import urllib.request; proxy = urllib.request.ProxyHandler({{'http': 'http://{proxy_addr}'}}); opener = urllib.request.build_opener(proxy); print('OK:' + opener.open('http://codex-network-test.invalid', timeout=30).read().decode(errors='replace'))\""
-    );
-    let event = shell_event(
-        call_id,
-        &fetch_command,
-        30_000,
-        SandboxPermissions::UseDefault,
-    )?;
-
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-network-1"),
-                event,
-                ev_completed("resp-network-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-guardian-3"),
-                ev_assistant_message(
-                    "msg-guardian-3",
-                    r#"{"risk_level":"high","risk_score":90,"rationale":"blocked host","evidence":[]}"#,
-                ),
-                ev_completed("resp-guardian-3"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-network-2"),
-                ev_assistant_message("msg-network-1", "done"),
-                ev_completed("resp-network-2"),
-            ]),
-        ],
-    )
-    .await;
-
-    submit_turn(&test, call_id, approval_policy, sandbox_policy).await?;
-
-    let statuses = wait_for_completion_via_guardian(&test).await;
-    assert_eq!(
-        statuses,
-        vec![
-            GuardianAssessmentStatus::InProgress,
-            GuardianAssessmentStatus::Denied,
-        ]
-    );
-
-    let result = parse_result(&output_item_for_call(&responses, call_id));
-    Expectation::CommandFailure {
-        output_contains: "",
-    }
-    .verify(&test, &result)?;
-
-    Ok(())
-}
-
 async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
     eprintln!("running approval scenario: {}", scenario.name);
     let server = start_mock_server().await;
@@ -1913,7 +1648,10 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
         config.permissions.approval_policy = Constrained::allow_any(approval_policy);
         config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy.clone());
         for feature in features {
-            config.features.enable(feature);
+            config
+                .features
+                .enable(feature)
+                .expect("test config should allow feature update");
         }
     });
     let test = builder.build(&server).await?;
@@ -1923,6 +1661,9 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
         .action
         .prepare(&test, &server, call_id, scenario.sandbox_permissions)
         .await?;
+    if let Some(command) = expected_command.as_deref() {
+        eprintln!("approval scenario {} command: {command}", scenario.name);
+    }
 
     let _ = mount_sse_once(
         &server,
@@ -2004,6 +1745,10 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
 
     let output_item = results_mock.single_request().function_call_output(call_id);
     let result = parse_result(&output_item);
+    eprintln!(
+        "approval scenario {} result: exit_code={:?} stdout={:?}",
+        scenario.name, result.exit_code, result.stdout
+    );
     scenario.expectation.verify(&test, &result)?;
 
     Ok(())
@@ -2297,6 +2042,263 @@ async fn approving_execpolicy_amendment_persists_policy_and_skips_future_prompts
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawned_subagent_execpolicy_amendment_propagates_to_parent_session() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let approval_policy = AskForApproval::UnlessTrusted;
+    let sandbox_policy = SandboxPolicy::new_read_only_policy();
+    let sandbox_policy_for_config = sandbox_policy.clone();
+    let mut builder = test_codex().with_config(move |config| {
+        config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+        config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    const PARENT_PROMPT: &str = "spawn a child that repeats a command";
+    const CHILD_PROMPT: &str = "run the same command twice";
+    const SPAWN_CALL_ID: &str = "spawn-child-1";
+    const CHILD_CALL_ID_1: &str = "child-touch-1";
+    const PARENT_CALL_ID_2: &str = "parent-touch-2";
+
+    let child_file = test.cwd.path().join("subagent-allow-prefix.txt");
+    let _ = fs::remove_file(&child_file);
+
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, PARENT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed("resp-parent-1"),
+        ]),
+    )
+    .await;
+
+    let child_cmd_args = serde_json::to_string(&json!({
+        "command": "touch subagent-allow-prefix.txt",
+        "timeout_ms": 1_000,
+        "prefix_rule": ["touch", "subagent-allow-prefix.txt"],
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_function_call(CHILD_CALL_ID_1, "shell_command", &child_cmd_args),
+            ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+
+    mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, CHILD_CALL_ID_1),
+        sse(vec![
+            ev_response_created("resp-child-2"),
+            ev_assistant_message("msg-child-2", "child done"),
+            ev_completed("resp-child-2"),
+        ]),
+    )
+    .await;
+
+    mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-parent-2"),
+            ev_assistant_message("msg-parent-2", "parent done"),
+            ev_completed("resp-parent-2"),
+        ]),
+    )
+    .await;
+
+    let _ = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-parent-3"),
+            ev_function_call(PARENT_CALL_ID_2, "shell_command", &child_cmd_args),
+            ev_completed("resp-parent-3"),
+        ]),
+    )
+    .await;
+
+    let _ = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-parent-4"),
+            ev_assistant_message("msg-parent-4", "parent rerun done"),
+            ev_completed("resp-parent-4"),
+        ]),
+    )
+    .await;
+
+    submit_turn(
+        &test,
+        PARENT_PROMPT,
+        approval_policy,
+        sandbox_policy.clone(),
+    )
+    .await?;
+
+    let child = wait_for_spawned_thread(&test).await?;
+    let approval_event = wait_for_event_with_timeout(
+        &child,
+        |event| {
+            matches!(
+                event,
+                EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+            )
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+        panic!("expected child approval before completion");
+    };
+    let expected_execpolicy_amendment = ExecPolicyAmendment::new(vec![
+        "touch".to_string(),
+        "subagent-allow-prefix.txt".to_string(),
+    ]);
+    assert_eq!(
+        approval.proposed_execpolicy_amendment,
+        Some(expected_execpolicy_amendment.clone())
+    );
+
+    child
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: None,
+            decision: ReviewDecision::ApprovedExecpolicyAmendment {
+                proposed_execpolicy_amendment: expected_execpolicy_amendment,
+            },
+        })
+        .await?;
+
+    let child_event = wait_for_event_with_timeout(
+        &child,
+        |event| {
+            matches!(
+                event,
+                EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+            )
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+    match child_event {
+        EventMsg::TurnComplete(_) => {}
+        EventMsg::ExecApprovalRequest(ev) => {
+            panic!("unexpected second child approval request: {:?}", ev.command)
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    assert!(
+        child_file.exists(),
+        "expected subagent command to create file"
+    );
+    fs::remove_file(&child_file)?;
+    assert!(
+        !child_file.exists(),
+        "expected child file to be removed before parent rerun"
+    );
+
+    submit_turn(
+        &test,
+        "parent reruns child command",
+        approval_policy,
+        sandbox_policy,
+    )
+    .await?;
+    wait_for_completion_without_approval(&test).await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
+async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let Some(runtime) = zsh_fork_runtime("zsh-fork prefix rule unsandboxed test")? else {
+        return Ok(());
+    };
+
+    let approval_policy = AskForApproval::Never;
+    let sandbox_policy = restrictive_workspace_write_policy();
+    let outside_dir = tempfile::tempdir_in(std::env::current_dir()?)?;
+    let outside_path = outside_dir
+        .path()
+        .join("zsh-fork-prefix-rule-unsandboxed.txt");
+    let command = format!("touch {outside_path:?}");
+    let rules = r#"prefix_rule(pattern=["touch"], decision="allow")"#.to_string();
+
+    let server = start_mock_server().await;
+    let outside_path_for_hook = outside_path.clone();
+    let test = build_zsh_fork_test(
+        &server,
+        runtime,
+        approval_policy,
+        sandbox_policy.clone(),
+        move |home| {
+            let _ = fs::remove_file(&outside_path_for_hook);
+            let rules_dir = home.join("rules");
+            fs::create_dir_all(&rules_dir).unwrap();
+            fs::write(rules_dir.join("default.rules"), &rules).unwrap();
+        },
+    )
+    .await?;
+
+    let call_id = "zsh-fork-prefix-rule-unsandboxed";
+    let event = shell_event(call_id, &command, 1_000, SandboxPermissions::UseDefault)?;
+    let _ = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-zsh-fork-prefix-1"),
+            event,
+            ev_completed("resp-zsh-fork-prefix-1"),
+        ]),
+    )
+    .await;
+    let results = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-zsh-fork-prefix-1", "done"),
+            ev_completed("resp-zsh-fork-prefix-2"),
+        ]),
+    )
+    .await;
+
+    submit_turn(
+        &test,
+        "run allowed touch under zsh fork",
+        approval_policy,
+        sandbox_policy,
+    )
+    .await?;
+
+    wait_for_completion_without_approval(&test).await;
+
+    let result = parse_result(&results.single_request().function_call_output(call_id));
+    assert_eq!(result.exit_code.unwrap_or(0), 0);
+    assert!(
+        outside_path.exists(),
+        "expected matched prefix_rule to rerun touch unsandboxed; output: {}",
+        result.stdout
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[cfg(unix)]
 async fn invalid_requested_prefix_rule_falls_back_for_compound_command() -> Result<()> {
@@ -2471,7 +2473,12 @@ async fn denying_network_policy_amendment_persists_policy_and_skips_future_netwo
     let home = Arc::new(TempDir::new()?);
     fs::write(
         home.path().join("config.toml"),
-        r#"[permissions.network]
+        r#"default_permissions = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.network]
 enabled = true
 mode = "limited"
 allow_local_binding = true
@@ -2522,20 +2529,16 @@ allow_local_binding = true
         test.config.permissions.network.is_some(),
         "expected managed network proxy config to be present"
     );
-    let runtime_proxy = test
-        .session_configured
+    test.session_configured
         .network_proxy
         .as_ref()
         .expect("expected runtime managed network proxy addresses");
-    let proxy_addr = runtime_proxy.http_addr.as_str();
 
     let call_id_first = "allow-network-first";
-    // Use the same urllib-based pattern as the other network integration tests,
-    // but point it at the runtime proxy directly so the blocked host reliably
-    // produces a network approval request without relying on curl.
-    let fetch_command = format!(
-        "python3 -c \"import urllib.request; proxy = urllib.request.ProxyHandler({{'http': 'http://{proxy_addr}'}}); opener = urllib.request.build_opener(proxy); print('OK:' + opener.open('http://codex-network-test.invalid', timeout=30).read().decode(errors='replace'))\""
-    );
+    // Use urllib without overriding proxy settings so managed-network sessions
+    // continue to exercise the env-based proxy routing path under bubblewrap.
+    let fetch_command = r#"python3 -c "import urllib.request; opener = urllib.request.build_opener(urllib.request.ProxyHandler()); print('OK:' + opener.open('http://codex-network-test.invalid', timeout=30).read().decode(errors='replace'))""#
+        .to_string();
     let first_event = shell_event(
         call_id_first,
         &fetch_command,

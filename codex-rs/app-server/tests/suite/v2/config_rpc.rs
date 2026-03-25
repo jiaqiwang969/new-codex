@@ -24,6 +24,9 @@ use codex_app_server_protocol::ToolsV2;
 use codex_app_server_protocol::WriteStatus;
 use codex_core::config::set_project_trust_level;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::config_types::WebSearchContextSize;
+use codex_protocol::config_types::WebSearchLocation;
+use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -113,8 +116,11 @@ async fn config_read_includes_tools() -> Result<()> {
         r#"
 model = "gpt-user"
 
+[tools.web_search]
+context_size = "low"
+allowed_domains = ["example.com"]
+
 [tools]
-web_search = true
 view_image = false
 "#,
     )?;
@@ -145,12 +151,28 @@ view_image = false
     assert_eq!(
         tools,
         ToolsV2 {
-            web_search: Some(true),
+            web_search: Some(WebSearchToolConfig {
+                context_size: Some(WebSearchContextSize::Low),
+                allowed_domains: Some(vec!["example.com".to_string()]),
+                location: None,
+            }),
             view_image: Some(false),
         }
     );
     assert_eq!(
-        origins.get("tools.web_search").expect("origin").name,
+        origins
+            .get("tools.web_search.context_size")
+            .expect("origin")
+            .name,
+        ConfigLayerSource::User {
+            file: user_file.clone(),
+        }
+    );
+    assert_eq!(
+        origins
+            .get("tools.web_search.allowed_domains.0")
+            .expect("origin")
+            .name,
         ConfigLayerSource::User {
             file: user_file.clone(),
         }
@@ -164,6 +186,86 @@ view_image = false
 
     let layers = layers.expect("layers present");
     assert_layers_user_then_optional_system(&layers, user_file)?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_read_includes_nested_web_search_tool_config() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"
+web_search = "live"
+
+[tools.web_search]
+context_size = "high"
+allowed_domains = ["example.com"]
+location = { country = "US", city = "New York", timezone = "America/New_York" }
+"#,
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ConfigReadResponse { config, .. } = to_response(resp)?;
+
+    assert_eq!(
+        config.tools.expect("tools present").web_search,
+        Some(WebSearchToolConfig {
+            context_size: Some(WebSearchContextSize::High),
+            allowed_domains: Some(vec!["example.com".to_string()]),
+            location: Some(WebSearchLocation {
+                country: Some("US".to_string()),
+                region: None,
+                city: Some("New York".to_string()),
+                timezone: Some("America/New_York".to_string()),
+            }),
+        }),
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_read_ignores_bool_web_search_tool_config() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"
+[tools]
+web_search = true
+"#,
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ConfigReadResponse { config, .. } = to_response(resp)?;
+
+    assert_eq!(config.tools.expect("tools present").web_search, None,);
 
     Ok(())
 }
@@ -332,10 +434,13 @@ model_sub_responses = "gpt-5.1-codex-mini"
         model_sub_responses: Some("gpt-5.1-codex-mini".to_string()),
         model_provider: None,
         approval_policy: None,
+        approvals_reviewer: None,
+        service_tier: None,
         model_reasoning_effort: None,
         model_reasoning_summary: None,
         model_verbosity: None,
         web_search: None,
+        tools: None,
         chatgpt_base_url: None,
         additional: std::collections::HashMap::new(),
     };
@@ -606,6 +711,7 @@ async fn config_batch_write_applies_multiple_edits() -> Result<()> {
                 },
             ],
             expected_version: None,
+            reload_user_config: false,
         })
         .await?;
     let batch_resp: JSONRPCResponse = timeout(

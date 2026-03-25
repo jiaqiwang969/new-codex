@@ -101,7 +101,7 @@ async fn status_snapshot_includes_reasoning_details() {
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
-    config.model_reasoning_summary = ReasoningSummary::Detailed;
+    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     config
         .permissions
         .sandbox_policy
@@ -201,6 +201,7 @@ async fn status_shows_utility_provider_for_non_default_setup() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         account_pool: Vec::new(),
@@ -270,6 +271,7 @@ async fn status_model_provider_tracks_active_model_and_is_listed_under_model() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         account_pool: Vec::new(),
@@ -342,6 +344,7 @@ async fn status_shows_responses_utility_model_when_general_utility_model_is_non_
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         account_pool: Vec::new(),
@@ -408,6 +411,7 @@ async fn status_shows_responses_utility_when_non_responses_provider_inherits_tas
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
         account_pool: Vec::new(),
@@ -1191,7 +1195,7 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
-    config.model_reasoning_summary = ReasoningSummary::Detailed;
+    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);

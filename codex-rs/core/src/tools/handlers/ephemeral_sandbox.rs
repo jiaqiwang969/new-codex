@@ -3,12 +3,11 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::function_tool::FunctionCallError;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use codex_protocol::models::FunctionCallOutputBody;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EphemeralSandboxArgs {
@@ -20,6 +19,8 @@ pub struct EphemeralSandboxHandler;
 
 #[async_trait]
 impl ToolHandler for EphemeralSandboxHandler {
+    type Output = FunctionToolOutput;
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
@@ -32,7 +33,7 @@ impl ToolHandler for EphemeralSandboxHandler {
         true
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolPayload::Function { arguments } = invocation.payload else {
             return Err(FunctionCallError::Fatal(
                 "Expected function payload".to_string(),
@@ -105,11 +106,11 @@ echo "\$output"
 
         let _ = std::fs::remove_file(script_path);
 
-        Ok(ToolOutput::Function {
-            body: FunctionCallOutputBody::Text(format!(
+        Ok(FunctionToolOutput::from_text(
+            format!(
                 "Executed safely in disposable VM sandbox ({vm_name})\n\nOutput:\n{output_str}"
-            )),
-            success: Some(output.status.success()),
-        })
+            ),
+            Some(output.status.success()),
+        ))
     }
 }

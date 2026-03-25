@@ -236,7 +236,7 @@ pub(crate) fn cleanup_ralph_state_file(cwd: &Path) {
 }
 
 fn create_state_file_content(state: &RalphLoopState) -> String {
-    let prompt_preview = truncate_string(&state.original_prompt, 100);
+    let prompt_preview = truncate_string(&state.original_prompt, /*max_len*/ 100);
     format!(
         r#"---
 ralph_loop:
@@ -407,7 +407,7 @@ mod tests {
     fn test_truncate_string_handles_unicode_char_boundaries() {
         let prompt = "非常好，4k已经有了；接下来，重点就是优化算法，让4k也能稳定30fps；好好分析一下硬件底层和算法的匹配，继续";
 
-        let truncated = truncate_string(prompt, 100);
+        let truncated = truncate_string(prompt, /*max_len*/ 100);
 
         assert!(truncated.ends_with("..."));
         assert!(prompt.starts_with(truncated.trim_end_matches("...")));

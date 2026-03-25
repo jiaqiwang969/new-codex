@@ -51,6 +51,7 @@ impl TestToolServer {
     fn new() -> Self {
         let mut tools = vec![
             Self::echo_tool(),
+            Self::echo_dash_tool(),
             Self::image_tool(),
             Self::image_scenario_tool(),
             Self::claude_code_tool(),
@@ -73,6 +74,20 @@ impl TestToolServer {
     }
 
     fn echo_tool() -> Tool {
+        Self::build_echo_tool(
+            "echo",
+            "Echo back the provided message and include environment data.",
+        )
+    }
+
+    fn echo_dash_tool() -> Tool {
+        Self::build_echo_tool(
+            "echo-tool",
+            "Echo back the provided message via a tool name that is not a legal JS identifier.",
+        )
+    }
+
+    fn build_echo_tool(name: &'static str, description: &'static str) -> Tool {
         #[expect(clippy::expect_used)]
         let schema: JsonObject = serde_json::from_value(json!({
             "type": "object",
@@ -86,8 +101,8 @@ impl TestToolServer {
         .expect("echo tool schema should deserialize");
 
         Tool::new(
-            Cow::Borrowed("echo"),
-            Cow::Borrowed("Echo back the provided message and include environment data."),
+            Cow::Borrowed(name),
+            Cow::Borrowed(description),
             Arc::new(schema),
         )
     }
@@ -488,7 +503,7 @@ impl ServerHandler for TestToolServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
-            "echo" => {
+            "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
                     Some(arguments) => serde_json::from_value(serde_json::Value::Object(
                         arguments.into_iter().collect(),
@@ -496,7 +511,7 @@ impl ServerHandler for TestToolServer {
                     .map_err(|err| McpError::invalid_params(err.to_string(), None))?,
                     None => {
                         return Err(McpError::invalid_params(
-                            "missing arguments for echo tool",
+                            format!("missing arguments for {} tool", request.name),
                             None,
                         ));
                     }

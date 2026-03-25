@@ -9,12 +9,11 @@ use tracing::debug;
 use crate::function_tool::FunctionCallError;
 use crate::gemini_content::normalize_gemini_base_url;
 use crate::gemini_types::*;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use codex_protocol::models::FunctionCallOutputBody;
 
 use super::parse_arguments;
 
@@ -27,11 +26,13 @@ struct Args {
 
 #[async_trait]
 impl ToolHandler for GeminiWebSearchHandler {
+    type Output = FunctionToolOutput;
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return Err(FunctionCallError::RespondToModel(
                 "expected function payload".into(),
@@ -74,9 +75,9 @@ impl ToolHandler for GeminiWebSearchHandler {
                         .map(str::to_string)
                 })
         } else {
-            crate::auth::read_gemini_api_key_from_env().or_else(|| {
+            crate::auth::auth::read_gemini_api_key_from_env().or_else(|| {
                 if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
-                    crate::auth::read_gemini_api_key_from_auth_json(
+                    crate::auth::auth::read_gemini_api_key_from_auth_json(
                         &codex_home,
                         crate::auth::AuthCredentialsStoreMode::File,
                     )
@@ -141,10 +142,7 @@ impl ToolHandler for GeminiWebSearchHandler {
 
         let result_text = format_grounding_response(&gemini_resp);
 
-        Ok(ToolOutput::Function {
-            body: FunctionCallOutputBody::Text(result_text),
-            success: Some(true),
-        })
+        Ok(FunctionToolOutput::from_text(result_text, Some(true)))
     }
 }
 

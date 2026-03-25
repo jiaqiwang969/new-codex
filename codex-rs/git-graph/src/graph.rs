@@ -585,12 +585,12 @@ fn extract_branches(
 
                     Ok(BranchInfo::new(
                         t,
-                        None,
+                        /*merge_target*/ None,
                         name.to_string(),
                         branch_order(name, &settings.branches.persistence) as u8,
                         &BranchType::Remote == tp,
-                        false,
-                        false,
+                        /*is_merged*/ false,
+                        /*is_tag*/ false,
                         BranchVis::new(
                             branch_order(name, &settings.branches.order),
                             term_color,
@@ -647,9 +647,9 @@ fn extract_branches(
                     Some(info.oid),
                     branch_name,
                     persistence,
-                    false,
-                    true,
-                    false,
+                    /*is_remote*/ false,
+                    /*is_merged*/ true,
+                    /*is_tag*/ false,
                     BranchVis::new(pos, term_col, svg_col),
                     Some(idx + 1),
                 );
@@ -697,12 +697,12 @@ fn extract_branches(
                 );
                 let tag_info = BranchInfo::new(
                     target_oid,
-                    None,
+                    /*merge_target*/ None,
                     name.to_string(),
                     settings.branches.persistence.len() as u8 + 1,
-                    false,
-                    false,
-                    true,
+                    /*is_remote*/ false,
+                    /*is_merged*/ false,
+                    /*is_tag*/ true,
                     BranchVis::new(pos, term_col, svg_col),
                     Some(*target_index),
                 );

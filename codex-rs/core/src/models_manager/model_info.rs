@@ -1,3 +1,4 @@
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -10,15 +11,16 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
+use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
-use crate::features::Feature;
 use crate::model_compat::is_anthropic_model_slug;
 use crate::model_compat::is_gemma_model_slug;
 use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::normalized_grok_model_slug;
 use crate::truncate::approx_bytes_for_tokens;
+use codex_features::Feature;
 use tracing::warn;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
@@ -70,22 +72,26 @@ macro_rules! model_info {
             visibility: ModelVisibility::None,
             supported_in_api: true,
             priority: 99,
+            availability_nux: None,
             upgrade: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
             model_messages: None,
             supports_reasoning_summaries: false,
+            default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
             default_verbosity: None,
             apply_patch_tool_type: None,
+            web_search_tool_type: WebSearchToolType::Text,
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             supports_parallel_tool_calls: false,
+            supports_image_detail_original: false,
             context_window: Some(CONTEXT_WINDOW_272K),
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
-            prefer_websockets: false,
             used_fallback_model_metadata: false,
+            supports_search_tool: false,
         };
 
         $(
@@ -312,7 +318,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: true,
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: true,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
         )
     } else if normalized_slug.starts_with("exp-codex") || normalized_slug.starts_with("codex-1p") {
         model_info!(
@@ -321,7 +327,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             model_messages: Some(ModelMessages {
                 instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
                 instructions_variables: Some(ModelInstructionsVariables {
-                    personality_default: Some("".to_string()),
+                    personality_default: Some(String::new()),
                     personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
                     personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
                 }),
@@ -331,7 +337,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: true,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
     } else if normalized_slug.starts_with("exp-") {
@@ -343,7 +349,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             default_verbosity: Some(Verbosity::Low),
             base_instructions: BASE_INSTRUCTIONS.to_string(),
             default_reasoning_level: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
             shell_type: ConfigShellToolType::UnifiedExec,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
@@ -358,15 +364,14 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: false,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_128K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
             input_modalities: vec![InputModality::Text],
-            prefer_websockets: true,
             model_messages: Some(ModelMessages {
                 instructions_template: Some(GPT_5_3_CODEX_SPARK_INSTRUCTIONS_TEMPLATE.to_string()),
                 instructions_variables: Some(ModelInstructionsVariables {
-                    personality_default: Some("".to_string()),
+                    personality_default: Some(String::new()),
                     personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
                     personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
                 }),
@@ -384,13 +389,13 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: true,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
             model_messages: Some(ModelMessages {
                 instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
                 instructions_variables: Some(ModelInstructionsVariables {
-                    personality_default: Some("".to_string()),
+                    personality_default: Some(String::new()),
                     personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
                     personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
                 }),
@@ -408,7 +413,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: false,
             supports_reasoning_summaries: true,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
         )
@@ -421,7 +426,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             default_verbosity: Some(Verbosity::Low),
             base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
             default_reasoning_level: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
@@ -436,7 +441,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             default_verbosity: Some(Verbosity::Low),
             base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
             default_reasoning_level: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
             shell_type: ConfigShellToolType::ShellCommand,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
@@ -467,7 +472,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                     description: "Greater reasoning depth for complex problems".to_string(),
                 },
             ],
-            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
     } else if normalized_slug.starts_with("gemini-") {
@@ -478,7 +483,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: false,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_1M),
             default_reasoning_level: Some(ReasoningEffort::High),
             experimental_supported_tools: vec![
@@ -498,7 +503,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: false,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_8K),
             default_reasoning_level: Some(ReasoningEffort::Medium),
             experimental_supported_tools: vec![
@@ -510,13 +515,15 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
     } else if is_anthropic_model_slug(normalized_slug) {
         model_info!(
             slug,
-            base_instructions: format!("{BASE_INSTRUCTIONS_WITH_APPLY_PATCH}\n\n{CLAUDE_INSTRUCTIONS}"),
+            base_instructions: format!(
+                "{BASE_INSTRUCTIONS_WITH_APPLY_PATCH}\n\n{CLAUDE_INSTRUCTIONS}"
+            ),
             apply_patch_tool_type: Some(ApplyPatchToolType::Function),
             shell_type: ConfigShellToolType::ShellCommand,
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: false,
             support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(context_window_for_claude_slug(normalized_slug, slug)),
             default_reasoning_level: Some(ReasoningEffort::High),
             input_modalities: vec![InputModality::Text, InputModality::Image],
@@ -540,7 +547,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: true,
             support_verbosity: true,
             default_verbosity: Some(Verbosity::Low),
-            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(context_window_for_grok_slug(normalized_slug)),
             supported_reasoning_levels: Vec::new(),
             experimental_supported_tools: vec![
@@ -561,228 +568,10 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
     find_model_info_for_slug(slug)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::find_model_info_for_slug;
-    use codex_protocol::openai_models::ApplyPatchToolType;
-    use codex_protocol::openai_models::ConfigShellToolType;
-    use codex_protocol::openai_models::InputModality;
-    use codex_protocol::openai_models::ReasoningEffort;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn grok_models_use_function_apply_patch() {
-        let model = find_model_info_for_slug("grok-4-latest");
-
-        assert_eq!(
-            model.apply_patch_tool_type,
-            Some(ApplyPatchToolType::Function)
-        );
-        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-        assert!(model.supports_parallel_tool_calls);
-        assert!(model.supports_reasoning_summaries);
-        assert!(model.support_verbosity);
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_256K));
-        assert!(model.supported_reasoning_levels.is_empty());
-        assert!(
-            model
-                .base_instructions
-                .contains("Grok provider addendum for Codex CLI."),
-            "grok model should include Grok-specific prompt addendum"
-        );
-        assert!(
-            model.base_instructions.contains("`web_search`"),
-            "grok model should include web_search guidance"
-        );
-    }
-
-    #[test]
-    fn grok_fast_reasoning_models_use_2m_context_window() {
-        let model = find_model_info_for_slug("grok-4-1-fast-reasoning");
-
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_2M));
-    }
-
-    #[test]
-    fn gemma_models_use_lean_defaults_with_medium_reasoning() {
-        let model = find_model_info_for_slug("gemma-3n");
-
-        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-        assert!(model.supports_parallel_tool_calls);
-        assert!(!model.supports_reasoning_summaries);
-        assert!(!model.support_verbosity);
-        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_8K));
-        assert!(
-            model
-                .base_instructions
-                .contains("You are Codex, based on GPT-5."),
-            "gemma model should use the lean codex prompt"
-        );
-        assert_eq!(
-            model.experimental_supported_tools,
-            vec![
-                "grep_files".to_string(),
-                "list_dir".to_string(),
-                "read_file".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn claude_models_use_1m_context_with_function_apply_patch() {
-        let model = find_model_info_for_slug("claude-opus-4-6");
-
-        assert_eq!(
-            model.apply_patch_tool_type,
-            Some(ApplyPatchToolType::Function)
-        );
-        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-        assert!(model.supports_parallel_tool_calls);
-        assert!(
-            model
-                .base_instructions
-                .contains("Claude provider addendum for Codex CLI."),
-            "claude model should include Claude-specific prompt addendum"
-        );
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));
-        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
-        assert_eq!(
-            model.input_modalities,
-            vec![InputModality::Text, InputModality::Image]
-        );
-    }
-
-    #[test]
-    fn antigravity_gemini_models_reuse_gemini_metadata_without_fallback() {
-        let model = find_model_info_for_slug("antigravity/gemini-3.1-pro-preview");
-
-        assert_eq!(model.slug, "antigravity/gemini-3.1-pro-preview".to_string());
-        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-        assert!(!model.used_fallback_model_metadata);
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));
-        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
-        assert!(model.supports_parallel_tool_calls);
-        assert_eq!(
-            model.experimental_supported_tools,
-            vec![
-                "grep_files".to_string(),
-                "list_dir".to_string(),
-                "read_file".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn antigravity_gpt_oss_models_reuse_gpt_oss_metadata_without_fallback() {
-        let model = find_model_info_for_slug("antigravity/gpt-oss-120b-medium");
-
-        assert_eq!(
-            model.apply_patch_tool_type,
-            Some(ApplyPatchToolType::Function)
-        );
-        assert!(!model.used_fallback_model_metadata);
-        assert_eq!(model.context_window, Some(96_000));
-    }
-
-    #[test]
-    fn antigravity_anthropic_models_reuse_claude_metadata_without_fallback() {
-        let model = find_model_info_for_slug("antigravity-anthropic/claude-sonnet-4-6");
-
-        assert_eq!(
-            model.apply_patch_tool_type,
-            Some(ApplyPatchToolType::Function)
-        );
-        assert!(!model.used_fallback_model_metadata);
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_1M));
-    }
-
-    #[test]
-    fn spark_model_uses_low_latency_text_only_defaults() {
-        let model = find_model_info_for_slug("gpt-5.3-codex-spark|[pro]");
-
-        assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-        assert!(model.supports_parallel_tool_calls);
-        assert!(!model.supports_reasoning_summaries);
-        assert!(model.supported_in_api);
-        assert_eq!(model.context_window, Some(super::CONTEXT_WINDOW_128K));
-        assert_eq!(model.input_modalities, vec![InputModality::Text]);
-        assert!(model.prefer_websockets);
-        assert!(
-            model
-                .base_instructions
-                .contains("fast, iterative coding assistance"),
-            "spark model should use the spark-specific prompt"
-        );
-    }
-
-    #[test]
-    fn gpt_5_family_uses_272k_context_window_defaults() {
-        let gpt_53_codex = find_model_info_for_slug("gpt-5.3-codex");
-        let gpt_52_codex = find_model_info_for_slug("gpt-5.2-codex");
-        let gpt_51_codex = find_model_info_for_slug("gpt-5.1-codex");
-        let gpt_52 = find_model_info_for_slug("gpt-5.2");
-        let gpt_51 = find_model_info_for_slug("gpt-5.1");
-        let gpt_5 = find_model_info_for_slug("gpt-5");
-
-        assert_eq!(
-            gpt_53_codex.context_window,
-            Some(super::CONTEXT_WINDOW_272K)
-        );
-        assert_eq!(
-            gpt_52_codex.context_window,
-            Some(super::CONTEXT_WINDOW_272K)
-        );
-        assert_eq!(
-            gpt_51_codex.context_window,
-            Some(super::CONTEXT_WINDOW_272K)
-        );
-        assert_eq!(gpt_52.context_window, Some(super::CONTEXT_WINDOW_272K));
-        assert_eq!(gpt_51.context_window, Some(super::CONTEXT_WINDOW_272K));
-        assert_eq!(gpt_5.context_window, Some(super::CONTEXT_WINDOW_272K));
-    }
-
-    use super::*;
-    use crate::config::test_config;
-
-    #[test]
-    fn reasoning_summaries_override_true_enables_support() {
-        let model = model_info_from_slug("unknown-model");
-        let mut config = test_config();
-        config.model_supports_reasoning_summaries = Some(true);
-
-        let updated = with_config_overrides(model.clone(), &config);
-        let mut expected = model;
-        expected.supports_reasoning_summaries = true;
-
-        assert_eq!(updated, expected);
-    }
-
-    #[test]
-    fn reasoning_summaries_override_false_does_not_disable_support() {
-        let mut model = model_info_from_slug("unknown-model");
-        model.supports_reasoning_summaries = true;
-        let mut config = test_config();
-        config.model_supports_reasoning_summaries = Some(false);
-
-        let updated = with_config_overrides(model.clone(), &config);
-
-        assert_eq!(updated, model);
-    }
-
-    #[test]
-    fn reasoning_summaries_override_false_is_noop_when_model_is_false() {
-        let model = model_info_from_slug("unknown-model");
-        let mut config = test_config();
-        config.model_supports_reasoning_summaries = Some(false);
-
-        let updated = with_config_overrides(model.clone(), &config);
-
-        assert_eq!(updated, model);
-    }
-}
+#[path = "model_info_tests.rs"]
+mod tests;

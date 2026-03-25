@@ -10,30 +10,61 @@
 
 use std::path::PathBuf;
 
+use codex_app_server_protocol::PluginInstallResponse;
+use codex_app_server_protocol::PluginListResponse;
+use codex_app_server_protocol::PluginReadParams;
+use codex_app_server_protocol::PluginReadResponse;
+use codex_app_server_protocol::PluginUninstallResponse;
 use codex_chatgpt::connectors::AppInfo;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::RateLimitSnapshot;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
 
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
+use crate::bottom_pane::TerminalTitleItem;
 use crate::history_cell::HistoryCell;
+use crate::resume_picker::SessionTarget;
 pub(crate) use crate::team_profile::TeamProfilePreset;
 use crate::team_profile_vouch::TeamProfileTaskBucket;
 use crate::team_profile_vouch::TeamProfileVouchVerdict;
 
-use codex_core::features::Feature;
-use codex_protocol::config_types::ApprovalsReviewer;
+use codex_core::config::types::ApprovalsReviewer;
+use codex_features::Feature;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 
 use crate::session_utils::SessionInfo;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RealtimeAudioDeviceKind {
+    Microphone,
+    Speaker,
+}
+
+impl RealtimeAudioDeviceKind {
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Microphone => "Microphone",
+            Self::Speaker => "Speaker",
+        }
+    }
+
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            Self::Microphone => "microphone",
+            Self::Speaker => "speaker",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -57,14 +88,23 @@ pub(crate) enum AppEvent {
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
-    /// Recompute the list of inactive threads that still need approval.
-    RefreshPendingThreadApprovals,
+    /// Submit an op to the specified thread, regardless of current focus.
+    SubmitThreadOp {
+        thread_id: ThreadId,
+        op: codex_protocol::protocol::Op,
+    },
+
+    /// Forward an event from a non-primary thread into the app-level thread router.
+    ThreadEvent {
+        thread_id: ThreadId,
+        event: Event,
+    },
 
     /// Start a new session.
     NewSession,
 
     /// Resume a specific session from its rollout path.
-    ResumeSession(PathBuf),
+    ResumeSession(SessionTarget),
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
     /// previous chat resumable.
     ClearUi,
@@ -135,6 +175,84 @@ pub(crate) enum AppEvent {
     RefreshConnectors {
         force_refetch: bool,
     },
+
+    /// Fetch plugin marketplace state for the provided working directory.
+    FetchPluginsList {
+        cwd: PathBuf,
+    },
+
+    /// Result of fetching plugin marketplace state.
+    PluginsLoaded {
+        cwd: PathBuf,
+        result: Result<PluginListResponse, String>,
+    },
+
+    /// Replace the plugins popup with a plugin-detail loading state.
+    OpenPluginDetailLoading {
+        plugin_display_name: String,
+    },
+
+    /// Fetch detail for a specific plugin from a marketplace.
+    FetchPluginDetail {
+        cwd: PathBuf,
+        params: PluginReadParams,
+    },
+
+    /// Result of fetching plugin detail.
+    PluginDetailLoaded {
+        cwd: PathBuf,
+        result: Result<PluginReadResponse, String>,
+    },
+
+    /// Replace the plugins popup with an install loading state.
+    OpenPluginInstallLoading {
+        plugin_display_name: String,
+    },
+
+    /// Replace the plugins popup with an uninstall loading state.
+    OpenPluginUninstallLoading {
+        plugin_display_name: String,
+    },
+
+    /// Install a specific plugin from a marketplace.
+    FetchPluginInstall {
+        cwd: PathBuf,
+        marketplace_path: AbsolutePathBuf,
+        plugin_name: String,
+        plugin_display_name: String,
+    },
+
+    /// Result of installing a plugin.
+    PluginInstallLoaded {
+        cwd: PathBuf,
+        marketplace_path: AbsolutePathBuf,
+        plugin_name: String,
+        plugin_display_name: String,
+        result: Result<PluginInstallResponse, String>,
+    },
+
+    /// Uninstall a specific plugin by canonical plugin id.
+    FetchPluginUninstall {
+        cwd: PathBuf,
+        plugin_id: String,
+        plugin_display_name: String,
+    },
+
+    /// Result of uninstalling a plugin.
+    PluginUninstallLoaded {
+        cwd: PathBuf,
+        plugin_id: String,
+        plugin_display_name: String,
+        result: Result<PluginUninstallResponse, String>,
+    },
+
+    /// Advance the post-install plugin app-auth flow.
+    PluginInstallAuthAdvance {
+        refresh_connectors: bool,
+    },
+
+    /// Abandon the post-install plugin app-auth flow.
+    PluginInstallAuthAbandon,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
@@ -209,6 +327,31 @@ pub(crate) enum AppEvent {
     /// Persist the selected personality to the appropriate config.
     PersistPersonalitySelection {
         personality: Personality,
+    },
+
+    /// Persist the selected service tier to the appropriate config.
+    PersistServiceTierSelection {
+        service_tier: Option<ServiceTier>,
+    },
+
+    /// Open the device picker for a realtime microphone or speaker.
+    OpenRealtimeAudioDeviceSelection {
+        kind: RealtimeAudioDeviceKind,
+    },
+
+    /// Persist the selected realtime microphone or speaker to top-level config.
+    #[cfg_attr(
+        any(target_os = "linux", not(feature = "voice-input")),
+        allow(dead_code)
+    )]
+    PersistRealtimeAudioDeviceSelection {
+        kind: RealtimeAudioDeviceKind,
+        name: Option<String>,
+    },
+
+    /// Restart the selected realtime microphone or speaker locally.
+    RestartRealtimeAudioDevice {
+        kind: RealtimeAudioDeviceKind,
     },
 
     /// Open the reasoning selection popup after picking a model.
@@ -470,6 +613,16 @@ pub(crate) enum AppEvent {
     },
     /// Dismiss the status-line setup UI without changing config.
     StatusLineSetupCancelled,
+    /// Apply a user-confirmed terminal-title item ordering/selection.
+    TerminalTitleSetup {
+        items: Vec<TerminalTitleItem>,
+    },
+    /// Apply a temporary terminal-title preview while the setup UI is open.
+    TerminalTitleSetupPreview {
+        items: Vec<TerminalTitleItem>,
+    },
+    /// Dismiss the terminal-title setup UI without changing config.
+    TerminalTitleSetupCancelled,
 
     /// Trigger the next Ralph Loop iteration after a delay.
     RalphLoopDelayedContinue,

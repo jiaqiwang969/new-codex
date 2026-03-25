@@ -124,7 +124,11 @@ impl Guards {
                 active_agents.used_agent_nicknames.clear();
                 active_agents.nickname_reset_count += 1;
                 if let Some(metrics) = codex_otel::metrics::global() {
-                    let _ = metrics.counter("codex.multi_agent.nickname_pool_reset", 1, &[]);
+                    let _ = metrics.counter(
+                        "codex.multi_agent.nickname_pool_reset",
+                        /*inc*/ 1,
+                        &[],
+                    );
                 }
                 names.choose(&mut rand::rng())?.to_string()
             }
@@ -162,7 +166,7 @@ pub(crate) struct SpawnReservation {
 
 impl SpawnReservation {
     pub(crate) fn reserve_agent_nickname(&mut self, names: &[&str]) -> Result<String> {
-        self.reserve_agent_nickname_with_preference(names, None)
+        self.reserve_agent_nickname_with_preference(names, /*preferred*/ None)
     }
 
     pub(crate) fn reserve_agent_nickname_with_preference(
@@ -181,7 +185,7 @@ impl SpawnReservation {
     }
 
     pub(crate) fn commit(self, thread_id: ThreadId) {
-        self.commit_with_agent_nickname(thread_id, None);
+        self.commit_with_agent_nickname(thread_id, /*agent_nickname*/ None);
     }
 
     pub(crate) fn commit_with_agent_nickname(
@@ -221,6 +225,7 @@ mod tests {
             depth: 1,
             agent_nickname: None,
             agent_role: None,
+            agent_path: None,
         });
         let child_depth = next_thread_spawn_depth(&session_source);
         assert_eq!(child_depth, 2);
@@ -235,6 +240,7 @@ mod tests {
                 depth: 2,
                 agent_nickname: None,
                 agent_role: None,
+                agent_path: None,
             }));
         assert_eq!(grandchild_depth, 3);
         assert!(exceeds_thread_spawn_depth_limit(

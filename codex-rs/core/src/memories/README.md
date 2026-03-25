@@ -2,6 +2,18 @@
 
 This module runs a startup memory pipeline for eligible sessions.
 
+## Prompt Templates
+
+Memory prompt templates live under `codex-rs/core/templates/memories/`.
+
+- The undated template files are the canonical latest versions used at runtime:
+  - `stage_one_system.md`
+  - `stage_one_input.md`
+  - `consolidation.md`
+  - `read_path.md`
+- In `codex`, edit those undated template files in place.
+- The dated snapshot-copy workflow is used in the separate `openai/project/agent_memory/write` harness repo, not here.
+
 ## When it runs
 
 The pipeline is triggered when a root session starts, and only if:
@@ -59,7 +71,14 @@ Phase 2 consolidates the latest stage-1 outputs into the filesystem memory artif
 What it does:
 
 - claims a single global phase-2 job (so only one consolidation runs at a time)
-- loads a bounded set of the most recent stage-1 outputs from the state DB (the per-rollout memories produced by Phase 1, used as the consolidation input set)
+- loads a bounded set of stage-1 outputs from the state DB using phase-2
+  selection rules:
+  - ignores memories whose `last_usage` falls outside the configured
+    `max_unused_days` window
+  - for memories with no `last_usage`, falls back to `generated_at` so fresh
+    never-used memories can still be selected
+  - ranks eligible memories by `usage_count` first, then by the most recent
+    `last_usage` / `generated_at`
 - computes a completion watermark from the claimed watermark + newest input timestamps
 - syncs local memory artifacts under the memories root:
   - `raw_memories.md` (merged raw memories, latest first)

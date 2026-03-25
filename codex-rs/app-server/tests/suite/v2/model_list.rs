@@ -9,6 +9,7 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::Model;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_app_server_protocol::RequestId;
 use codex_protocol::openai_models::ModelPreset;
@@ -24,6 +25,13 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
         id: preset.id.clone(),
         model: preset.model.clone(),
         upgrade: preset.upgrade.as_ref().map(|upgrade| upgrade.id.clone()),
+        upgrade_info: preset.upgrade.as_ref().map(|upgrade| ModelUpgradeInfo {
+            model: upgrade.id.clone(),
+            upgrade_copy: upgrade.upgrade_copy.clone(),
+            model_link: upgrade.model_link.clone(),
+            migration_markdown: upgrade.migration_markdown.clone(),
+        }),
+        availability_nux: preset.availability_nux.clone().map(Into::into),
         display_name: preset.display_name.clone(),
         description: preset.description.clone(),
         hidden: !preset.show_in_picker,
@@ -47,17 +55,14 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
 }
 
 fn expected_visible_models() -> Vec<Model> {
-    // Filter by supported_in_api to support testing with both ChatGPT and non-ChatGPT auth modes.
-    let mut presets =
-        ModelPreset::filter_by_auth(codex_core::test_support::all_model_presets().clone(), false);
-
-    for builtin in codex_core::models_manager::model_presets::builtin_model_presets(None) {
-        if !presets.iter().any(|p| p.model == builtin.model) {
-            presets.push(builtin);
-        }
-    }
-
-    let mut presets = ModelPreset::filter_by_auth(presets, false);
+    // Mirror `write_models_cache()` so assertions use the same preset source the test fixture
+    // writes to disk, then apply the same auth/default selection logic as `ModelsManager`.
+    let mut presets: Vec<ModelPreset> = codex_core::test_support::all_model_presets()
+        .iter()
+        .filter(|preset| preset.show_in_picker)
+        .cloned()
+        .collect();
+    presets = ModelPreset::filter_by_auth(presets, false);
 
     // Mirror `ModelsManager::build_available_models()` default selection after auth filtering.
     ModelPreset::mark_default_by_picker_visibility(&mut presets);
