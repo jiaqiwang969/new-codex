@@ -416,6 +416,16 @@ mod tests {
         Ok(())
     }
 
+    fn sample_worktree(root: &Path) -> AgentWorktree {
+        AgentWorktree {
+            id: Uuid::new_v4(),
+            repo_root: root.to_path_buf(),
+            path: root.join("wt"),
+            branch: "codex/agent/abc".to_string(),
+            purpose: WorktreePurpose::SpawnedAgent,
+        }
+    }
+
     #[tokio::test]
     async fn create_and_remove_worktree_creates_branch_and_checkout() -> Result<()> {
         skip_if_sandbox!(Ok(()));
@@ -443,17 +453,62 @@ mod tests {
     fn lease_roundtrip_json() -> Result<()> {
         let tmp = TempDir::new()?;
         let root = tmp.path().to_path_buf();
-        let worktree = AgentWorktree {
-            id: Uuid::new_v4(),
-            repo_root: root.clone(),
-            path: root.join("wt"),
-            branch: "codex/agent/abc".to_string(),
-            purpose: WorktreePurpose::SpawnedAgent,
-        };
+        let worktree = sample_worktree(&root);
         let lease = build_lease("thread-1", Some("parent-1".to_string()), &worktree);
         let json = serde_json::to_string(&lease)?;
         let parsed = serde_json::from_str::<AgentWorktreeLease>(&json)?;
         assert_eq!(parsed, lease);
+        Ok(())
+    }
+
+    #[test]
+    fn write_and_read_lease_roundtrip() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let root = tmp.path().to_path_buf();
+        let worktree = sample_worktree(&root);
+        let lease = build_lease("thread-1", Some("parent-1".to_string()), &worktree);
+
+        let lease_path = write_lease(&lease)?;
+        assert_eq!(
+            lease_path,
+            root.join(".codex").join("leases").join("thread-1.json")
+        );
+
+        let read_back = read_lease(&root, "thread-1")?;
+        assert_eq!(read_back, Some(lease));
+        Ok(())
+    }
+
+    #[test]
+    fn list_leases_ignores_non_json_files() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let root = tmp.path().to_path_buf();
+        let worktree = sample_worktree(&root);
+        let lease_one = build_lease("thread-1", Some("parent-1".to_string()), &worktree);
+        let lease_two = build_lease("thread-2", None, &worktree);
+
+        write_lease(&lease_one)?;
+        write_lease(&lease_two)?;
+        let leases_dir = root.join(".codex").join("leases");
+        std::fs::write(leases_dir.join("README.txt"), "ignore me")?;
+
+        let mut leases = list_leases(&root)?;
+        leases.sort_by(|a, b| a.thread_id.cmp(&b.thread_id));
+        let mut expected = vec![lease_one, lease_two];
+        expected.sort_by(|a, b| a.thread_id.cmp(&b.thread_id));
+        assert_eq!(leases, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_worktree_for_thread_returns_none_without_lease() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_root = tmp.path().join("repo");
+        tokio::fs::create_dir_all(&repo_root).await?;
+        init_git_repo(&repo_root).await?;
+
+        let lease = ensure_worktree_for_thread(&repo_root, "thread-1").await?;
+        assert_eq!(lease, None);
         Ok(())
     }
 }

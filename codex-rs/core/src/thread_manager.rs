@@ -87,6 +87,38 @@ impl Drop for TempCodexHomeGuard {
     }
 }
 
+async fn resolve_resumed_thread_worktree_cwd(
+    cwd: &AbsolutePathBuf,
+    initial_history: &InitialHistory,
+) -> AbsolutePathBuf {
+    let InitialHistory::Resumed(resumed) = initial_history else {
+        return cwd.clone();
+    };
+
+    match agent_worktree::ensure_worktree_for_thread(cwd, &resumed.conversation_id.to_string())
+        .await
+    {
+        Ok(Some(lease)) => match AbsolutePathBuf::try_from(lease.worktree_path) {
+            Ok(path) => path,
+            Err(err) => {
+                warn!(
+                    "failed to use leased worktree path for resumed thread {}: {err:#}",
+                    resumed.conversation_id
+                );
+                cwd.clone()
+            }
+        },
+        Ok(None) => cwd.clone(),
+        Err(err) => {
+            warn!(
+                "failed to restore leased worktree for resumed thread {}: {err:#}",
+                resumed.conversation_id
+            );
+            cwd.clone()
+        }
+    }
+}
+
 fn build_skills_watcher(skills_manager: Arc<SkillsManager>) -> Arc<SkillsWatcher> {
     if should_use_test_thread_manager_behavior()
         && let Ok(handle) = Handle::try_current()
@@ -857,25 +889,7 @@ impl ThreadManagerState {
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
         let mut config = config;
-        if let InitialHistory::Resumed(resumed) = &initial_history {
-            match agent_worktree::ensure_worktree_for_thread(
-                &config.cwd,
-                &resumed.conversation_id.to_string(),
-            )
-            .await
-            {
-                Ok(Some(lease)) => {
-                    config.cwd = AbsolutePathBuf::try_from(lease.worktree_path)?;
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(
-                        "failed to restore leased worktree for resumed thread {}: {err:#}",
-                        resumed.conversation_id
-                    );
-                }
-            }
-        }
+        config.cwd = resolve_resumed_thread_worktree_cwd(&config.cwd, &initial_history).await;
         let watch_registration = self.skills_watcher.register_config(
             &config,
             self.skills_manager.as_ref(),

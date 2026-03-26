@@ -10,11 +10,14 @@ use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AgentMessageEvent;
+use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use core_test_support::PathExt;
 use core_test_support::responses::mount_models_once;
 use pretty_assertions::assert_eq;
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 use tempfile::tempdir;
 use wiremock::MockServer;
@@ -44,6 +47,61 @@ fn assistant_msg(text: &str) -> ResponseItem {
 
         thought_signature: None,
     }
+}
+
+fn init_git_repo(root: &Path) {
+    let envs = vec![
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+    ];
+    let init = Command::new("git")
+        .envs(envs.clone())
+        .args(["init"])
+        .current_dir(root)
+        .status()
+        .expect("git init should run");
+    assert!(init.success(), "git init should succeed");
+
+    let name = Command::new("git")
+        .envs(envs.clone())
+        .args(["config", "user.name", "Test User"])
+        .current_dir(root)
+        .status()
+        .expect("git config user.name should run");
+    assert!(name.success(), "git config user.name should succeed");
+
+    let email = Command::new("git")
+        .envs(envs.clone())
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(root)
+        .status()
+        .expect("git config user.email should run");
+    assert!(email.success(), "git config user.email should succeed");
+
+    std::fs::write(root.join("README.md"), "hello\n").expect("README should write");
+    let add = Command::new("git")
+        .envs(envs.clone())
+        .args(["add", "."])
+        .current_dir(root)
+        .status()
+        .expect("git add should run");
+    assert!(add.success(), "git add should succeed");
+
+    let commit = Command::new("git")
+        .envs(envs)
+        .args(["commit", "-m", "init"])
+        .current_dir(root)
+        .status()
+        .expect("git commit should run");
+    assert!(commit.success(), "git commit should succeed");
+}
+
+fn resumed_history(thread_id: ThreadId, rollout_path: std::path::PathBuf) -> InitialHistory {
+    InitialHistory::Resumed(ResumedHistory {
+        conversation_id: thread_id,
+        history: Vec::new(),
+        rollout_path,
+    })
 }
 
 #[test]
@@ -238,6 +296,87 @@ async fn ignores_session_prefix_messages_when_truncating() {
         serde_json::to_value(&got_items).unwrap(),
         serde_json::to_value(&expected).unwrap()
     );
+}
+
+#[tokio::test]
+async fn resumed_thread_uses_leased_worktree_cwd_when_available() {
+    let temp_dir = tempdir().expect("tempdir");
+    let repo_root = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_root).expect("create repo root");
+    init_git_repo(&repo_root);
+
+    let leased_worktree = repo_root
+        .join(".codex")
+        .join("worktrees")
+        .join("fork")
+        .join("thread-1");
+    std::fs::create_dir_all(&leased_worktree).expect("create leased worktree path");
+
+    let thread_id = ThreadId::new();
+    let lease = crate::agent_worktree::build_lease(
+        &thread_id.to_string(),
+        None,
+        &crate::agent_worktree::AgentWorktree {
+            id: uuid::Uuid::new_v4(),
+            repo_root: repo_root.clone(),
+            path: leased_worktree.clone(),
+            branch: "codex/fork/thread-1".to_string(),
+            purpose: crate::agent_worktree::WorktreePurpose::ForkedSession,
+        },
+    );
+    crate::agent_worktree::write_lease(&lease).expect("write lease");
+
+    let cwd = repo_root.abs();
+    let resolved = resolve_resumed_thread_worktree_cwd(
+        &cwd,
+        &resumed_history(thread_id, repo_root.join("rollout.jsonl")),
+    )
+    .await;
+
+    assert_eq!(resolved, leased_worktree.abs());
+}
+
+#[tokio::test]
+async fn resumed_thread_keeps_original_cwd_when_no_worktree_lease_exists() {
+    let temp_dir = tempdir().expect("tempdir");
+    let repo_root = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_root).expect("create repo root");
+    init_git_repo(&repo_root);
+
+    let cwd = repo_root.abs();
+    let resolved = resolve_resumed_thread_worktree_cwd(
+        &cwd,
+        &resumed_history(ThreadId::new(), repo_root.join("rollout.jsonl")),
+    )
+    .await;
+
+    assert_eq!(resolved, cwd);
+}
+
+#[tokio::test]
+async fn resumed_thread_keeps_original_cwd_when_worktree_lease_is_invalid() {
+    let temp_dir = tempdir().expect("tempdir");
+    let repo_root = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_root).expect("create repo root");
+    init_git_repo(&repo_root);
+
+    let thread_id = ThreadId::new();
+    let leases_dir = repo_root.join(".codex").join("leases");
+    std::fs::create_dir_all(&leases_dir).expect("create leases dir");
+    std::fs::write(
+        leases_dir.join(format!("{thread_id}.json")),
+        "{ this is not valid json",
+    )
+    .expect("write invalid lease");
+
+    let cwd = repo_root.abs();
+    let resolved = resolve_resumed_thread_worktree_cwd(
+        &cwd,
+        &resumed_history(thread_id, repo_root.join("rollout.jsonl")),
+    )
+    .await;
+
+    assert_eq!(resolved, cwd);
 }
 
 #[tokio::test]
