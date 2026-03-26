@@ -88,7 +88,7 @@ impl ToolHandler for Handler {
                     &turn.session_source,
                     child_depth,
                     role_name,
-                    args.task_name.clone(),
+                    /*task_name*/ None,
                 )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
@@ -114,7 +114,7 @@ impl ToolHandler for Handler {
             }
             None => None,
         };
-        let (new_agent_path, new_agent_nickname, new_agent_role) =
+        let (_new_agent_path, new_agent_nickname, new_agent_role) =
             match (&agent_snapshot, new_agent_metadata) {
                 (Some(snapshot), _) => (
                     snapshot.session_source.get_agent_path().map(String::from),
@@ -136,7 +136,6 @@ impl ToolHandler for Handler {
             .as_ref()
             .map(|snapshot| snapshot.model_provider_id.clone());
         let nickname = new_agent_nickname.clone();
-        let task_name = new_agent_path.clone();
         session
             .send_event(
                 &turn,
@@ -165,8 +164,7 @@ impl ToolHandler for Handler {
         );
 
         Ok(SpawnAgentResult {
-            agent_id: task_name.is_none().then(|| new_thread_id.to_string()),
-            task_name,
+            agent_id: new_thread_id.to_string(),
             nickname,
         })
     }
@@ -176,7 +174,6 @@ impl ToolHandler for Handler {
 struct SpawnAgentArgs {
     message: Option<String>,
     items: Option<Vec<UserInput>>,
-    task_name: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
@@ -186,8 +183,7 @@ struct SpawnAgentArgs {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
-    agent_id: Option<String>,
-    task_name: Option<String>,
+    agent_id: String,
     nickname: Option<String>,
 }
 

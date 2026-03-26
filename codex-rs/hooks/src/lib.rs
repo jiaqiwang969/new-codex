@@ -11,6 +11,8 @@ pub use entire_summary::EntireSummaryInput;
 pub use entire_summary::build_why_prompt;
 pub use entire_summary::load_summary;
 pub use entire_summary::save_summary;
+pub use events::post_tool_use::PostToolUseOutcome;
+pub use events::post_tool_use::PostToolUseRequest;
 pub use events::pre_tool_use::PreToolUseOutcome;
 pub use events::pre_tool_use::PreToolUseRequest;
 pub use events::session_start::SessionStartOutcome;

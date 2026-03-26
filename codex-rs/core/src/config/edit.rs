@@ -143,7 +143,9 @@ pub fn model_availability_nux_count_edits(shown_count: &HashMap<String, u32>) ->
 
 // TODO(jif) move to a dedicated file
 mod document_helpers {
+    use crate::config::types::AppToolApproval;
     use crate::config::types::McpServerConfig;
+    use crate::config::types::McpServerToolConfig;
     use crate::config::types::McpServerTransportConfig;
     use toml_edit::Array as TomlArray;
     use toml_edit::InlineTable;
@@ -266,8 +268,30 @@ mod document_helpers {
         {
             entry["oauth_resource"] = value(resource.clone());
         }
+        if !config.tools.is_empty() {
+            let mut tools = new_implicit_table();
+            let mut tool_entries: Vec<_> = config.tools.iter().collect();
+            tool_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            for (name, tool_config) in tool_entries {
+                tools.insert(name, serialize_mcp_server_tool(tool_config));
+            }
+            entry.insert("tools", TomlItem::Table(tools));
+        }
 
         entry
+    }
+
+    fn serialize_mcp_server_tool(config: &McpServerToolConfig) -> TomlItem {
+        let mut entry = TomlTable::new();
+        entry.set_implicit(false);
+        if let Some(approval_mode) = config.approval_mode {
+            entry["approval_mode"] = value(match approval_mode {
+                AppToolApproval::Auto => "auto",
+                AppToolApproval::Prompt => "prompt",
+                AppToolApproval::Approve => "approve",
+            });
+        }
+        TomlItem::Table(entry)
     }
 
     pub(super) fn serialize_mcp_server(config: &McpServerConfig) -> TomlItem {
@@ -1748,6 +1772,7 @@ gpt-5 = "gpt-5.1"
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
 
@@ -1773,6 +1798,7 @@ gpt-5 = "gpt-5.1"
                 disabled_tools: Some(vec!["forbidden".to_string()]),
                 scopes: None,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
 
@@ -1841,6 +1867,7 @@ foo = { command = "cmd" }
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
 
@@ -1888,6 +1915,7 @@ foo = { command = "cmd" } # keep me
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
 
@@ -1934,6 +1962,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
 
@@ -1981,6 +2010,7 @@ foo = { command = "cmd" }
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+                tools: HashMap::new(),
             },
         );
 

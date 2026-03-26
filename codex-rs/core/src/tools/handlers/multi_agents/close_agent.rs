@@ -25,7 +25,7 @@ impl ToolHandler for Handler {
         let arguments = function_arguments(payload)?;
         let args: CloseAgentArgs = parse_arguments(&arguments)?;
         let memory = turn.resolve_memory_link().await;
-        let agent_id = resolve_agent_target(&session, &turn, &args.target).await?;
+        let agent_id = parse_agent_id_target(&args.target)?;
         let receiver_agent = session
             .services
             .agent_control

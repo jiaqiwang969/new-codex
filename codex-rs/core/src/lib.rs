@@ -58,7 +58,6 @@ pub mod models_manager;
 mod network_policy_decision;
 pub mod network_proxy_loader;
 mod original_image_detail;
-mod packages;
 mod provider_auth;
 mod provider_pool;
 mod provider_pool_failover;

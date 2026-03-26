@@ -2731,6 +2731,9 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         agent_status_tx,
         InitialHistory::New,
         SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::new(
+            /*exec_server_url*/ None,
+        )),
         skills_manager,
         plugins_manager,
         mcp_manager,
@@ -2825,7 +2828,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone(), true));
     let network_approval = Arc::new(NetworkApprovalService::default());
     let environment = Arc::new(
-        codex_exec_server::Environment::create(None)
+        codex_exec_server::Environment::create(/*exec_server_url*/ None)
             .await
             .expect("create environment"),
     );
@@ -2861,7 +2864,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
         tool_approvals: Mutex::new(ApprovalStore::default()),
-        execve_session_approvals: RwLock::new(HashMap::new()),
         skills_manager,
         plugins_manager,
         mcp_manager,
@@ -3664,7 +3666,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
     let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone(), true));
     let network_approval = Arc::new(NetworkApprovalService::default());
     let environment = Arc::new(
-        codex_exec_server::Environment::create(None)
+        codex_exec_server::Environment::create(/*exec_server_url*/ None)
             .await
             .expect("create environment"),
     );
@@ -3700,7 +3702,6 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
         tool_approvals: Mutex::new(ApprovalStore::default()),
-        execve_session_approvals: RwLock::new(HashMap::new()),
         skills_manager,
         plugins_manager,
         mcp_manager,
