@@ -14,41 +14,15 @@ use crate::context_manager::ContextManager;
 use crate::gemini_types::GeminiAspectRatio;
 use crate::gemini_types::GeminiImageSize;
 use crate::model_provider_info::ModelProviderAccount;
+use crate::model_provider_info::ModelProviderInfo;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
+use crate::provider_pool_runtime::ProviderPoolState;
+use crate::provider_pool_runtime::ResolvedTurnProvider;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ProviderPoolRuntimeState {
-    cooldowns: HashMap<ModelProviderAccount, Instant>,
-}
-
-impl ProviderPoolRuntimeState {
-    fn cooldown_until(&mut self, account: &ModelProviderAccount, now: Instant) -> Option<Instant> {
-        match self.cooldowns.get(account).copied() {
-            Some(until) if until > now => Some(until),
-            Some(_) => {
-                self.cooldowns.remove(account);
-                None
-            }
-            None => None,
-        }
-    }
-
-    fn mark_cooling(
-        &mut self,
-        account: ModelProviderAccount,
-        now: Instant,
-        cooldown: Duration,
-    ) -> Instant {
-        let until = now + cooldown;
-        self.cooldowns.insert(account, until);
-        until
-    }
-}
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
@@ -65,11 +39,7 @@ pub(crate) struct SessionState {
     /// Startup prewarmed session prepared during session initialization.
     pub(crate) startup_prewarm: Option<SessionStartupPrewarmHandle>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
-    auto_model_sub_selection: Option<String>,
-    auto_model_sub_calibration_attempted: bool,
-    last_model_sub_calibration_models: Vec<String>,
-    last_model_sub_calibration_recommended_for_session: Option<String>,
-    provider_pool_runtime: HashMap<String, ProviderPoolRuntimeState>,
+    provider_pool_runtime: ProviderPoolState,
     active_reference_images: Vec<String>,
     image_size: Option<GeminiImageSize>,
     aspect_ratio: Option<GeminiAspectRatio>,
@@ -92,11 +62,7 @@ impl SessionState {
             previous_turn_settings: None,
             startup_prewarm: None,
             active_mcp_tool_selection: None,
-            auto_model_sub_selection: None,
-            auto_model_sub_calibration_attempted: false,
-            last_model_sub_calibration_models: Vec::new(),
-            last_model_sub_calibration_recommended_for_session: None,
-            provider_pool_runtime: HashMap::new(),
+            provider_pool_runtime: ProviderPoolState::default(),
             active_reference_images: Vec::new(),
             image_size: None,
             aspect_ratio: None,
@@ -205,18 +171,6 @@ impl SessionState {
         self.mcp_dependency_prompted.clone()
     }
 
-    pub(crate) fn pool_cooldown_until(
-        &mut self,
-        provider_id: &str,
-        account: &ModelProviderAccount,
-        now: Instant,
-    ) -> Option<Instant> {
-        self.provider_pool_runtime
-            .entry(provider_id.to_string())
-            .or_default()
-            .cooldown_until(account, now)
-    }
-
     pub(crate) fn mark_pool_account_cooling(
         &mut self,
         provider_id: &str,
@@ -225,9 +179,17 @@ impl SessionState {
         cooldown: Duration,
     ) -> Instant {
         self.provider_pool_runtime
-            .entry(provider_id.to_string())
-            .or_default()
-            .mark_cooling(account, now, cooldown)
+            .mark_account_cooling(provider_id, account, now, cooldown)
+    }
+
+    pub(crate) fn resolve_turn_provider(
+        &mut self,
+        provider_id: &str,
+        provider: &ModelProviderInfo,
+        now: Instant,
+    ) -> ResolvedTurnProvider {
+        self.provider_pool_runtime
+            .resolve_turn_provider(provider_id, provider, now)
     }
 
     pub(crate) fn set_dependency_env(&mut self, values: HashMap<String, String>) {
@@ -323,45 +285,6 @@ impl SessionState {
 
     pub(crate) fn clear_mcp_tool_selection(&mut self) {
         self.active_mcp_tool_selection = None;
-    }
-
-    pub(crate) fn set_auto_model_sub_selection(&mut self, model_sub: Option<String>) {
-        self.auto_model_sub_selection = model_sub;
-        if self.auto_model_sub_selection.is_none() {
-            self.auto_model_sub_calibration_attempted = false;
-        }
-    }
-
-    pub(crate) fn get_auto_model_sub_selection(&self) -> Option<String> {
-        self.auto_model_sub_selection.clone()
-    }
-
-    pub(crate) fn set_auto_model_sub_calibration_attempted(&mut self, attempted: bool) {
-        self.auto_model_sub_calibration_attempted = attempted;
-    }
-
-    pub(crate) fn get_auto_model_sub_calibration_attempted(&self) -> bool {
-        self.auto_model_sub_calibration_attempted
-    }
-
-    pub(crate) fn set_last_model_sub_calibration_models(&mut self, models: Vec<String>) {
-        self.last_model_sub_calibration_models = models;
-    }
-
-    pub(crate) fn get_last_model_sub_calibration_models(&self) -> Vec<String> {
-        self.last_model_sub_calibration_models.clone()
-    }
-
-    pub(crate) fn set_last_model_sub_calibration_recommended_for_session(
-        &mut self,
-        model: Option<String>,
-    ) {
-        self.last_model_sub_calibration_recommended_for_session = model;
-    }
-
-    pub(crate) fn get_last_model_sub_calibration_recommended_for_session(&self) -> Option<String> {
-        self.last_model_sub_calibration_recommended_for_session
-            .clone()
     }
 
     // Adds connector IDs to the active set and returns the merged selection.

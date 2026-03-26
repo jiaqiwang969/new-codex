@@ -132,6 +132,9 @@ impl ToolHandler for Handler {
             .as_ref()
             .map(|snapshot| snapshot.model.clone())
             .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        let model_provider_id = agent_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.model_provider_id.clone());
         let nickname = new_agent_nickname.clone();
         let task_name = new_agent_path.clone();
         session
@@ -143,9 +146,7 @@ impl ToolHandler for Handler {
                     memory,
                     agent_type: role_name.map(str::to_owned),
                     model: Some(effective_model),
-                    model_provider_id: None,
-                    model_source: None,
-                    model_source_detail: None,
+                    model_provider_id,
                     new_thread_id,
                     new_agent_nickname,
                     new_agent_role,

@@ -8,9 +8,6 @@ use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use tracing::error;
 
-use crate::analytics_client::AppInvocation;
-use crate::analytics_client::InvocationType;
-use crate::analytics_client::build_track_events_context;
 use crate::arc_monitor::ArcMonitorOutcome;
 use crate::arc_monitor::monitor_action;
 use crate::codex::Session;
@@ -33,6 +30,9 @@ use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
 use crate::protocol::McpToolCallEndEvent;
 use crate::state_db;
+use codex_analytics::AppInvocation;
+use codex_analytics::InvocationType;
+use codex_analytics::build_track_events_context;
 use codex_features::Feature;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterMcpToolCall;
@@ -558,7 +558,7 @@ async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, 
         sess.hooks()
             .dispatch(HookPayload {
                 session_id: sess.conversation_id,
-                cwd: turn_context.cwd.clone(),
+                cwd: turn_context.cwd.to_path_buf(),
                 client: turn_context.app_server_client_name.clone(),
                 triggered_at: chrono::Utc::now(),
                 hook_event,
@@ -770,7 +770,7 @@ async fn maybe_request_mcp_tool_approval(
     approval_mode: AppToolApproval,
 ) -> Option<McpToolApprovalDecision> {
     let annotations = metadata.and_then(|metadata| metadata.annotations.as_ref());
-    let approval_required = annotations.is_some_and(requires_mcp_tool_approval);
+    let approval_required = requires_mcp_tool_approval(annotations);
     let mut monitor_reason = None;
     let auto_approved_by_policy = approval_mode == AppToolApproval::Approve
         || (approval_mode == AppToolApproval::Auto && is_full_access_mode(turn_context));
@@ -1574,12 +1574,23 @@ async fn persist_codex_app_tool_approval(
         .await
 }
 
-fn requires_mcp_tool_approval(annotations: &ToolAnnotations) -> bool {
-    if annotations.destructive_hint == Some(true) {
+fn requires_mcp_tool_approval(annotations: Option<&ToolAnnotations>) -> bool {
+    let destructive_hint = annotations.and_then(|annotations| annotations.destructive_hint);
+    if destructive_hint == Some(true) {
         return true;
     }
 
-    annotations.read_only_hint == Some(false) && annotations.open_world_hint == Some(true)
+    let read_only_hint = annotations
+        .and_then(|annotations| annotations.read_only_hint)
+        .unwrap_or(false);
+    if read_only_hint {
+        return false;
+    }
+
+    destructive_hint.unwrap_or(true)
+        || annotations
+            .and_then(|annotations| annotations.open_world_hint)
+            .unwrap_or(true)
 }
 
 async fn notify_mcp_tool_call_skip(

@@ -102,8 +102,6 @@ pub enum Feature {
     /// Allow the model to request web searches that fetch cached content.
     /// Takes precedence over `WebSearchRequest`.
     WebSearchCached,
-    /// Legacy no-op freeze debug flag kept only for backward compatibility.
-    FreezeSandboxDebug,
     /// Legacy search-tool feature flag kept for backward compatibility.
     SearchTool,
     /// Removed legacy Linux bubblewrap opt-in flag retained as a no-op so old
@@ -591,12 +589,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::FreezeSandboxDebug,
-        key: "freeze_sandbox_debug",
-        stage: Stage::Removed,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::SearchTool,
         key: "search_tool",
         stage: Stage::Removed,
@@ -737,7 +729,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::Apps,
         key: "apps",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ToolSearch,
@@ -749,13 +741,13 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::ToolSuggest,
         key: "tool_suggest",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Plugins,
         key: "plugins",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ImageGeneration,
@@ -807,7 +799,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::ToolCallMcpElicitation,
         key: "tool_call_mcp_elicitation",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Personality,

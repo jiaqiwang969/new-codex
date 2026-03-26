@@ -100,11 +100,13 @@ impl TestToolServer {
         }))
         .expect("echo tool schema should deserialize");
 
-        Tool::new(
+        let mut tool = Tool::new(
             Cow::Borrowed(name),
             Cow::Borrowed(description),
             Arc::new(schema),
-        )
+        );
+        tool.annotations = Some(ToolAnnotations::new().read_only(true));
+        tool
     }
 
     fn image_tool() -> Tool {
@@ -116,11 +118,13 @@ impl TestToolServer {
         }))
         .expect("image tool schema should deserialize");
 
-        Tool::new(
+        let mut tool = Tool::new(
             Cow::Borrowed("image"),
             Cow::Borrowed("Return a single image content block."),
             Arc::new(schema),
-        )
+        );
+        tool.annotations = Some(ToolAnnotations::new().read_only(true));
+        tool
     }
 
     fn soft_error_tool() -> Tool {
@@ -218,13 +222,15 @@ impl TestToolServer {
         }))
         .expect("image_scenario tool schema should deserialize");
 
-        Tool::new(
+        let mut tool = Tool::new(
             Cow::Borrowed("image_scenario"),
             Cow::Borrowed(
                 "Return content blocks for manual testing of MCP image rendering scenarios.",
             ),
             Arc::new(schema),
-        )
+        );
+        tool.annotations = Some(ToolAnnotations::new().read_only(true));
+        tool
     }
 
     fn claude_code_tool() -> Tool {

@@ -3433,39 +3433,6 @@ pub struct MemoryLink {
     pub binding_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum CollabAgentModelSource {
-    Parent,
-    Role,
-    ModelSub,
-    ModelSubAuto,
-    Explicit,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum CollabAgentModelSourceDetail {
-    /// The child model came directly from `config.model_sub`.
-    #[serde(alias = "config.model_sub")]
-    ConfigModelSub,
-    /// The child model reused the in-memory auto selection cache.
-    #[serde(alias = "session cache")]
-    SessionCache,
-    /// The child model came from the persisted `model_sub_vouch` ledger.
-    ModelSubVouch,
-    /// The child model came from a calibration run performed during spawn.
-    AutoCalibration,
-    /// The tool caller explicitly overrode the model argument.
-    #[serde(alias = "tool model override")]
-    ToolModelOverride,
-    /// The child model came from explicit role configuration.
-    #[serde(alias = "agent role config")]
-    RoleConfig,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct CollabAgentSpawnBeginEvent {
     /// Identifier for the collab tool call.
@@ -3523,10 +3490,6 @@ pub struct CollabAgentSpawnEndEvent {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_source: Option<CollabAgentModelSource>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_source_detail: Option<CollabAgentModelSourceDetail>,
     /// Thread ID of the newly spawned agent, if it was created.
     pub new_thread_id: Option<ThreadId>,
     /// Optional nickname assigned to the new agent.
@@ -3899,44 +3862,6 @@ mod tests {
                 "write access mismatch for {}",
                 path.display()
             );
-        }
-    }
-
-    #[test]
-    fn collab_agent_model_source_detail_serializes_snake_case() {
-        let value = serde_json::to_value(CollabAgentModelSourceDetail::SessionCache)
-            .expect("source detail should serialize");
-        assert_eq!(value, json!("session_cache"));
-    }
-
-    #[test]
-    fn collab_agent_model_source_serializes_snake_case() {
-        let value = serde_json::to_value(CollabAgentModelSource::ModelSubAuto)
-            .expect("source should serialize");
-        assert_eq!(value, json!("model_sub_auto"));
-    }
-
-    #[test]
-    fn collab_agent_model_source_detail_deserializes_legacy_labels() {
-        let cases = [
-            (
-                "config.model_sub",
-                CollabAgentModelSourceDetail::ConfigModelSub,
-            ),
-            ("session cache", CollabAgentModelSourceDetail::SessionCache),
-            (
-                "tool model override",
-                CollabAgentModelSourceDetail::ToolModelOverride,
-            ),
-            (
-                "agent role config",
-                CollabAgentModelSourceDetail::RoleConfig,
-            ),
-        ];
-        for (raw, expected) in cases {
-            let actual: CollabAgentModelSourceDetail =
-                serde_json::from_value(json!(raw)).expect("legacy label should deserialize");
-            assert_eq!(actual, expected);
         }
     }
 

@@ -11,8 +11,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
-use codex_protocol::protocol::CollabAgentModelSource;
-use codex_protocol::protocol::CollabAgentModelSourceDetail;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
@@ -42,8 +40,6 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_type: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) model_provider_id: Option<String>,
-    pub(crate) model_source: Option<CollabAgentModelSource>,
-    pub(crate) model_source_detail: Option<CollabAgentModelSourceDetail>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,8 +189,6 @@ pub(crate) fn spawn_end(
         agent_type,
         model,
         model_provider_id,
-        model_source,
-        model_source_detail,
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
@@ -225,18 +219,6 @@ pub(crate) fn spawn_end(
     }
     if let Some(model_provider_id) = model_provider_id {
         details.push(detail_line("provider", model_provider_id));
-    }
-    if let Some(model_source) = model_source {
-        let source = if let Some(source_detail) = model_source_detail {
-            format!(
-                "{} ({})",
-                model_source_label(model_source),
-                model_source_detail_label(source_detail)
-            )
-        } else {
-            model_source_label(model_source).to_string()
-        };
-        details.push(detail_line("route", source));
     }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
@@ -668,39 +650,6 @@ fn append_agent_metadata_details(
     if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
         details.push(detail_line("provider", model_provider_id.to_string()));
     }
-    if let Some(model_source) = metadata.model_source {
-        let route = if let Some(detail) = metadata.model_source_detail {
-            format!(
-                "{} ({})",
-                model_source_label(model_source),
-                model_source_detail_label(detail)
-            )
-        } else {
-            model_source_label(model_source).to_string()
-        };
-        details.push(detail_line("route", route));
-    }
-}
-
-pub(crate) fn model_source_detail_label(detail: CollabAgentModelSourceDetail) -> &'static str {
-    match detail {
-        CollabAgentModelSourceDetail::ConfigModelSub => "config.model_sub",
-        CollabAgentModelSourceDetail::SessionCache => "session cache",
-        CollabAgentModelSourceDetail::ModelSubVouch => "model_sub_vouch",
-        CollabAgentModelSourceDetail::AutoCalibration => "auto_calibration",
-        CollabAgentModelSourceDetail::ToolModelOverride => "tool model override",
-        CollabAgentModelSourceDetail::RoleConfig => "agent role config",
-    }
-}
-
-pub(crate) fn model_source_label(source: CollabAgentModelSource) -> &'static str {
-    match source {
-        CollabAgentModelSource::Parent => "parent",
-        CollabAgentModelSource::Role => "role",
-        CollabAgentModelSource::ModelSub => "model_sub",
-        CollabAgentModelSource::ModelSubAuto => "model_sub_auto",
-        CollabAgentModelSource::Explicit => "explicit",
-    }
 }
 
 #[cfg(test)]
@@ -735,8 +684,6 @@ mod tests {
                 agent_type: Some("explorer".to_string()),
                 model: Some("gpt-5".to_string()),
                 model_provider_id: None,
-                model_source: None,
-                model_source_detail: None,
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
@@ -894,8 +841,6 @@ mod tests {
                 agent_type: None,
                 model: Some("gpt-5".to_string()),
                 model_provider_id: None,
-                model_source: None,
-                model_source_detail: None,
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),

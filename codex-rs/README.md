@@ -415,14 +415,9 @@ model_sub_responses = "gpt-5.1-codex-mini"
 或用 `/team-vouch duel ...` 记录同一任务在不同 profile/agent 路由下的胜负结果。
 对于 utility/sub-agent 模型本身，可用 `/team-vouch model ...` 与 `/team-vouch model-duel ...`
 记录功过，再用 `/model-sub auto[:bucket]` 让系统按功过自动选择。
-当 `model_sub` 未显式配置时，`spawn_agent` 的 `default/explorer` 角色会尝试读取
-`~/.codex/memories/model_sub_vouch.json` 自动选择推荐模型，并在当前 session 内缓存该选择。
-若当前 session 既没有 `model_sub` 显式值、也没有缓存/功过推荐，`spawn_agent` 会触发一次同题校准（`calibrate_model_sub`）并在返回中附带 `auto_calibration` 信息（候选 run 摘要 + `recommended_for_session` / `recommended_for_latency`）。
-建议 leader 在查看候选输出后调用 `record_model_sub_winner`（或 `record_model_sub_duel`）落盘功过，这样同会话后续协作可直接复用最优小弟。
-可手工调用：
-- `calibrate_model_sub`（同题跑多模型）
-- `record_model_sub_winner`（一次记录 winner vs 所有候选；可省略 `winner_model` 与 `compared_models`，自动复用本 session 最近一次 `calibrate_model_sub` 的推荐 winner 与候选集）
-- `record_model_sub_duel`（单对单记分）
+当前可用的自动选择入口主要是 TUI 侧的 `/model-sub auto[:bucket]`：
+它会读取 `~/.codex/memories/model_sub_vouch.json`，按已有功过数据给出推荐；
+若还没有任何 signal，需要先用 `/team-vouch model ...` 或 `/team-vouch model-duel ...` 积累样本。
 `/status` 会在有功过数据时展示 `Team profile auto`，给出 `general/debug/review` 的推荐 profile。
 
 ## Code Organization

@@ -221,6 +221,9 @@ pub(crate) fn build_agent_spawn_config(
     turn: &TurnContext,
 ) -> Result<Config, FunctionCallError> {
     let mut config = build_agent_shared_config(turn)?;
+    if let Some(model_sub) = config.model_sub.clone() {
+        apply_spawn_agent_model_selection(&mut config, &model_sub);
+    }
     config.base_instructions = Some(base_instructions.text.clone());
     Ok(config)
 }
@@ -248,6 +251,19 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
+}
+
+fn apply_spawn_agent_model_selection(config: &mut Config, model: &str) {
+    config.model = Some(model.to_string());
+    let (provider_id, provider) = crate::utility_model::provider_for_model_slug(config, model)
+        .unwrap_or_else(|| {
+            (
+                config.model_provider_id.clone(),
+                config.model_provider.clone(),
+            )
+        });
+    config.model_provider_id = provider_id;
+    config.model_provider = provider;
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
@@ -305,13 +321,13 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
             .list_models(RefreshStrategy::Offline)
             .await;
         let selected_model_name = find_spawn_agent_model_name(&available_models, requested_model)?;
+        apply_spawn_agent_model_selection(config, &selected_model_name);
         let selected_model_info = session
             .services
             .models_manager
             .get_model_info(&selected_model_name, config)
             .await;
 
-        config.model = Some(selected_model_name.clone());
         if let Some(reasoning_effort) = requested_reasoning_effort {
             validate_spawn_agent_reasoning_effort(
                 &selected_model_name,
@@ -327,11 +343,26 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     }
 
     if let Some(reasoning_effort) = requested_reasoning_effort {
-        validate_spawn_agent_reasoning_effort(
-            &turn.model_info.slug,
-            &turn.model_info.supported_reasoning_levels,
-            reasoning_effort,
-        )?;
+        if let Some(selected_model_name) = config.model.clone() {
+            if selected_model_name == turn.model_info.slug {
+                validate_spawn_agent_reasoning_effort(
+                    &turn.model_info.slug,
+                    &turn.model_info.supported_reasoning_levels,
+                    reasoning_effort,
+                )?;
+            } else {
+                let selected_model_info = session
+                    .services
+                    .models_manager
+                    .get_model_info(&selected_model_name, config)
+                    .await;
+                validate_spawn_agent_reasoning_effort(
+                    &selected_model_name,
+                    &selected_model_info.supported_reasoning_levels,
+                    reasoning_effort,
+                )?;
+            }
+        }
         config.model_reasoning_effort = Some(reasoning_effort);
     }
 

@@ -115,9 +115,9 @@ fn request_permissions_tool_is_under_development() {
 }
 
 #[test]
-fn tool_suggest_is_stable_and_enabled_by_default() {
+fn tool_suggest_is_stable_and_disabled_by_default() {
     assert_eq!(Feature::ToolSuggest.stage(), Stage::Stable);
-    assert_eq!(Feature::ToolSuggest.default_enabled(), true);
+    assert_eq!(Feature::ToolSuggest.default_enabled(), false);
 }
 
 #[test]
@@ -139,9 +139,8 @@ fn use_linux_sandbox_bwrap_is_a_removed_feature_key() {
 }
 
 #[test]
-fn freeze_sandbox_debug_is_removed() {
-    assert_eq!(Feature::FreezeSandboxDebug.stage(), Stage::Removed);
-    assert_eq!(Feature::FreezeSandboxDebug.default_enabled(), false);
+fn freeze_sandbox_debug_is_not_a_feature_key() {
+    assert_eq!(feature_for_key("freeze_sandbox_debug"), None);
 }
 
 #[test]
@@ -151,9 +150,9 @@ fn image_generation_is_under_development() {
 }
 
 #[test]
-fn tool_call_mcp_elicitation_is_stable_and_enabled_by_default() {
+fn tool_call_mcp_elicitation_is_stable_and_disabled_by_default() {
     assert_eq!(Feature::ToolCallMcpElicitation.stage(), Stage::Stable);
-    assert_eq!(Feature::ToolCallMcpElicitation.default_enabled(), true);
+    assert_eq!(Feature::ToolCallMcpElicitation.default_enabled(), false);
 }
 
 #[test]

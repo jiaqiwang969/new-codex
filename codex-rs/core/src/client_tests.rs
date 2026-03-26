@@ -137,7 +137,7 @@ fn resolve_provider_api_key_uses_env_specific_mapping_first() {
     );
 
     assert_eq!(
-        super::resolve_provider_api_key(&provider, Some(&auth)),
+        crate::provider_auth::resolve_provider_api_key(&provider, Some(&auth)),
         Some("mapped-key".to_string())
     );
 }
@@ -153,8 +153,43 @@ fn resolve_provider_api_key_falls_back_to_primary_auth_key() {
     );
 
     assert_eq!(
-        super::resolve_provider_api_key(&provider, Some(&auth)),
+        crate::provider_auth::resolve_provider_api_key(&provider, Some(&auth)),
         Some("fallback-key".to_string())
+    );
+}
+
+#[test]
+fn resolve_provider_api_key_uses_selected_account_env_key_after_provider_switch() {
+    let mut provider = crate::model_provider_info::ModelProviderInfo::create_anthropic_provider();
+    provider.account_pool = vec![
+        crate::model_provider_info::ModelProviderAccount {
+            base_url: Some("https://pool-primary.example".to_string()),
+            env_key: Some("__CODEX_TEST_POOL_PRIMARY_KEY__".to_string()),
+        },
+        crate::model_provider_info::ModelProviderAccount {
+            base_url: Some("https://pool-secondary.example".to_string()),
+            env_key: Some("__CODEX_TEST_POOL_SECONDARY_KEY__".to_string()),
+        },
+    ];
+
+    let selected_provider = provider.with_account(&provider.account_pool[1]);
+    let auth = crate::auth::CodexAuth::from_api_key_and_env_keys_for_testing(
+        "fallback-key",
+        HashMap::from([
+            (
+                "__CODEX_TEST_POOL_PRIMARY_KEY__".to_string(),
+                "primary-key".to_string(),
+            ),
+            (
+                "__CODEX_TEST_POOL_SECONDARY_KEY__".to_string(),
+                "secondary-key".to_string(),
+            ),
+        ]),
+    );
+
+    assert_eq!(
+        crate::provider_auth::resolve_provider_api_key(&selected_provider, Some(&auth)),
+        Some("secondary-key".to_string())
     );
 }
 

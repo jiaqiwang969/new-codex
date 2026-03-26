@@ -31,9 +31,12 @@ use tempfile::TempDir;
 
 fn assert_seatbelt_denied(stderr: &[u8], path: &Path) {
     let stderr = String::from_utf8_lossy(stderr);
-    let expected = format!("bash: {}: Operation not permitted\n", path.display());
+    let expected_suffix = format!("{}: Operation not permitted\n", path.display());
     assert!(
-        stderr == expected
+        stderr == format!("bash: {expected_suffix}")
+            // Newer bash builds include the evaluated line number for `bash -c`
+            // write failures, while older builds omit it.
+            || stderr == format!("bash: line 1: {expected_suffix}")
             || stderr.contains("sandbox-exec: sandbox_apply: Operation not permitted"),
         "unexpected stderr: {stderr}"
     );

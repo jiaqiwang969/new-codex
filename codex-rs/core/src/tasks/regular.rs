@@ -54,14 +54,27 @@ impl SessionTask for RegularTask {
         });
         sess.send_event(ctx.as_ref(), event).await;
         sess.set_server_reasoning_included(/*included*/ false).await;
-        let prewarmed_client_session = match sess
-            .consume_startup_prewarm_for_regular_turn(&cancellation_token)
-            .await
-        {
-            SessionStartupPrewarmResolution::Cancelled => return None,
-            SessionStartupPrewarmResolution::Unavailable { .. } => None,
-            SessionStartupPrewarmResolution::Ready(prewarmed_client_session) => {
-                Some(*prewarmed_client_session)
+        let has_local_buffered_work = if input.is_empty() {
+            sess.has_pending_input().await || sess.has_queued_response_items_for_next_turn().await
+        } else {
+            false
+        };
+        let prewarmed_client_session = if has_local_buffered_work {
+            // Queue-draining wakeups can race with task registration while response items are
+            // still buffered locally, so do not block their first visible history update on the
+            // websocket prewarm path. Leave the prewarm available for the next real user turn
+            // instead.
+            None
+        } else {
+            match sess
+                .consume_startup_prewarm_for_regular_turn(&cancellation_token)
+                .await
+            {
+                SessionStartupPrewarmResolution::Cancelled => return None,
+                SessionStartupPrewarmResolution::Unavailable { .. } => None,
+                SessionStartupPrewarmResolution::Ready(prewarmed_client_session) => {
+                    Some(*prewarmed_client_session)
+                }
             }
         };
         let mut next_input = input;

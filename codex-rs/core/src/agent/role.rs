@@ -35,9 +35,11 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
 /// the caller's current `profile` and `model_provider` remain sticky runtime choices unless the
 /// role explicitly sets `profile`, explicitly sets `model_provider`, or rewrites the active
-/// profile's `model_provider` in place. Rebuilding the config without those overrides would make a
-/// spawned agent silently fall back to the default provider, which is the bug this preservation
-/// logic avoids.
+/// profile's `model_provider` in place. Roles that only change the selected model still reroute
+/// the provider through the usual model-family-aware helper so cross-family roles keep honoring
+/// user-configured providers. Rebuilding the config without those overrides would make a spawned
+/// agent silently fall back to the default provider, which is the bug this preservation logic
+/// avoids.
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
@@ -66,7 +68,7 @@ async fn apply_role_to_config_inner(
         return Ok(());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
-    let (preserve_current_profile, preserve_current_provider) =
+    let (preserve_current_profile, preserve_current_provider, reroute_provider_for_selected_model) =
         preservation_policy(config, &role_layer_toml);
 
     *config = reload::build_next_config(
@@ -74,6 +76,7 @@ async fn apply_role_to_config_inner(
         role_layer_toml,
         preserve_current_profile,
         preserve_current_provider,
+        reroute_provider_for_selected_model,
     )?;
     Ok(())
 }
@@ -122,9 +125,22 @@ pub(crate) fn resolve_role_config<'a>(
         .or_else(|| built_in::configs().get(role_name))
 }
 
-fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, bool) {
+fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, bool, bool) {
+    let role_selects_model = role_layer_toml.get("model").is_some();
     let role_selects_provider = role_layer_toml.get("model_provider").is_some();
     let role_selects_profile = role_layer_toml.get("profile").is_some();
+    let role_updates_active_profile_model = config
+        .active_profile
+        .as_ref()
+        .and_then(|active_profile| {
+            role_layer_toml
+                .get("profiles")
+                .and_then(TomlValue::as_table)
+                .and_then(|profiles| profiles.get(active_profile))
+                .and_then(TomlValue::as_table)
+                .map(|profile| profile.contains_key("model"))
+        })
+        .unwrap_or(false);
     let role_updates_active_profile_provider = config
         .active_profile
         .as_ref()
@@ -140,7 +156,13 @@ fn preservation_policy(config: &Config, role_layer_toml: &TomlValue) -> (bool, b
     let preserve_current_profile = !role_selects_provider && !role_selects_profile;
     let preserve_current_provider =
         preserve_current_profile && !role_updates_active_profile_provider;
-    (preserve_current_profile, preserve_current_provider)
+    let reroute_provider_for_selected_model =
+        preserve_current_provider && (role_selects_model || role_updates_active_profile_model);
+    (
+        preserve_current_profile,
+        preserve_current_provider,
+        reroute_provider_for_selected_model,
+    )
 }
 
 mod reload {
@@ -151,6 +173,7 @@ mod reload {
         role_layer_toml: TomlValue,
         preserve_current_profile: bool,
         preserve_current_provider: bool,
+        reroute_provider_for_selected_model: bool,
     ) -> anyhow::Result<Config> {
         let active_profile_name = preserve_current_profile
             .then_some(config.active_profile.as_deref())
@@ -170,6 +193,22 @@ mod reload {
         )?;
         if preserve_current_profile {
             next_config.active_profile = config.active_profile.clone();
+        }
+        if preserve_current_provider {
+            next_config.user_configured_provider = config.user_configured_provider.clone();
+        }
+        if reroute_provider_for_selected_model && let Some(model) = next_config.model.clone() {
+            let mut provider_routing_config = next_config.clone();
+            provider_routing_config.model_provider_id = config.model_provider_id.clone();
+            provider_routing_config.model_provider = config.model_provider.clone();
+            provider_routing_config.user_configured_provider =
+                config.user_configured_provider.clone();
+            if let Some((provider_id, provider)) =
+                crate::utility_model::provider_for_model_slug(&provider_routing_config, &model)
+            {
+                next_config.model_provider_id = provider_id;
+                next_config.model_provider = provider;
+            }
         }
         Ok(next_config)
     }
@@ -255,7 +294,7 @@ mod reload {
 
     fn reload_overrides(config: &Config, preserve_current_provider: bool) -> ConfigOverrides {
         ConfigOverrides {
-            cwd: Some(config.cwd.clone()),
+            cwd: Some(config.cwd.to_path_buf()),
             model_provider: preserve_current_provider.then(|| config.model_provider_id.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),

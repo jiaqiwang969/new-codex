@@ -1,9 +1,10 @@
 use super::*;
+use crate::SkillsManager;
 use crate::config::CONFIG_TOML_FILE;
 use crate::config::ConfigBuilder;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::plugins::PluginsManager;
-use crate::skills::SkillsManager;
+use crate::skills_load_input_from_config;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -498,6 +499,63 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
+async fn apply_role_reroutes_provider_when_role_sets_cross_family_model() {
+    let home = TempDir::new().expect("create temp dir");
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        r#"
+[model_providers.openai-custom]
+name = "OpenAI Custom"
+base_url = "https://code.ppchat.vip/v1"
+env_key = "OPENAI_CUSTOM_API_KEY"
+wire_api = "responses"
+"#,
+    )
+    .await
+    .expect("write config.toml");
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load config");
+    config.user_configured_provider = config
+        .model_providers
+        .get("openai-custom")
+        .expect("openai-custom provider should exist")
+        .clone();
+    config.model_provider_id = "anthropic".to_string();
+    config.model_provider = config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+    let role_path = write_role_config(
+        &home,
+        "openai-role.toml",
+        "developer_instructions = \"Stay focused\"\nmodel = \"gpt-5.1-codex-mini\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            tags: Vec::new(),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-mini"));
+    assert_eq!(config.model_provider_id, "openai-custom");
+    assert_eq!(config.model_provider.name, "OpenAI Custom");
+}
+
+#[tokio::test]
 #[cfg(not(windows))]
 async fn apply_role_does_not_materialize_default_sandbox_workspace_write_fields() {
     use codex_protocol::protocol::SandboxPolicy;
@@ -641,8 +699,11 @@ enabled = false
         .expect("custom role should apply");
 
     let plugins_manager = Arc::new(PluginsManager::new(home.path().to_path_buf()));
-    let skills_manager = SkillsManager::new(home.path().to_path_buf(), plugins_manager, true);
-    let outcome = skills_manager.skills_for_config(&config);
+    let skills_manager = SkillsManager::new(home.path().to_path_buf(), true);
+    let plugin_outcome = plugins_manager.plugins_for_config(&config);
+    let effective_skill_roots = plugin_outcome.effective_skill_roots();
+    let skills_input = skills_load_input_from_config(&config, effective_skill_roots);
+    let outcome = skills_manager.skills_for_config(&skills_input);
     let skill = outcome
         .skills
         .iter()

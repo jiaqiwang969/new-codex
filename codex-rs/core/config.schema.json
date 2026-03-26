@@ -406,9 +406,6 @@
             "fast_mode": {
               "type": "boolean"
             },
-            "freeze_sandbox_debug": {
-              "type": "boolean"
-            },
             "guardian_approval": {
               "type": "boolean"
             },
@@ -2087,9 +2084,6 @@
           "type": "boolean"
         },
         "fast_mode": {
-          "type": "boolean"
-        },
-        "freeze_sandbox_debug": {
           "type": "boolean"
         },
         "guardian_approval": {

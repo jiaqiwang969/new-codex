@@ -4,6 +4,7 @@ use crate::CodexAuth;
 use crate::ThreadManager;
 use crate::built_in_model_providers;
 use crate::codex::make_session_and_context;
+use crate::codex::make_session_and_context_with_rx;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::function_tool::FunctionCallError;
@@ -39,6 +40,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::user_input::UserInput;
+use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
@@ -290,6 +292,52 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .await;
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
+}
+
+#[tokio::test]
+async fn spawn_agent_emits_model_provider_id_in_spawn_end_event() {
+    let (mut session, mut turn, rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned")
+        .services
+        .agent_control = manager.agent_control();
+    {
+        let turn_mut = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
+        let mut config = (*turn_mut.config).clone();
+        let provider = built_in_model_providers(/* openai_base_url */ None)["ollama"].clone();
+        config.model_provider_id = "ollama".to_string();
+        config.model_provider = provider.clone();
+        turn_mut.provider = provider;
+        turn_mut.config = Arc::new(config);
+    }
+
+    let output = SpawnAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "explorer"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let _ = expect_text_output(output);
+
+    let event = timeout(Duration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("channel open");
+            if let EventMsg::CollabAgentSpawnEnd(event) = event.msg {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("spawn end event should be emitted");
+
+    assert_eq!(event.model_provider_id.as_deref(), Some("ollama"));
 }
 
 #[tokio::test]
@@ -1015,6 +1063,63 @@ async fn multi_agent_v2_spawn_includes_agent_id_key_when_named() {
     assert_eq!(result["task_name"], "/root/test_process");
     assert!(result.get("nickname").is_some());
     assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_emits_model_provider_id_in_spawn_end_event() {
+    let (mut session, mut turn, rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let config = {
+        let turn_mut = Arc::get_mut(&mut turn).expect("turn should be uniquely owned");
+        let mut config = (*turn_mut.config).clone();
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        let provider = built_in_model_providers(/* openai_base_url */ None)["ollama"].clone();
+        config.model_provider_id = "ollama".to_string();
+        config.model_provider = provider.clone();
+        turn_mut.provider = provider;
+        turn_mut.config = Arc::new(config.clone());
+        config
+    };
+
+    let root = manager
+        .start_thread(config)
+        .await
+        .expect("root thread should start");
+    {
+        let session_mut = Arc::get_mut(&mut session).expect("session should be uniquely owned");
+        session_mut.services.agent_control = manager.agent_control();
+        session_mut.conversation_id = root.thread_id;
+    }
+
+    let output = SpawnAgentHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "test_process"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let _ = expect_text_output(output);
+
+    let event = timeout(Duration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("channel open");
+            if let EventMsg::CollabAgentSpawnEnd(event) = event.msg {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("spawn end event should be emitted");
+
+    assert_eq!(event.model_provider_id.as_deref(), Some("ollama"));
 }
 
 #[tokio::test]
@@ -2241,7 +2346,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
         ..ShellEnvironmentPolicy::default()
     };
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    turn.cwd = temp_dir.path().to_path_buf();
+    turn.cwd = temp_dir.abs();
     turn.codex_linux_sandbox_exe = Some(PathBuf::from("/bin/echo"));
     let sandbox_policy = pick_allowed_sandbox_policy(
         &turn.config.permissions.sandbox_policy,
@@ -2300,6 +2405,68 @@ async fn build_agent_spawn_config_preserves_base_user_instructions() {
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
 
     assert_eq!(config.user_instructions, base_config.user_instructions);
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_uses_model_sub_provider_routing() {
+    let (session, mut turn) = make_session_and_context().await;
+    let mut base_config = (*turn.config).clone();
+    let mut openai_custom_provider = base_config
+        .model_providers
+        .get("openai")
+        .expect("openai provider should exist")
+        .clone();
+    openai_custom_provider.name = "OpenAI custom".to_string();
+    openai_custom_provider.base_url = Some("https://code.ppchat.vip/v1".to_string());
+    base_config
+        .model_providers
+        .insert("openai-custom".to_string(), openai_custom_provider.clone());
+    base_config.user_configured_provider = openai_custom_provider.clone();
+    base_config.model_provider_id = "anthropic".to_string();
+    base_config.model_provider = base_config
+        .model_providers
+        .get("anthropic")
+        .expect("anthropic provider should exist")
+        .clone();
+    base_config.model_sub = Some("gpt-5.1-codex-mini".to_string());
+    turn.model_info = session
+        .services
+        .models_manager
+        .get_model_info("claude-sonnet-4-6", &base_config)
+        .await;
+    turn.provider = base_config.model_provider.clone();
+    turn.config = Arc::new(base_config.clone());
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    let mut expected = base_config;
+    expected.base_instructions = Some(base_instructions.text);
+    expected.model = Some("gpt-5.1-codex-mini".to_string());
+    expected.model_provider_id = "openai-custom".to_string();
+    expected.model_provider = openai_custom_provider;
+    expected.model_reasoning_effort = turn.reasoning_effort;
+    expected.model_reasoning_summary = Some(turn.reasoning_summary);
+    expected.developer_instructions = turn.developer_instructions.clone();
+    expected.compact_prompt = turn.compact_prompt.clone();
+    expected.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
+    expected.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
+    expected.cwd = turn.cwd.clone();
+    expected
+        .permissions
+        .approval_policy
+        .set(turn.approval_policy.value())
+        .expect("approval policy set");
+    expected
+        .permissions
+        .sandbox_policy
+        .set(turn.sandbox_policy.get().clone())
+        .expect("sandbox policy set");
+    expected.permissions.file_system_sandbox_policy = turn.file_system_sandbox_policy.clone();
+    expected.permissions.network_sandbox_policy = turn.network_sandbox_policy;
+    assert_eq!(config, expected);
 }
 
 #[tokio::test]

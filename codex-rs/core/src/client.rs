@@ -114,6 +114,7 @@ use crate::model_compat::model_supports_reasoning_effort;
 use crate::model_compat::normalized_grok_model_slug;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::provider_auth::resolve_provider_api_key;
 use crate::response_debug_context::extract_response_debug_context;
 use crate::response_debug_context::extract_response_debug_context_from_api_error;
 use crate::response_debug_context::telemetry_api_error_message;
@@ -1862,22 +1863,6 @@ impl ModelClientSession {
         let byte_stream = response.bytes_stream();
         Ok(spawn_anthropic_sse_stream(byte_stream, idle_timeout))
     }
-}
-
-fn resolve_provider_api_key(
-    provider: &ModelProviderInfo,
-    auth: Option<&CodexAuth>,
-) -> Option<String> {
-    let env_key = provider.env_key.as_deref()?;
-    std::env::var(env_key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            auth.and_then(|auth| auth.api_key_for_env_key(env_key))
-                .map(str::to_string)
-        })
-        .or_else(|| auth.and_then(CodexAuth::api_key).map(str::to_string))
 }
 
 fn validate_image_input_compat(prompt: &Prompt, model_slug: &str) -> Result<()> {

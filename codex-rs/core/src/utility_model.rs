@@ -1,41 +1,55 @@
 use crate::client::ModelClient;
 use crate::config::Config;
-use crate::model_compat::is_anthropic_model_slug;
-use crate::model_compat::is_gemma_model_slug;
-use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::is_openai_model_slug;
-use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
-use crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID;
-use crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID;
-use crate::model_provider_info::GEMINI_PROVIDER_ID;
-use crate::model_provider_info::GEMMA_PROVIDER_ID;
-use crate::model_provider_info::GROK_PROVIDER_ID;
-use crate::model_provider_info::ModelProviderAccount;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::models_manager::manager::ModelsManager;
+use crate::provider_routing::preview_provider_with_first_pool_account;
+use crate::provider_routing::provider_id_for_model_slug;
+use crate::provider_routing::provider_matches_builtin_family;
 use codex_protocol::openai_models::ModelInfo;
 
 pub const DEFAULT_UTILITY_MODEL: &str = "gpt-5.1-codex-mini";
 
-pub(crate) fn provider_id_for_model_slug(model_slug: &str) -> Option<&'static str> {
-    if model_slug.starts_with("antigravity/claude-")
-        || model_slug.starts_with("antigravity-anthropic/")
-    {
-        Some(ANTIGRAVITY_ANTHROPIC_PROVIDER_ID)
-    } else if model_slug.starts_with("antigravity/")
-        || model_slug.starts_with("antigravity-gemini/")
-    {
-        Some(ANTIGRAVITY_GEMINI_PROVIDER_ID)
-    } else if model_slug.starts_with("gemini-") {
-        Some(GEMINI_PROVIDER_ID)
-    } else if is_gemma_model_slug(model_slug) {
-        Some(GEMMA_PROVIDER_ID)
-    } else if is_anthropic_model_slug(model_slug) {
-        Some(ANTHROPIC_PROVIDER_ID)
-    } else if is_grok_model_slug(model_slug) {
-        Some(GROK_PROVIDER_ID)
-    } else {
-        None
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UtilityModelOverrides {
+    pub(crate) model_sub: Option<String>,
+    pub(crate) model_sub_responses: Option<String>,
+    pub(crate) model_sub_responses_warning: Option<String>,
+}
+
+fn normalize_model_override(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+pub(crate) fn resolve_utility_model_overrides(
+    model_sub: Option<String>,
+    model_sub_responses: Option<String>,
+) -> UtilityModelOverrides {
+    let model_sub = normalize_model_override(model_sub);
+    let mut model_sub_responses = normalize_model_override(model_sub_responses);
+    let model_sub_responses_warning = model_sub_responses
+        .as_deref()
+        .filter(|model| !is_openai_model_slug(model))
+        .map(|model| {
+            format!(
+                "Configured `model_sub_responses = \"{model}\"` is not Responses-compatible; Responses-only internal tasks will fall back to OpenAI defaults."
+            )
+        });
+    if model_sub_responses_warning.is_some() {
+        model_sub_responses = None;
+    }
+
+    UtilityModelOverrides {
+        model_sub,
+        model_sub_responses,
+        model_sub_responses_warning,
     }
 }
 
@@ -127,60 +141,10 @@ pub(crate) async fn client_and_model_for_slug(
 ) -> Option<(ModelClient, ModelInfo, String)> {
     let (provider_id, provider) = provider_for_model_slug(config, model_slug)?;
     let model_info = models_manager.get_model_info(model_slug, config).await;
-    let provider = provider
-        .account_pool
-        .iter()
-        .find_map(|account| {
-            let base_url = account
-                .base_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-            let env_key = account
-                .env_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-            match (base_url, env_key) {
-                (Some(base_url), Some(env_key)) => {
-                    Some(provider.with_account(&ModelProviderAccount {
-                        base_url: Some(base_url),
-                        env_key: Some(env_key),
-                    }))
-                }
-                _ => None,
-            }
-        })
-        .unwrap_or(provider);
+    let provider = preview_provider_with_first_pool_account(provider_id.as_str(), &provider);
     let model_client = base_client.clone_with_provider(provider);
     Some((model_client, model_info, provider_id))
 }
-
-fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &str) -> bool {
-    match provider_id {
-        GEMINI_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                && !provider.is_antigravity_gemini()
-        }
-        GEMMA_PROVIDER_ID => {
-            provider.is_gemma()
-                || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                    && !provider.is_gemini()
-                    && !provider.is_antigravity_gemini())
-        }
-        ANTHROPIC_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
-                && !provider.is_antigravity_anthropic()
-        }
-        ANTIGRAVITY_GEMINI_PROVIDER_ID => provider.is_antigravity_gemini(),
-        ANTIGRAVITY_ANTHROPIC_PROVIDER_ID => provider.is_antigravity_anthropic(),
-        GROK_PROVIDER_ID => provider.is_grok(),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

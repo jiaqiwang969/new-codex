@@ -40,9 +40,6 @@ use crate::config_loader::ResidencyRequirement;
 use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
 use crate::memories::memory_root;
-use crate::model_compat::is_anthropic_model_slug;
-use crate::model_compat::is_gemma_model_slug;
-use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::is_openai_model_slug;
 use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
 use crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID;
@@ -52,7 +49,6 @@ use crate::model_provider_info::GEMMA_PROVIDER_ID;
 use crate::model_provider_info::GROK_PROVIDER_ID;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
-use crate::model_provider_info::ModelProviderAccount;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
@@ -64,8 +60,13 @@ use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
 use crate::protocol::ReadOnlyAccess;
 use crate::protocol::SandboxPolicy;
+use crate::provider_pool::load_pool_config;
+use crate::provider_pool::overlay_pool_config;
+use crate::provider_routing::provider_id_for_model_slug as provider_id_for_model_family;
+use crate::provider_routing::provider_matches_builtin_family;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
+use crate::utility_model::UtilityModelOverrides;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use crate::windows_sandbox::resolve_windows_sandbox_mode;
 use crate::windows_sandbox::resolve_windows_sandbox_private_desktop;
@@ -156,42 +157,6 @@ pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
 pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
-pub const CONFIG_POOL_TOML_FILE: &str = "config-pool.toml";
-pub const AUTH_POOL_JSON_FILE: &str = "auth-pool.json";
-
-/// A lightweight provider entry used only in `config-pool.toml`.
-/// Unlike `ModelProviderInfo`, all fields are optional so users only need to
-/// specify `account_pool` (and optionally `base_url` / `env_key`).
-#[derive(Deserialize, Debug, Clone, Default)]
-pub struct PoolProviderEntry {
-    #[serde(default)]
-    pub name: String,
-    pub base_url: Option<String>,
-    pub env_key: Option<String>,
-    #[serde(default)]
-    pub account_pool: Vec<ModelProviderAccount>,
-}
-
-/// Subset of config that lives in config-pool.toml.
-/// Only contains model_providers with their account_pool entries.
-#[derive(Deserialize, Debug, Clone, Default)]
-pub struct ConfigPoolToml {
-    #[serde(default)]
-    pub model_providers: HashMap<String, PoolProviderEntry>,
-}
-
-/// Load pool-specific provider config from `config-pool.toml` if it exists.
-pub fn load_pool_config(codex_home: &Path) -> Option<ConfigPoolToml> {
-    let pool_path = codex_home.join(CONFIG_POOL_TOML_FILE);
-    let contents = std::fs::read_to_string(&pool_path).ok()?;
-    match toml::from_str(&contents) {
-        Ok(cfg) => Some(cfg),
-        Err(e) => {
-            tracing::warn!("failed to parse {CONFIG_POOL_TOML_FILE}: {e}");
-            None
-        }
-    }
-}
 
 const OPENAI_BASE_URL_ENV_VAR: &str = "OPENAI_BASE_URL";
 #[cfg(target_os = "linux")]
@@ -459,10 +424,10 @@ pub struct Config {
     /// Syntax highlighting theme override (kebab-case name).
     pub tui_theme: Option<String>,
 
-    /// The directory that should be treated as the current working directory
-    /// for the session. All relative paths inside the business-logic layer are
-    /// resolved against this path.
-    pub cwd: PathBuf,
+    /// The absolute directory that should be treated as the current working
+    /// directory for the session. All relative paths inside the business-logic
+    /// layer are resolved against this path.
+    pub cwd: AbsolutePathBuf,
 
     /// Preferred store for CLI auth credentials.
     /// file (default): Use a file in the Codex home directory.
@@ -747,7 +712,7 @@ impl ConfigBuilder {
         let loader_overrides = loader_overrides.unwrap_or_default();
         let cwd_override = harness_overrides.cwd.as_deref().or(fallback_cwd.as_deref());
         let cwd = match cwd_override {
-            Some(path) => AbsolutePathBuf::try_from(path)?,
+            Some(path) => AbsolutePathBuf::relative_to_current_dir(path)?,
             None => AbsolutePathBuf::current_dir()?,
         };
         harness_overrides.cwd = Some(cwd.to_path_buf());
@@ -2072,53 +2037,6 @@ pub(crate) fn resolve_web_search_mode_for_turn(
     WebSearchMode::Disabled
 }
 
-fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
-    // Check for antigravity prefix first
-    if model_slug.starts_with("antigravity/claude-")
-        || model_slug.starts_with("antigravity-anthropic/")
-    {
-        Some(ANTIGRAVITY_ANTHROPIC_PROVIDER_ID)
-    } else if model_slug.starts_with("antigravity/")
-        || model_slug.starts_with("antigravity-gemini/")
-    {
-        // Antigravity non-Claude models use the native Gemini endpoint in this integration.
-        Some(ANTIGRAVITY_GEMINI_PROVIDER_ID)
-    } else if is_gemma_model_slug(model_slug) {
-        Some(GEMMA_PROVIDER_ID)
-    } else if model_slug.starts_with("gemini-") {
-        Some(GEMINI_PROVIDER_ID)
-    } else if is_anthropic_model_slug(model_slug) {
-        Some(ANTHROPIC_PROVIDER_ID)
-    } else if is_grok_model_slug(model_slug) {
-        Some(GROK_PROVIDER_ID)
-    } else {
-        None
-    }
-}
-
-fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &str) -> bool {
-    match provider_id {
-        GEMINI_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                && !provider.is_antigravity_gemini()
-        }
-        GEMMA_PROVIDER_ID => {
-            provider.is_gemma()
-                || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                    && !provider.is_gemini()
-                    && !provider.is_antigravity_gemini())
-        }
-        ANTHROPIC_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
-                && !provider.is_antigravity_anthropic()
-        }
-        ANTIGRAVITY_GEMINI_PROVIDER_ID => provider.is_antigravity_gemini(),
-        ANTIGRAVITY_ANTHROPIC_PROVIDER_ID => provider.is_antigravity_anthropic(),
-        GROK_PROVIDER_ID => provider.is_grok(),
-        _ => false,
-    }
-}
-
 impl Config {
     #[cfg(test)]
     fn load_from_base_config_with_overrides(
@@ -2226,7 +2144,7 @@ impl Config {
         let windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg, &config_profile);
         let windows_sandbox_private_desktop =
             resolve_windows_sandbox_private_desktop(&cfg, &config_profile);
-        let resolved_cwd = normalize_for_native_workdir({
+        let resolved_cwd = AbsolutePathBuf::try_from(normalize_for_native_workdir({
             use std::env;
 
             match cwd {
@@ -2243,13 +2161,13 @@ impl Config {
                     current
                 }
             }
-        });
+        }))?;
         let mut additional_writable_roots: Vec<AbsolutePathBuf> = additional_writable_roots
             .into_iter()
-            .map(|path| AbsolutePathBuf::resolve_path_against_base(path, &resolved_cwd))
+            .map(|path| AbsolutePathBuf::resolve_path_against_base(path, resolved_cwd.as_path()))
             .collect::<Result<Vec<_>, _>>()?;
         let active_project = cfg
-            .get_active_project(&resolved_cwd)
+            .get_active_project(resolved_cwd.as_path())
             .unwrap_or(ProjectConfig { trust_level: None });
         let permission_config_syntax = resolve_permission_config_syntax(
             &config_layer_stack,
@@ -2322,12 +2240,15 @@ impl Config {
                     &mut startup_warnings,
                 )?;
             let mut sandbox_policy = file_system_sandbox_policy
-                .to_legacy_sandbox_policy(network_sandbox_policy, &resolved_cwd)?;
+                .to_legacy_sandbox_policy(network_sandbox_policy, resolved_cwd.as_path())?;
             if matches!(sandbox_policy, SandboxPolicy::WorkspaceWrite { .. }) {
                 file_system_sandbox_policy = file_system_sandbox_policy
-                    .with_additional_writable_roots(&resolved_cwd, &additional_writable_roots);
+                    .with_additional_writable_roots(
+                        resolved_cwd.as_path(),
+                        &additional_writable_roots,
+                    );
                 sandbox_policy = file_system_sandbox_policy
-                    .to_legacy_sandbox_policy(network_sandbox_policy, &resolved_cwd)?;
+                    .to_legacy_sandbox_policy(network_sandbox_policy, resolved_cwd.as_path())?;
             }
             (
                 configured_network_proxy_config,
@@ -2341,7 +2262,7 @@ impl Config {
                 sandbox_mode,
                 config_profile.sandbox_mode,
                 windows_sandbox_level,
-                &resolved_cwd,
+                resolved_cwd.as_path(),
                 Some(&constrained_sandbox_policy),
             );
             if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut sandbox_policy {
@@ -2351,8 +2272,10 @@ impl Config {
                     }
                 }
             }
-            let file_system_sandbox_policy =
-                FileSystemSandboxPolicy::from_legacy_sandbox_policy(&sandbox_policy, &resolved_cwd);
+            let file_system_sandbox_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+                &sandbox_policy,
+                resolved_cwd.as_path(),
+            );
             let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
             (
                 configured_network_proxy_config,
@@ -2440,22 +2363,11 @@ impl Config {
 
         // Overlay account_pool entries from config-pool.toml (isolated pool config).
         if let Some(pool_config) = load_pool_config(&codex_home) {
-            for (key, pool_entry) in pool_config.model_providers {
-                if let Some(existing) = model_providers.get_mut(&key) {
-                    if !pool_entry.account_pool.is_empty() {
-                        existing.account_pool = pool_entry.account_pool;
-                    } else if pool_entry.base_url.is_some() {
-                        existing.base_url = pool_entry.base_url;
-                    }
-                    if existing.account_pool.is_empty() && pool_entry.env_key.is_some() {
-                        existing.env_key = pool_entry.env_key;
-                    }
-                } else {
-                    tracing::warn!(
-                        "config-pool.toml references unknown provider '{key}'; \
-                         define it in config.toml first"
-                    );
-                }
+            for key in overlay_pool_config(&mut model_providers, pool_config) {
+                tracing::warn!(
+                    "config-pool.toml references unknown provider '{key}'; \
+                     define it in config.toml first"
+                );
             }
         }
 
@@ -2567,35 +2479,18 @@ impl Config {
         let forced_login_method = cfg.forced_login_method;
 
         let model = model.or(config_profile.model).or(cfg.model);
-        let model_sub = config_profile
-            .model_sub
-            .or(cfg.model_sub)
-            .and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            });
-        let mut model_sub_responses = config_profile
-            .model_sub_responses
-            .or(cfg.model_sub_responses)
-            .and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            });
-        if let Some(model) = model_sub_responses.as_deref()
-            && !is_openai_model_slug(model)
-        {
-            startup_warnings.push(format!(
-                "Configured `model_sub_responses = \"{model}\"` is not Responses-compatible; Responses-only internal tasks will fall back to OpenAI defaults."
-            ));
-            model_sub_responses = None;
+        let UtilityModelOverrides {
+            model_sub,
+            model_sub_responses,
+            model_sub_responses_warning,
+        } = crate::utility_model::resolve_utility_model_overrides(
+            config_profile.model_sub.or(cfg.model_sub),
+            config_profile
+                .model_sub_responses
+                .or(cfg.model_sub_responses),
+        );
+        if let Some(warning) = model_sub_responses_warning {
+            startup_warnings.push(warning);
         }
 
         // Save the user's explicitly configured provider before any auto-switching.
@@ -2783,11 +2678,11 @@ impl Config {
             } else {
                 FileSystemSandboxPolicy::from_legacy_sandbox_policy(
                     &effective_sandbox_policy,
-                    &resolved_cwd,
+                    resolved_cwd.as_path(),
                 )
             };
         let effective_file_system_sandbox_policy = effective_file_system_sandbox_policy
-            .with_additional_readable_roots(&resolved_cwd, &helper_readable_roots);
+            .with_additional_readable_roots(resolved_cwd.as_path(), &helper_readable_roots);
         let effective_network_sandbox_policy =
             if effective_sandbox_policy == original_sandbox_policy {
                 network_sandbox_policy
@@ -3064,7 +2959,7 @@ impl Config {
     }
 
     pub fn bundled_skills_enabled(&self) -> bool {
-        crate::skills::manager::bundled_skills_enabled_from_stack(&self.config_layer_stack)
+        crate::manager::bundled_skills_enabled_from_stack(&self.config_layer_stack)
     }
 }
 

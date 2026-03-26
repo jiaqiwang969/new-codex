@@ -55,6 +55,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 #[cfg(test)]
+use codex_protocol::openai_models::ReasoningEffort;
+#[cfg(test)]
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 #[cfg(test)]
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
@@ -87,8 +89,50 @@ struct KnownAgentMetadata {
     model_provider_id: Option<String>,
 }
 
+type JsonValue = serde_json::Value;
+
+const MEMORY_SCOPE_VERSION_KEYS: &[&str] = &["memoryScopeVersion", "memory_scope_version"];
+const MEMORY_SCOPE_KIND_KEYS: &[&str] = &["memoryScopeKind", "memory_scope_kind"];
+const MEMORY_SUMMARY_SHA256_KEYS: &[&str] = &["memorySummarySha256", "memory_summary_sha256"];
+const MEMORY_BINDING_KEY_KEYS: &[&str] = &["memoryBindingKey", "memory_binding_key"];
+
 fn has_agent_metadata(state: &CollabAgentState) -> bool {
     state.agent_type.is_some() || state.model.is_some() || state.model_provider_id.is_some()
+}
+
+fn get_json_string(
+    arguments: &serde_json::Map<String, JsonValue>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter().find_map(|key| {
+        arguments
+            .get(*key)
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
+    })
+}
+
+fn memory_link_from_arguments(arguments: Option<&JsonValue>) -> Option<MemoryLink> {
+    let object = arguments.and_then(JsonValue::as_object)?;
+    let scope_version = get_json_string(object, MEMORY_SCOPE_VERSION_KEYS);
+    let scope_kind = get_json_string(object, MEMORY_SCOPE_KIND_KEYS);
+    let summary_sha256 = get_json_string(object, MEMORY_SUMMARY_SHA256_KEYS);
+    let binding_key = get_json_string(object, MEMORY_BINDING_KEY_KEYS);
+
+    if scope_version.is_none()
+        && scope_kind.is_none()
+        && summary_sha256.is_none()
+        && binding_key.is_none()
+    {
+        None
+    } else {
+        Some(MemoryLink {
+            scope_version,
+            scope_kind,
+            summary_sha256,
+            binding_key,
+        })
+    }
 }
 
 impl Default for ThreadHistoryBuilder {
@@ -532,6 +576,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_mcp_tool_call_begin(&mut self, payload: &McpToolCallBeginEvent) {
+        let memory = memory_link_from_arguments(payload.invocation.arguments.as_ref());
         let item = ThreadItem::McpToolCall {
             id: payload.call_id.clone(),
             server: payload.invocation.server.clone(),
@@ -545,7 +590,7 @@ impl ThreadHistoryBuilder {
             result: None,
             error: None,
             duration_ms: None,
-            memory: None,
+            memory,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -572,6 +617,7 @@ impl ThreadHistoryBuilder {
                 }),
             ),
         };
+        let memory = memory_link_from_arguments(payload.invocation.arguments.as_ref());
         let item = ThreadItem::McpToolCall {
             id: payload.call_id.clone(),
             server: payload.invocation.server.clone(),
@@ -584,7 +630,7 @@ impl ThreadHistoryBuilder {
                 .unwrap_or(serde_json::Value::Null),
             result,
             error,
-            memory: None,
+            memory,
             duration_ms,
         };
         self.upsert_item_in_current_turn(item);
@@ -624,6 +670,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
@@ -634,7 +681,7 @@ impl ThreadHistoryBuilder {
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort),
             agents_states: HashMap::new(),
-            memory: None,
+            memory,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -683,6 +730,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentInteractionBeginEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
@@ -693,7 +741,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
-            memory: None,
+            memory,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -728,6 +776,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
@@ -742,7 +791,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
-            memory: None,
+            memory,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -792,6 +841,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabCloseBeginEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
@@ -802,7 +852,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
-            memory: None,
+            memory,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -835,6 +885,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabResumeBeginEvent,
     ) {
+        let memory = payload.memory.clone().map(Into::into);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
@@ -845,7 +896,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
-            memory: None,
+            memory,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1323,6 +1374,7 @@ mod tests {
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
+    use codex_protocol::protocol::McpToolCallBeginEvent;
     use codex_protocol::protocol::McpToolCallEndEvent;
     use codex_protocol::protocol::PatchApplyBeginEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
@@ -1937,7 +1989,13 @@ mod tests {
                 invocation: McpInvocation {
                     server: "docs".into(),
                     tool: "lookup".into(),
-                    arguments: Some(serde_json::json!({"id":"123"})),
+                    arguments: Some(serde_json::json!({
+                        "id": "123",
+                        "memory_scope_version": "user:bbbbbbbbbbbb",
+                        "memory_scope_kind": "user",
+                        "memory_summary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "memory_binding_key": "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    })),
                 },
                 duration: Duration::from_millis(8),
                 result: Err("boom".into()),
@@ -1986,13 +2044,83 @@ mod tests {
                 server: "docs".into(),
                 tool: "lookup".into(),
                 status: McpToolCallStatus::Failed,
-                arguments: serde_json::json!({"id":"123"}),
+                arguments: serde_json::json!({
+                    "id": "123",
+                    "memory_scope_version": "user:bbbbbbbbbbbb",
+                    "memory_scope_kind": "user",
+                    "memory_summary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "memory_binding_key": "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                }),
                 result: None,
                 error: Some(McpToolCallError {
                     message: "boom".into(),
                 }),
                 duration_ms: Some(8),
-                memory: None,
+                memory: Some(MemoryLink {
+                    scope_version: Some("user:bbbbbbbbbbbb".into()),
+                    scope_kind: Some("user".into()),
+                    summary_sha256: Some("b".repeat(64)),
+                    binding_key: Some(format!("user:bbbbbbbbbbbb:{}", "b".repeat(64))),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_in_progress_mcp_item_with_memory_from_arguments() {
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "call tool".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                call_id: "mcp-1".into(),
+                invocation: McpInvocation {
+                    server: "docs".into(),
+                    tool: "lookup".into(),
+                    arguments: Some(serde_json::json!({
+                        "id": "123",
+                        "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                        "memory_scope_kind": "cwd",
+                        "memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    })),
+                },
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::McpToolCall {
+                id: "mcp-1".into(),
+                server: "docs".into(),
+                tool: "lookup".into(),
+                status: McpToolCallStatus::InProgress,
+                arguments: serde_json::json!({
+                    "id": "123",
+                    "memory_scope_version": "cwd:aaaaaaaaaaaa",
+                    "memory_scope_kind": "cwd",
+                    "memory_summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "memory_binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }),
+                result: None,
+                error: None,
+                duration_ms: None,
+                memory: Some(MemoryLink {
+                    scope_version: Some("cwd:aaaaaaaaaaaa".into()),
+                    scope_kind: Some("cwd".into()),
+                    summary_sha256: Some("a".repeat(64)),
+                    binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
+                }),
             }
         );
     }
@@ -2663,8 +2791,6 @@ mod tests {
                 agent_type: Some("explorer".into()),
                 model: Some("claude-opus-4-6".into()),
                 model_provider_id: Some("anthropic".into()),
-                model_source: None,
-                model_source_detail: None,
                 new_thread_id: Some(
                     ThreadId::try_from("00000000-0000-0000-0000-000000000002")
                         .expect("valid receiver thread id"),
@@ -2726,13 +2852,11 @@ mod tests {
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-1".into(),
-                sender_thread_id: sender_thread_id,
+                sender_thread_id,
                 memory: None,
                 agent_type: Some("explorer".into()),
                 model: Some("claude-sonnet-4-6".into()),
                 model_provider_id: Some("anthropic".into()),
-                model_source: None,
-                model_source_detail: None,
                 new_thread_id: Some(receiver_thread_id),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
@@ -2806,13 +2930,11 @@ mod tests {
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-1".into(),
-                sender_thread_id: sender_thread_id,
+                sender_thread_id,
                 memory: None,
                 agent_type: Some("explorer".into()),
                 model: Some("claude-opus-4-6".into()),
                 model_provider_id: Some("anthropic".into()),
-                model_source: None,
-                model_source_detail: None,
                 new_thread_id: Some(receiver_thread_id),
                 prompt: "inspect code".into(),
                 status: AgentStatus::Running,
@@ -2912,8 +3034,6 @@ mod tests {
                 prompt: "inspect the repo".into(),
                 model: Some("gpt-5.4-mini".into()),
                 model_provider_id: Some("openai".into()),
-                model_source: None,
-                model_source_detail: None,
                 status: AgentStatus::Running,
             }),
         ];
@@ -2949,6 +3069,62 @@ mod tests {
                 .into_iter()
                 .collect(),
                 memory: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_in_progress_collab_spawn_item_with_memory() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                message: "spawn agent".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+            }),
+            EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                call_id: "spawn-1".into(),
+                sender_thread_id,
+                memory: Some(codex_protocol::protocol::MemoryLink {
+                    scope_version: Some("cwd:aaaaaaaaaaaa".into()),
+                    scope_kind: Some("cwd".into()),
+                    summary_sha256: Some("a".repeat(64)),
+                    binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
+                }),
+                agent_type: None,
+                prompt: "inspect the repo".into(),
+                model: "gpt-5.4-mini".into(),
+                reasoning_effort: ReasoningEffort::default(),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "spawn-1".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("inspect the repo".into()),
+                model: Some("gpt-5.4-mini".into()),
+                reasoning_effort: Some(ReasoningEffort::default()),
+                agents_states: HashMap::new(),
+                memory: Some(MemoryLink {
+                    scope_version: Some("cwd:aaaaaaaaaaaa".into()),
+                    scope_kind: Some("cwd".into()),
+                    summary_sha256: Some("a".repeat(64)),
+                    binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
+                }),
             }
         );
     }

@@ -2,8 +2,6 @@ pub(crate) mod agent_jobs;
 pub mod apply_patch;
 mod artifacts;
 mod dynamic;
-mod gemini_web_search;
-mod grep_files;
 mod js_repl;
 mod list_dir;
 mod mcp;
@@ -12,7 +10,6 @@ pub(crate) mod multi_agents;
 pub(crate) mod multi_agents_common;
 pub(crate) mod multi_agents_v2;
 mod plan;
-mod read_file;
 mod request_permissions;
 mod request_user_input;
 mod shell;
@@ -42,14 +39,12 @@ pub use artifacts::ArtifactsHandler;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 pub use dynamic::DynamicToolHandler;
-pub use grep_files::GrepFilesHandler;
 pub use js_repl::JsReplHandler;
 pub use js_repl::JsReplResetHandler;
 pub use list_dir::ListDirHandler;
 pub use mcp::McpHandler;
 pub use mcp_resource::McpResourceHandler;
 pub use plan::PlanHandler;
-pub use read_file::ReadFileHandler;
 pub use request_permissions::RequestPermissionsHandler;
 pub(crate) use request_permissions::request_permissions_tool_description;
 pub use request_user_input::RequestUserInputHandler;
@@ -73,8 +68,6 @@ where
         FunctionCallError::RespondToModel(format!("failed to parse function arguments: {err}"))
     })
 }
-
-mod ephemeral_sandbox;
 
 fn parse_arguments_with_base_path<T>(
     arguments: &str,

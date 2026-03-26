@@ -468,7 +468,7 @@ impl StatusHistoryCell {
             memory_phase_one,
             memory_phase_two,
             entire_summary_model,
-            directory: config.cwd.clone(),
+            directory: config.cwd.to_path_buf(),
             permissions,
             agents_summary,
             collaboration_mode: collaboration_mode.map(ToString::to_string),

@@ -3,6 +3,7 @@ use super::new_status_output;
 use super::new_status_output_with_rate_limits_and_utility_routing;
 use super::rate_limit_snapshot_display;
 use crate::history_cell::HistoryCell;
+use crate::test_support::PathBufExt;
 use chrono::Duration as ChronoDuration;
 use chrono::TimeZone;
 use chrono::Utc;
@@ -114,7 +115,7 @@ async fn status_snapshot_includes_reasoning_details() {
         })
         .expect("set sandbox policy");
 
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -792,7 +793,7 @@ async fn status_permissions_non_default_workspace_write_is_custom() {
             exclude_slash_tmp: false,
         })
         .expect("set sandbox policy");
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage::default();
@@ -841,7 +842,7 @@ async fn status_snapshot_includes_forked_from() {
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -895,7 +896,7 @@ async fn status_snapshot_includes_monthly_limit() {
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1148,7 +1149,7 @@ async fn status_card_token_usage_excludes_cached_tokens() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1196,7 +1197,7 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
     config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1259,7 +1260,7 @@ async fn status_snapshot_shows_missing_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1307,7 +1308,7 @@ async fn status_snapshot_includes_credits_and_limits() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex".to_string());
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1376,7 +1377,7 @@ async fn status_snapshot_shows_empty_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1433,7 +1434,7 @@ async fn status_snapshot_shows_stale_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {
@@ -1499,7 +1500,7 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex".to_string());
-    config.cwd = PathBuf::from("/workspace/tests");
+    config.cwd = PathBuf::from("/workspace/tests").abs();
 
     let auth_manager = test_auth_manager(&config);
     let usage = TokenUsage {

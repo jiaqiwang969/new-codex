@@ -14,10 +14,6 @@ use crate::SandboxState;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
-use crate::analytics_client::AnalyticsEventsClient;
-use crate::analytics_client::AppInvocation;
-use crate::analytics_client::InvocationType;
-use crate::analytics_client::build_track_events_context;
 use crate::apps::render_apps_section;
 use crate::auth_env_telemetry::collect_auth_env_telemetry;
 use crate::commit_attribution::commit_message_trailer_instruction;
@@ -29,9 +25,6 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::config::ManagedFeatures;
 use crate::connectors;
 use crate::exec_policy::ExecPolicyManager;
-use crate::model_compat::is_anthropic_model_slug;
-use crate::model_compat::is_gemma_model_slug;
-use crate::model_compat::is_grok_model_slug;
 use crate::model_compat::is_openai_model_slug;
 #[cfg(test)]
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
@@ -39,13 +32,26 @@ use crate::models_manager::manager::ModelsManager;
 use crate::models_manager::manager::RefreshStrategy;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
+use crate::path_utils::normalize_for_native_workdir;
+use crate::provider_pool_failover::ProviderPoolFailoverAction;
+use crate::provider_pool_failover::decide_provider_pool_failover;
+use crate::provider_pool_failover::should_switch_provider_account;
+use crate::provider_pool_runtime::next_account_from_pool;
+use crate::provider_routing::account_index_label;
+use crate::provider_routing::normalize_account_pool_in_config_order;
+use crate::provider_routing::preview_provider_with_first_pool_account;
+use crate::provider_routing::provider_id_for_model_slug as provider_id_for_model_family;
+use crate::provider_routing::provider_matches_builtin_family;
+use crate::provider_routing::providers_match_ignoring_active_account;
+use crate::provider_routing::resolve_provider_id_for_provider;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
 use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
 use crate::realtime_conversation::handle_start as handle_realtime_conversation_start;
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
+use crate::render_skills_section;
 use crate::rollout::session_index;
-use crate::skills::render_skills_section;
+use crate::skills_load_input_from_config;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
@@ -54,10 +60,15 @@ use crate::stream_events_utils::raw_assistant_output_text_from_item;
 use crate::stream_events_utils::record_completed_response_item;
 use crate::turn_metadata::TurnMetadataState;
 use crate::util::error_or_panic;
+use crate::utility_model::UtilityModelOverrides;
 use async_channel::Receiver;
 use async_channel::Sender;
 use chrono::Local;
 use chrono::Utc;
+use codex_analytics::AnalyticsEventsClient;
+use codex_analytics::AppInvocation;
+use codex_analytics::InvocationType;
+use codex_analytics::build_track_events_context;
 use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_exec_server::Environment;
@@ -242,6 +253,14 @@ pub(crate) struct PreviousTurnSettings {
     pub(crate) realtime_active: Option<bool>,
 }
 
+use crate::SkillError;
+use crate::SkillInjections;
+use crate::SkillLoadOutcome;
+use crate::SkillMetadata;
+use crate::SkillsManager;
+use crate::build_skill_injections;
+use crate::collect_env_var_dependencies;
+use crate::collect_explicit_skill_mentions;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::feedback_tags;
 use crate::guardian::GuardianReviewSessionManager;
@@ -251,6 +270,9 @@ use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
 use crate::hook_runtime::run_pending_session_start_hooks;
 use crate::hook_runtime::run_user_prompt_submit_hooks;
+use crate::injection::ToolMentionKind;
+use crate::injection::app_id_from_path;
+use crate::injection::tool_kind_for_path;
 use crate::instructions::UserInstructions;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::McpManager;
@@ -308,6 +330,7 @@ use crate::protocol::TokenUsage;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::TurnDiffEvent;
 use crate::protocol::WarningEvent;
+use crate::resolve_skill_dependencies_for_turn;
 use crate::rollout::RolloutRecorder;
 use crate::rollout::RolloutRecorderParams;
 use crate::rollout::map_session_init_error;
@@ -316,18 +339,6 @@ use crate::rollout::policy::EventPersistenceMode;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
-use crate::skills::SkillError;
-use crate::skills::SkillInjections;
-use crate::skills::SkillLoadOutcome;
-use crate::skills::SkillMetadata;
-use crate::skills::SkillsManager;
-use crate::skills::build_skill_injections;
-use crate::skills::collect_env_var_dependencies;
-use crate::skills::collect_explicit_skill_mentions;
-use crate::skills::injection::ToolMentionKind;
-use crate::skills::injection::app_id_from_path;
-use crate::skills::injection::tool_kind_for_path;
-use crate::skills::resolve_skill_dependencies_for_turn;
 use crate::skills_watcher::SkillsWatcher;
 use crate::skills_watcher::SkillsWatcherEvent;
 use crate::state::ActiveTurn;
@@ -504,7 +515,10 @@ impl Codex {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
-        let loaded_skills = skills_manager.skills_for_config(&config);
+        let plugin_outcome = plugins_manager.plugins_for_config(&config);
+        let effective_skill_roots = plugin_outcome.effective_skill_roots();
+        let skills_input = skills_load_input_from_config(&config, effective_skill_roots);
+        let loaded_skills = skills_manager.skills_for_config(&skills_input);
 
         for err in &loaded_skills.errors {
             error!(
@@ -869,10 +883,10 @@ pub struct TurnContext {
     pub(crate) reasoning_summary: ReasoningSummaryConfig,
     pub(crate) session_source: SessionSource,
     pub(crate) environment: Arc<Environment>,
-    /// The session's current working directory. All relative paths provided by
-    /// the model as well as sandbox policies are resolved against this path
+    /// The session's absolute working directory. All relative paths provided
+    /// by the model as well as sandbox policies are resolved against this path
     /// instead of `std::env::current_dir()`.
-    pub(crate) cwd: PathBuf,
+    pub(crate) cwd: AbsolutePathBuf,
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
@@ -932,14 +946,8 @@ impl TurnContext {
         let provider = if providers_match_ignoring_active_account(&self.provider, &logical_provider)
         {
             self.provider.clone()
-        } else if let Some(account) =
-            normalize_account_pool_in_config_order(provider_id.as_str(), &logical_provider)
-                .into_iter()
-                .next()
-        {
-            logical_provider.with_account(&account)
         } else {
-            logical_provider.clone()
+            preview_provider_with_first_pool_account(provider_id.as_str(), &logical_provider)
         };
         config.model_provider_id = provider_id;
         config.model_provider = logical_provider;
@@ -1046,7 +1054,7 @@ impl TurnContext {
     pub(crate) fn resolve_path(&self, path: Option<String>) -> PathBuf {
         path.as_ref()
             .map(PathBuf::from)
-            .map_or_else(|| self.cwd.clone(), |p| self.cwd.join(p))
+            .map_or_else(|| self.cwd.to_path_buf(), |p| self.cwd.as_path().join(p))
     }
 
     pub(crate) fn compact_prompt(&self) -> &str {
@@ -1059,7 +1067,7 @@ impl TurnContext {
         TurnContextItem {
             turn_id: Some(self.sub_id.clone()),
             trace_id: self.trace_id.clone(),
-            cwd: self.cwd.clone(),
+            cwd: self.cwd.to_path_buf(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
             approval_policy: self.approval_policy.value(),
@@ -1182,14 +1190,11 @@ pub(crate) struct SessionConfiguration {
     network_sandbox_policy: NetworkSandboxPolicy,
     windows_sandbox_level: WindowsSandboxLevel,
 
-    /// Working directory that should be treated as the *root* of the
+    /// Absolute working directory that should be treated as the *root* of the
     /// session. All relative paths supplied by the model as well as the
-    /// execution sandbox are resolved against this directory **instead**
-    /// of the process-wide current working directory. CLI front-ends are
-    /// expected to expand this to an absolute path before sending the
-    /// `ConfigureSession` operation so that the business-logic layer can
-    /// operate deterministically.
-    cwd: PathBuf,
+    /// execution sandbox are resolved against this directory **instead** of
+    /// the process-wide current working directory.
+    cwd: AbsolutePathBuf,
     /// Directory containing all Codex state for this session.
     codex_home: PathBuf,
     /// Optional user-facing name for the thread, updated during the session.
@@ -1221,7 +1226,7 @@ impl SessionConfiguration {
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
             sandbox_policy: self.sandbox_policy.get().clone(),
-            cwd: self.cwd.clone(),
+            cwd: self.cwd.to_path_buf(),
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
@@ -1270,11 +1275,23 @@ impl SessionConfiguration {
         if let Some(windows_sandbox_level) = updates.windows_sandbox_level {
             next_configuration.windows_sandbox_level = windows_sandbox_level;
         }
-        let mut cwd_changed = false;
-        if let Some(cwd) = updates.cwd.clone() {
-            next_configuration.cwd = cwd;
-            cwd_changed = true;
-        }
+
+        let absolute_cwd = updates
+            .cwd
+            .as_ref()
+            .map(|cwd| {
+                AbsolutePathBuf::relative_to_current_dir(normalize_for_native_workdir(
+                    cwd.as_path(),
+                ))
+                .unwrap_or_else(|e| {
+                    warn!("failed to normalize update cwd: {cwd:?}: {e}");
+                    self.cwd.clone()
+                })
+            })
+            .unwrap_or_else(|| self.cwd.clone());
+
+        let cwd_changed = absolute_cwd.as_path() != self.cwd.as_path();
+        next_configuration.cwd = absolute_cwd;
         if sandbox_policy_changed || (cwd_changed && file_system_policy_matches_legacy) {
             // Preserve richer split policies across cwd-only updates; only
             // rederive when the session is already using the legacy bridge.
@@ -1328,15 +1345,11 @@ impl SessionConfiguration {
                     if let Some(provider) = providers.get(target_provider_id) {
                         next_configuration.provider_id = target_provider_id.to_string();
                         next_configuration.provider = provider.clone();
-                        let preview_provider =
-                            normalize_account_pool_in_config_order(target_provider_id, provider)
-                                .first()
-                                .map(|account| provider.with_account(account))
-                                .unwrap_or_else(|| provider.clone());
-                        let account_label = account_index_label(&preview_provider);
-                        let base_url = preview_provider.base_url.as_deref().unwrap_or("(default)");
-                        provider_switch_label = Some(format!(
-                            "{old_provider_id} -> {target_provider_id} [{account_label}] @ {base_url} (model: {new_model})"
+                        provider_switch_label = Some(format_provider_switch_label(
+                            &old_provider_id,
+                            target_provider_id,
+                            new_model,
+                            &next_configuration.provider,
                         ));
                     } else {
                         tracing::warn!(
@@ -1369,24 +1382,12 @@ impl SessionConfiguration {
                     &restored_provider,
                     &original_config.model_provider_id,
                 );
-                let preview_provider = normalize_account_pool_in_config_order(
-                    next_configuration.provider_id.as_str(),
-                    &restored_provider,
-                )
-                .first()
-                .map(|account| restored_provider.with_account(account))
-                .unwrap_or_else(|| restored_provider.clone());
                 next_configuration.provider = restored_provider;
-
-                let account_label = account_index_label(&preview_provider);
-                let base_url = preview_provider.base_url.as_deref().unwrap_or("(default)");
-                provider_switch_label = Some(format!(
-                    "{} -> {} [{}] @ {} (model: {})",
-                    old_provider_id,
-                    next_configuration.provider_id,
-                    account_label,
-                    base_url,
-                    new_model
+                provider_switch_label = Some(format_provider_switch_label(
+                    &old_provider_id,
+                    next_configuration.provider_id.as_str(),
+                    new_model,
+                    &next_configuration.provider,
                 ));
             } else if provider_is_auto_switched {
                 // Switching FROM a family-specific provider back to a default
@@ -1399,23 +1400,12 @@ impl SessionConfiguration {
                     &restored_provider,
                     &original_config.model_provider_id,
                 );
-                let preview_provider = normalize_account_pool_in_config_order(
-                    next_configuration.provider_id.as_str(),
-                    &restored_provider,
-                )
-                .first()
-                .map(|account| restored_provider.with_account(account))
-                .unwrap_or_else(|| restored_provider.clone());
                 next_configuration.provider = restored_provider;
-                let account_label = account_index_label(&preview_provider);
-                let base_url = preview_provider.base_url.as_deref().unwrap_or("(default)");
-                provider_switch_label = Some(format!(
-                    "{} -> {} [{}] @ {} (model: {})",
-                    old_provider_id,
-                    next_configuration.provider_id,
-                    account_label,
-                    base_url,
-                    new_model
+                provider_switch_label = Some(format_provider_switch_label(
+                    &old_provider_id,
+                    next_configuration.provider_id.as_str(),
+                    new_model,
+                    &next_configuration.provider,
                 ));
             }
         } // End if updates.model.is_some()
@@ -1424,135 +1414,18 @@ impl SessionConfiguration {
     }
 }
 
-fn provider_id_for_model_family(model_slug: &str) -> Option<&'static str> {
-    // Check for antigravity prefix first
-    if model_slug.starts_with("antigravity/claude-")
-        || model_slug.starts_with("antigravity-anthropic/")
-    {
-        Some(crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID)
-    } else if model_slug.starts_with("antigravity/")
-        || model_slug.starts_with("antigravity-gemini/")
-    {
-        // Antigravity non-Claude models use the native Gemini endpoint in this integration.
-        Some(crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID)
-    } else if is_gemma_model_slug(model_slug) {
-        Some(crate::model_provider_info::GEMMA_PROVIDER_ID)
-    } else if model_slug.starts_with("gemini-") {
-        Some(crate::model_provider_info::GEMINI_PROVIDER_ID)
-    } else if is_anthropic_model_slug(model_slug) {
-        Some(crate::model_provider_info::ANTHROPIC_PROVIDER_ID)
-    } else if is_grok_model_slug(model_slug) {
-        Some(crate::model_provider_info::GROK_PROVIDER_ID)
-    } else {
-        None
-    }
-}
-
-fn provider_matches_builtin_family(provider: &ModelProviderInfo, provider_id: &str) -> bool {
-    match provider_id {
-        crate::model_provider_info::GEMINI_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                && !provider.is_antigravity_gemini()
-        }
-        crate::model_provider_info::GEMMA_PROVIDER_ID => {
-            provider.is_gemma()
-                || (provider.wire_api == crate::model_provider_info::WireApi::Gemini
-                    && !provider.is_gemini()
-                    && !provider.is_antigravity_gemini())
-        }
-        crate::model_provider_info::ANTHROPIC_PROVIDER_ID => {
-            provider.wire_api == crate::model_provider_info::WireApi::Anthropic
-                && !provider.is_antigravity_anthropic()
-        }
-        crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID => {
-            provider.is_antigravity_gemini()
-        }
-        crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID => {
-            provider.is_antigravity_anthropic()
-        }
-        crate::model_provider_info::GROK_PROVIDER_ID => provider.is_grok(),
-        _ => false,
-    }
-}
-
-fn providers_match_ignoring_active_account(
-    left: &ModelProviderInfo,
-    right: &ModelProviderInfo,
-) -> bool {
-    let mut normalized_left = left.clone();
-    if !normalized_left.account_pool.is_empty() {
-        normalized_left.base_url = None;
-        normalized_left.env_key = None;
-    }
-    let mut normalized_right = right.clone();
-    if !normalized_right.account_pool.is_empty() {
-        normalized_right.base_url = None;
-        normalized_right.env_key = None;
-    }
-    normalized_left == normalized_right
-}
-
-fn pick_preferred_provider_id(mut ids: Vec<String>) -> String {
-    if ids.len() == 1 {
-        return ids.remove(0);
-    }
-
-    ids.sort();
-    if let Some(openai_id) = ids.iter().find(|id| id.as_str() == "openai") {
-        return openai_id.clone();
-    }
-    ids.remove(0)
-}
-
-fn resolve_provider_id_for_provider(
-    providers: &HashMap<String, ModelProviderInfo>,
+fn format_provider_switch_label(
+    old_provider_id: &str,
+    new_provider_id: &str,
+    model: &str,
     provider: &ModelProviderInfo,
-    fallback_provider_id: &str,
 ) -> String {
-    // Exact match by provider identity after stripping any active pool account.
-    if let Some(candidate) = providers.get(fallback_provider_id)
-        && providers_match_ignoring_active_account(candidate, provider)
-    {
-        return fallback_provider_id.to_string();
-    }
-
-    let identity_matches = providers
-        .iter()
-        .filter_map(|(id, candidate)| {
-            providers_match_ignoring_active_account(candidate, provider).then_some(id.clone())
-        })
-        .collect::<Vec<_>>();
-    if !identity_matches.is_empty() {
-        return pick_preferred_provider_id(identity_matches);
-    }
-
-    // Fallback: match by stable identity markers.
-    if let Some(candidate) = providers.get(fallback_provider_id)
-        && candidate.name == provider.name
-        && candidate.wire_api == provider.wire_api
-    {
-        return fallback_provider_id.to_string();
-    }
-
-    let name_matches = providers
-        .iter()
-        .filter_map(|(id, candidate)| {
-            (candidate.name == provider.name && candidate.wire_api == provider.wire_api)
-                .then_some(id.clone())
-        })
-        .collect::<Vec<_>>();
-    if !name_matches.is_empty() {
-        return pick_preferred_provider_id(name_matches);
-    }
-
-    if provider.wire_api == crate::model_provider_info::WireApi::Responses
-        && let Some(openai_provider) = providers.get("openai")
-        && openai_provider.wire_api == crate::model_provider_info::WireApi::Responses
-    {
-        return "openai".to_string();
-    }
-
-    fallback_provider_id.to_string()
+    let preview_provider = preview_provider_with_first_pool_account(new_provider_id, provider);
+    let account_label = account_index_label(&preview_provider);
+    let base_url = preview_provider.base_url.as_deref().unwrap_or("(default)");
+    format!(
+        "{old_provider_id} -> {new_provider_id} [{account_label}] @ {base_url} (model: {model})"
+    )
 }
 
 fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> usize {
@@ -1763,8 +1636,6 @@ impl Session {
         let auth_manager_for_context = auth_manager;
         let provider_for_context = provider;
         let session_telemetry_for_context = session_telemetry;
-        let per_turn_config = Arc::new(per_turn_config);
-
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             available_models: &models_manager.try_list_models().unwrap_or_default(),
@@ -1784,10 +1655,12 @@ impl Session {
         .with_agent_roles(per_turn_config.agent_roles.clone());
 
         let cwd = session_configuration.cwd.clone();
+
+        let per_turn_config = Arc::new(per_turn_config);
         let turn_metadata_state = Arc::new(TurnMetadataState::new(
             conversation_id.to_string(),
             sub_id.clone(),
-            cwd.clone(),
+            cwd.to_path_buf(),
             session_configuration.sandbox_policy.get(),
             session_configuration.windows_sandbox_level,
         ));
@@ -1866,13 +1739,6 @@ impl Session {
             session_configuration.collaboration_mode.model(),
             session_configuration.provider
         );
-        if !session_configuration.cwd.is_absolute() {
-            return Err(anyhow::anyhow!(
-                "cwd is not absolute: {:?}",
-                session_configuration.cwd
-            ));
-        }
-
         let forked_from_id = initial_history.forked_from_id();
 
         let (conversation_id, rollout_params) = match &initial_history {
@@ -2142,7 +2008,7 @@ impl Session {
                 ShellSnapshot::start_snapshotting(
                     config.codex_home.clone(),
                     conversation_id,
-                    session_configuration.cwd.clone(),
+                    session_configuration.cwd.to_path_buf(),
                     &mut default_shell,
                     session_telemetry.clone(),
                 )
@@ -2260,8 +2126,9 @@ impl Session {
             shell_zsh_path: config.zsh_path.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
             analytics_events_client: AnalyticsEventsClient::new(
-                Arc::clone(&config),
                 Arc::clone(&auth_manager),
+                config.chatgpt_base_url.trim_end_matches('/').to_string(),
+                config.analytics_enabled,
             ),
             hooks,
             rollout: Mutex::new(rollout_recorder),
@@ -2341,7 +2208,7 @@ impl Session {
                 approval_policy: session_configuration.approval_policy.value(),
                 approvals_reviewer: session_configuration.approvals_reviewer,
                 sandbox_policy: session_configuration.sandbox_policy.get().clone(),
-                cwd: session_configuration.cwd.clone(),
+                cwd: session_configuration.cwd.to_path_buf(),
                 reasoning_effort: session_configuration.collaboration_mode.reasoning_effort(),
                 history_log_id,
                 history_entry_count,
@@ -2362,7 +2229,7 @@ impl Session {
         let sandbox_state = SandboxState {
             sandbox_policy: session_configuration.sandbox_policy.get().clone(),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
-            sandbox_cwd: session_configuration.cwd.clone(),
+            sandbox_cwd: session_configuration.cwd.to_path_buf(),
             use_legacy_landlock: config.features.use_legacy_landlock(),
         };
         let mut required_mcp_servers: Vec<String> = mcp_servers
@@ -2562,50 +2429,6 @@ impl Session {
         state.clear_mcp_tool_selection();
     }
 
-    pub(crate) async fn set_auto_model_sub_selection(&self, model_sub: Option<String>) {
-        let mut state = self.state.lock().await;
-        state.set_auto_model_sub_selection(model_sub);
-    }
-
-    pub(crate) async fn get_auto_model_sub_selection(&self) -> Option<String> {
-        let state = self.state.lock().await;
-        state.get_auto_model_sub_selection()
-    }
-
-    pub(crate) async fn set_auto_model_sub_calibration_attempted(&self, attempted: bool) {
-        let mut state = self.state.lock().await;
-        state.set_auto_model_sub_calibration_attempted(attempted);
-    }
-
-    pub(crate) async fn get_auto_model_sub_calibration_attempted(&self) -> bool {
-        let state = self.state.lock().await;
-        state.get_auto_model_sub_calibration_attempted()
-    }
-
-    pub(crate) async fn set_last_model_sub_calibration_models(&self, models: Vec<String>) {
-        let mut state = self.state.lock().await;
-        state.set_last_model_sub_calibration_models(models);
-    }
-
-    pub(crate) async fn get_last_model_sub_calibration_models(&self) -> Vec<String> {
-        let state = self.state.lock().await;
-        state.get_last_model_sub_calibration_models()
-    }
-
-    pub(crate) async fn set_last_model_sub_calibration_recommended_for_session(
-        &self,
-        model: Option<String>,
-    ) {
-        let mut state = self.state.lock().await;
-        state.set_last_model_sub_calibration_recommended_for_session(model);
-    }
-
-    pub(crate) async fn get_last_model_sub_calibration_recommended_for_session(
-        &self,
-    ) -> Option<String> {
-        let state = self.state.lock().await;
-        state.get_last_model_sub_calibration_recommended_for_session()
-    }
     // Merges connector IDs into the session-level explicit connector selection.
     pub(crate) async fn merge_connector_selection(
         &self,
@@ -2954,8 +2777,7 @@ impl Session {
     ) -> Arc<TurnContext> {
         let resolved_provider = {
             let mut state = self.state.lock().await;
-            resolve_turn_provider_from_pool(
-                &mut state,
+            state.resolve_turn_provider(
                 &session_configuration.provider_id,
                 &session_configuration.provider,
                 std::time::Instant::now(),
@@ -2997,7 +2819,7 @@ impl Session {
             let sandbox_state = SandboxState {
                 sandbox_policy: per_turn_config.permissions.sandbox_policy.get().clone(),
                 codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
-                sandbox_cwd: per_turn_config.cwd.clone(),
+                sandbox_cwd: per_turn_config.cwd.to_path_buf(),
                 use_legacy_landlock: per_turn_config.features.use_legacy_landlock(),
             };
             if let Err(e) = self
@@ -3020,10 +2842,16 @@ impl Session {
                 &per_turn_config,
             )
             .await;
+        let plugin_outcome = self
+            .services
+            .plugins_manager
+            .plugins_for_config(&per_turn_config);
+        let effective_skill_roots = plugin_outcome.effective_skill_roots();
+        let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots);
         let skills_outcome = Arc::new(
             self.services
                 .skills_manager
-                .skills_for_config(&per_turn_config),
+                .skills_for_config(&skills_input),
         );
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.conversation_id,
@@ -3101,13 +2929,9 @@ impl Session {
         let mut state = self.state.lock().await;
         let provider_id = state.session_configuration.provider_id.clone();
         let provider = state.session_configuration.provider.clone();
-        resolve_turn_provider_from_pool(
-            &mut state,
-            &provider_id,
-            &provider,
-            std::time::Instant::now(),
-        )
-        .provider
+        state
+            .resolve_turn_provider(&provider_id, &provider, std::time::Instant::now())
+            .provider
     }
 
     pub(crate) async fn utility_client_and_model_for_slug(
@@ -3124,12 +2948,7 @@ impl Session {
             .await;
         let resolved_provider = {
             let mut state = self.state.lock().await;
-            resolve_turn_provider_from_pool(
-                &mut state,
-                &provider_id,
-                &logical_provider,
-                std::time::Instant::now(),
-            )
+            state.resolve_turn_provider(&provider_id, &logical_provider, std::time::Instant::now())
         };
         let model_client = self
             .services
@@ -3169,8 +2988,7 @@ impl Session {
             .await;
         let resolved_provider = {
             let mut state = self.state.lock().await;
-            resolve_turn_provider_from_pool(
-                &mut state,
+            state.resolve_turn_provider(
                 &next_turn_context.config.model_provider_id,
                 &next_turn_context.config.model_provider,
                 std::time::Instant::now(),
@@ -3232,27 +3050,23 @@ impl Session {
                 .as_ref()
                 .and_then(|name| config_toml.profiles.get(name));
 
-            let normalized = |value: Option<String>| {
-                value.and_then(|value| {
-                    let trimmed = value.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                })
-            };
-
-            config.model_sub = normalized(
+            let UtilityModelOverrides {
+                model_sub,
+                model_sub_responses,
+                model_sub_responses_warning,
+            } = crate::utility_model::resolve_utility_model_overrides(
                 profile
                     .and_then(|entry| entry.model_sub.clone())
                     .or(config_toml.model_sub),
-            );
-            config.model_sub_responses = normalized(
                 profile
                     .and_then(|entry| entry.model_sub_responses.clone())
                     .or(config_toml.model_sub_responses),
             );
+            config.model_sub = model_sub;
+            config.model_sub_responses = model_sub_responses;
+            if let Some(warning) = model_sub_responses_warning {
+                warn!("{warning}");
+            }
         }
 
         state.session_configuration.original_config_do_not_use = Arc::new(config);
@@ -4922,7 +4736,7 @@ impl Session {
         let sandbox_state = SandboxState {
             sandbox_policy: turn_context.sandbox_policy.get().clone(),
             codex_linux_sandbox_exe: turn_context.codex_linux_sandbox_exe.clone(),
-            sandbox_cwd: turn_context.cwd.clone(),
+            sandbox_cwd: turn_context.cwd.to_path_buf(),
             use_legacy_landlock: turn_context.features.use_legacy_landlock(),
         };
         {
@@ -5288,8 +5102,14 @@ mod handlers {
     use crate::codex::SessionSettingsUpdate;
     use crate::codex::SteerInputError;
 
+    use crate::SkillError;
     use crate::codex::spawn_review_thread;
     use crate::config::Config;
+    use crate::config_loader::CloudRequirementsLoader;
+    use crate::config_loader::LoaderOverrides;
+    use crate::config_loader::load_config_layers_state;
+    use codex_features::Feature;
+    use codex_utils_absolute_path::AbsolutePathBuf;
 
     use crate::mcp::auth::compute_auth_statuses;
     use crate::mcp::collect_mcp_snapshot_from_manager;
@@ -5744,17 +5564,70 @@ mod handlers {
     ) {
         let cwds = if cwds.is_empty() {
             let state = sess.state.lock().await;
-            vec![state.session_configuration.cwd.clone()]
+            vec![state.session_configuration.cwd.to_path_buf()]
         } else {
             cwds
         };
 
         let skills_manager = &sess.services.skills_manager;
+        let plugins_manager = &sess.services.plugins_manager;
         let config = sess.get_config().await;
+        let codex_home = sess.codex_home().await;
         let mut skills = Vec::new();
+        let empty_cli_overrides: &[(String, toml::Value)] = &[];
         for cwd in cwds {
+            let cwd_abs = match AbsolutePathBuf::try_from(cwd.as_path()) {
+                Ok(path) => path,
+                Err(err) => {
+                    let message = err.to_string();
+                    let cwd_for_entry = cwd.clone();
+                    skills.push(SkillsListEntry {
+                        cwd: cwd_for_entry.clone(),
+                        skills: Vec::new(),
+                        errors: super::errors_to_info(&[SkillError {
+                            path: cwd_for_entry,
+                            message,
+                        }]),
+                    });
+                    continue;
+                }
+            };
+            let config_layer_stack = match load_config_layers_state(
+                &codex_home,
+                Some(cwd_abs),
+                empty_cli_overrides,
+                LoaderOverrides::default(),
+                CloudRequirementsLoader::default(),
+            )
+            .await
+            {
+                Ok(config_layer_stack) => config_layer_stack,
+                Err(err) => {
+                    let message = err.to_string();
+                    let cwd_for_entry = cwd.clone();
+                    skills.push(SkillsListEntry {
+                        cwd: cwd_for_entry.clone(),
+                        skills: Vec::new(),
+                        errors: super::errors_to_info(&[SkillError {
+                            path: cwd_for_entry,
+                            message,
+                        }]),
+                    });
+                    continue;
+                }
+            };
+            let effective_skill_roots = plugins_manager.effective_skill_roots_for_layer_stack(
+                &config_layer_stack,
+                config.features.enabled(Feature::Plugins),
+            );
+            let skills_input = crate::SkillsLoadInput::new(
+                cwd.clone(),
+                effective_skill_roots,
+                config_layer_stack,
+                config.bundled_skills_enabled(),
+            );
             let outcome = skills_manager
-                .skills_for_cwd(&cwd, config.as_ref(), force_reload)
+                .skills_for_cwd(&skills_input, force_reload)
                 .await;
             let errors = super::errors_to_info(&outcome.errors);
             let skills_metadata = super::skills_to_info(&outcome.skills, &outcome.disabled_paths);
@@ -6122,7 +5995,13 @@ mod handlers {
             let absolute = if path.is_absolute() {
                 path
             } else {
-                cwd.join(path)
+                match cwd.join(path) {
+                    Ok(path) => path.into_path_buf(),
+                    Err(err) => {
+                        warn!("failed to resolve reference image path against cwd: {err:#}");
+                        continue;
+                    }
+                }
             };
 
             let input = UserInput::LocalImage { path: absolute };
@@ -6234,12 +6113,7 @@ async fn spawn_review_thread(
         );
     let resolved_provider = {
         let mut state = sess.state.lock().await;
-        resolve_turn_provider_from_pool(
-            &mut state,
-            &provider_id,
-            &logical_provider,
-            std::time::Instant::now(),
-        )
+        state.resolve_turn_provider(&provider_id, &logical_provider, std::time::Instant::now())
     };
     let background_message = resolved_provider.background_message.clone();
     let provider = resolved_provider.provider;
@@ -6293,7 +6167,7 @@ async fn spawn_review_thread(
     let turn_metadata_state = Arc::new(TurnMetadataState::new(
         sess.conversation_id.to_string(),
         review_turn_id.clone(),
-        parent_turn_context.cwd.clone(),
+        parent_turn_context.cwd.to_path_buf(),
         parent_turn_context.sandbox_policy.get(),
         parent_turn_context.windows_sandbox_level,
     ));
@@ -6915,7 +6789,7 @@ pub(crate) async fn run_turn(
                     let stop_request = codex_hooks::StopRequest {
                         session_id: sess.conversation_id,
                         turn_id: turn_context.sub_id.clone(),
-                        cwd: turn_context.cwd.clone(),
+                        cwd: turn_context.cwd.to_path_buf(),
                         transcript_path: sess.hook_transcript_path().await,
                         model: turn_context.model_info.slug.clone(),
                         permission_mode: stop_hook_permission_mode,
@@ -6965,7 +6839,7 @@ pub(crate) async fn run_turn(
                         .hooks()
                         .dispatch(HookPayload {
                             session_id: sess.conversation_id,
-                            cwd: turn_context.cwd.clone(),
+                            cwd: turn_context.cwd.to_path_buf(),
                             client: turn_context.app_server_client_name.clone(),
                             triggered_at: chrono::Utc::now(),
                             hook_event: HookEvent::AfterAgent {
@@ -7222,182 +7096,7 @@ async fn run_auto_compact(
     Ok(())
 }
 
-fn should_switch_provider_account(err: &CodexErr, retries: u64, max_retries: u64) -> bool {
-    // Auth / quota errors should immediately try the next pool account.
-    if matches!(
-        err,
-        CodexErr::EnvVar(_)
-            | CodexErr::RetryLimit(_)
-            | CodexErr::UsageLimitReached(_)
-            | CodexErr::InvalidRequest(_)
-    ) {
-        return true;
-    }
-    if let Some(status) = err.http_status_code_value()
-        && matches!(status, 400 | 401 | 403 | 429)
-    {
-        return true;
-    }
-    err.is_retryable() && retries >= max_retries
-}
-
 const PROVIDER_POOL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
-
-#[derive(Debug, Clone, PartialEq)]
-struct ResolvedTurnProvider {
-    provider: ModelProviderInfo,
-    background_message: Option<String>,
-}
-
-fn normalize_account_pool_in_config_order(
-    provider_id: &str,
-    provider: &ModelProviderInfo,
-) -> Vec<ModelProviderAccount> {
-    if provider.account_pool.is_empty() {
-        return Vec::new();
-    }
-    let mut seen = HashSet::new();
-    provider
-        .account_pool
-        .iter()
-        .cloned()
-        .filter_map(|account| {
-            let base_url = account
-                .base_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-            let env_key = account
-                .env_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-            let normalized = ModelProviderAccount { base_url, env_key };
-            if normalized.base_url.is_none() || normalized.env_key.is_none() {
-                warn!(
-                    "Skipping account entry for provider {provider_id}: missing base_url or env_key"
-                );
-                None
-            } else if seen.insert(normalized.clone()) {
-                Some(normalized)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn next_account_from_pool(
-    provider_id: &str,
-    provider: &ModelProviderInfo,
-    current_account: Option<&ModelProviderAccount>,
-    attempted_accounts: &mut HashSet<ModelProviderAccount>,
-) -> Option<ModelProviderAccount> {
-    let pool = normalize_account_pool_in_config_order(provider_id, provider);
-    let pool_len = pool.len();
-    if pool_len == 0 {
-        return None;
-    }
-
-    let start_index = current_account
-        .and_then(|account| pool.iter().position(|item| item == account))
-        .map(|index| (index + 1) % pool_len)
-        .unwrap_or(0);
-
-    for offset in 0..pool_len {
-        let index = (start_index + offset) % pool_len;
-        let account = pool[index].clone();
-        if attempted_accounts.insert(account.clone()) {
-            return Some(account);
-        }
-    }
-
-    None
-}
-
-/// Return a human-readable label like "key 1/3" indicating which account
-/// from the pool is currently active. Falls back to the env_key name when
-/// there is no pool.
-fn account_index_label(provider: &ModelProviderInfo) -> String {
-    if let Some(current) = provider.current_account() {
-        let pool = normalize_account_pool_in_config_order("", provider);
-        if pool.len() > 1
-            && let Some(idx) = pool.iter().position(|a| a == &current)
-        {
-            return format!("key {}/{}", idx + 1, pool.len());
-        }
-        current.env_key.unwrap_or_else(|| "<default>".to_string())
-    } else {
-        "<no account>".to_string()
-    }
-}
-
-fn resolve_turn_provider_from_pool(
-    state: &mut SessionState,
-    provider_id: &str,
-    provider: &ModelProviderInfo,
-    now: std::time::Instant,
-) -> ResolvedTurnProvider {
-    let pool = normalize_account_pool_in_config_order(provider_id, provider);
-    if pool.is_empty() {
-        return ResolvedTurnProvider {
-            provider: provider.clone(),
-            background_message: None,
-        };
-    }
-
-    let mut cooled_indices = Vec::new();
-    for (index, account) in pool.iter().enumerate() {
-        if state
-            .pool_cooldown_until(provider_id, account, now)
-            .is_some()
-        {
-            cooled_indices.push(index);
-            continue;
-        }
-
-        let background_message = if pool.len() == 1 {
-            None
-        } else if cooled_indices.is_empty() {
-            Some(format!(
-                "Provider pool {provider_id}: trying key {}/{}",
-                index + 1,
-                pool.len()
-            ))
-        } else {
-            let skipped_keys = if cooled_indices.len() == 1 {
-                format!("key {}/{}", cooled_indices[0] + 1, pool.len())
-            } else {
-                let keys = cooled_indices
-                    .iter()
-                    .map(|skipped_index| format!("{}/{}", skipped_index + 1, pool.len()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("keys {keys}")
-            };
-            Some(format!(
-                "Provider pool {provider_id}: {skipped_keys} cooling down; trying key {}/{}",
-                index + 1,
-                pool.len()
-            ))
-        };
-
-        return ResolvedTurnProvider {
-            provider: provider.with_account(account),
-            background_message,
-        };
-    }
-
-    ResolvedTurnProvider {
-        provider: provider.with_account(&pool[0]),
-        background_message: Some(format!(
-            "Provider pool {provider_id}: all keys cooling down; forcing fresh probe from key 1/{}",
-            pool.len()
-        )),
-    }
-}
 
 /// Wrapper around `maybe_switch_provider_account` that supports cycling through
 /// the account pool multiple rounds. When all accounts in the pool have been
@@ -7415,7 +7114,18 @@ async fn try_switch_pool_account(
     max_retries: u64,
 ) -> Option<Arc<TurnContext>> {
     // First try within the current round.
-    if let Some(ctx) = maybe_switch_provider_account(
+    if matches!(
+        decide_provider_pool_failover(
+            err,
+            retries,
+            max_retries,
+            /*current_round_exhausted*/ false,
+            *pool_switch_count,
+            pool_size,
+            max_rounds,
+        ),
+        ProviderPoolFailoverAction::SwitchWithinRound
+    ) && let Some(ctx) = maybe_switch_provider_account(
         sess,
         turn_context,
         attempted_accounts,
@@ -7431,15 +7141,18 @@ async fn try_switch_pool_account(
     }
 
     // Current round exhausted. Check if we can start a new round.
-    if !should_switch_provider_account(err, retries, max_retries) {
-        return None;
-    }
-    let completed_rounds = if pool_size > 0 {
-        (*pool_switch_count + 1) / pool_size
-    } else {
-        max_rounds
-    };
-    if completed_rounds >= max_rounds {
+    if !matches!(
+        decide_provider_pool_failover(
+            err,
+            retries,
+            max_retries,
+            /*current_round_exhausted*/ true,
+            *pool_switch_count,
+            pool_size,
+            max_rounds,
+        ),
+        ProviderPoolFailoverAction::RestartFromFirstAccount
+    ) {
         return None;
     }
 
@@ -7995,10 +7708,7 @@ pub(crate) async fn built_tools(
         None
     };
     let auth = sess.services.auth_manager.auth().await;
-    let discoverable_tools = if apps_enabled
-        && turn_context.tools_config.search_tool
-        && turn_context.tools_config.tool_suggest
-    {
+    let discoverable_tools = if apps_enabled && turn_context.tools_config.tool_suggest {
         if let Some(accessible_connectors) = accessible_connectors_with_enabled_state.as_ref() {
             match connectors::list_tool_suggest_discoverable_tools_with_auth(
                 &turn_context.config,
@@ -8350,7 +8060,6 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
-        | EventMsg::GuardianAssessment(_)
         | EventMsg::FileSystemMutated(_) => None,
     }
 }

@@ -12,6 +12,7 @@ mod format;
 mod helpers;
 mod rate_limits;
 
+#[cfg(test)]
 pub(crate) use card::StatusUtilityRoutingHint;
 #[cfg(test)]
 pub(crate) use card::new_status_output;
