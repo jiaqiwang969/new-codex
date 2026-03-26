@@ -13,8 +13,6 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
-    TeamProfile,
-    TeamVouch,
     ModelSub,
     ModelSubResponses,
     ModelEntire,
@@ -111,12 +109,6 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
-            SlashCommand::TeamProfile => {
-                "apply a one-click collaboration preset for leader + utility/memory routing"
-            }
-            SlashCommand::TeamVouch => {
-                "record win/loss verdicts (including duel comparisons) for team profile routing"
-            }
             SlashCommand::ModelSub => {
                 "choose utility model for internal tasks plus default/explorer sub-agents"
             }
@@ -176,8 +168,6 @@ impl SlashCommand {
             self,
             SlashCommand::Review
                 | SlashCommand::Rename
-                | SlashCommand::TeamProfile
-                | SlashCommand::TeamVouch
                 | SlashCommand::ModelSub
                 | SlashCommand::Plan
                 | SlashCommand::RalphLoop
@@ -201,8 +191,6 @@ impl SlashCommand {
             | SlashCommand::Compact
             // | SlashCommand::Undo
             | SlashCommand::Model
-            | SlashCommand::TeamProfile
-            | SlashCommand::TeamVouch
             | SlashCommand::ModelSub
             | SlashCommand::ModelSubResponses
             | SlashCommand::ModelEntire
@@ -278,9 +266,11 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use std::collections::HashSet;
     use std::str::FromStr;
 
     use super::SlashCommand;
+    use super::built_in_slash_commands;
 
     #[test]
     fn stop_command_is_canonical_name() {
@@ -290,5 +280,16 @@ mod tests {
     #[test]
     fn clean_alias_parses_to_stop_command() {
         assert_eq!(SlashCommand::from_str("clean"), Ok(SlashCommand::Stop));
+    }
+
+    #[test]
+    fn built_in_slash_commands_exclude_removed_local_routing_commands() {
+        let commands = built_in_slash_commands()
+            .into_iter()
+            .map(|(command, _)| command)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(commands.contains("team-profile"), false);
+        assert_eq!(commands.contains("team-vouch"), false);
     }
 }

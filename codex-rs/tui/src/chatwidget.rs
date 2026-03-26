@@ -281,7 +281,6 @@ use crate::history_cell::WebSearchCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::markdown::append_markdown;
-use crate::model_sub_vouch;
 use crate::multi_agents;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
@@ -293,8 +292,6 @@ use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
 use crate::status_indicator_widget::StatusDetailsCapitalization;
-use crate::team_profile;
-use crate::team_profile_vouch;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
@@ -1860,11 +1857,11 @@ impl ChatWidget {
             .known_collab_agent_changes_by_turn
             .len()
             .saturating_sub(rollback_turns);
-        let drained = self
+        for turn_changes in self
             .known_collab_agent_changes_by_turn
             .drain(drain_start..)
-            .collect::<Vec<_>>();
-        for turn_changes in drained.into_iter().rev() {
+            .rev()
+        {
             for change in turn_changes.into_iter().rev() {
                 if let Some(previous) = change.previous {
                     self.known_collab_agents.insert(change.thread_id, previous);
@@ -4783,16 +4780,6 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
             }
-            SlashCommand::TeamProfile => {
-                self.open_team_profile_popup();
-            }
-            SlashCommand::TeamVouch => {
-                self.add_info_message(
-                    "Usage: /team-vouch <win|loss> [general|debug|review] [note]\n       /team-vouch duel <winner> <loser> [general|debug|review] [note]\n       /team-vouch model <win|loss> <model> [general|debug|review] [note]\n       /team-vouch model-duel <winner_model> <loser_model> [general|debug|review] [note]"
-                        .to_string(),
-                    Some("Example: /team-vouch model-duel claude-sonnet-4-6 gpt-5.2-codex debug better fix".to_string()),
-                );
-            }
             SlashCommand::ModelSub => {
                 self.open_model_sub_popup();
             }
@@ -5197,7 +5184,8 @@ impl ChatWidget {
                     .filter(|preset| preset.show_in_picker)
                     .map(|preset| preset.model)
                     .collect::<Vec<_>>();
-                let normalized_selector = Self::normalize_team_profile_selector(trimmed);
+                let normalized_selector =
+                    trimmed.trim().to_ascii_lowercase().replace([' ', '_'], "-");
                 if normalized_selector == "inherit"
                     || normalized_selector == "clear"
                     || normalized_selector == "none"
@@ -5208,239 +5196,15 @@ impl ChatWidget {
                     return;
                 }
 
-                let auto_selector = if normalized_selector == "auto"
-                    || normalized_selector == "recommended"
-                {
-                    Some(None)
-                } else if let Some((base, bucket_selector)) = normalized_selector.split_once(':') {
-                    if base == "auto" || base == "recommended" {
-                        team_profile_vouch::TeamProfileTaskBucket::from_selector(bucket_selector)
-                            .map(Some)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                if let Some(task_bucket) = auto_selector {
-                    let vouch_snapshot =
-                        model_sub_vouch::load_model_sub_vouch(&self.config.codex_home);
-                    if let Some(model_sub) = model_sub_vouch::recommended_model_sub(
-                        &vouch_snapshot,
-                        task_bucket,
-                        available_models.iter().map(String::as_str),
-                    ) {
-                        self.app_event_tx.send(AppEvent::PersistModelSubSelection {
-                            model_sub: Some(model_sub.clone()),
-                        });
-                        let mut message =
-                            format!("Recommended utility/sub-agent model: {model_sub}");
-                        if let Some(task_bucket) = task_bucket {
-                            message.push_str(" [");
-                            message.push_str(task_bucket.label());
-                            message.push(']');
-                        }
-                        self.add_info_message(message, /*hint*/ None);
-                    } else {
-                        let mut error = "No model-sub vouch signal yet; run `/team-vouch model ...` or `/team-vouch model-duel ...` first.".to_string();
-                        if let Some(load_error) = vouch_snapshot.load_error() {
-                            error.push_str(" (");
-                            error.push_str(load_error);
-                            error.push(')');
-                        }
-                        self.add_error_message(error);
-                    }
-                    self.bottom_pane.drain_pending_submission_state();
-                    return;
-                }
-
                 if available_models.iter().any(|model| model == trimmed) {
                     self.app_event_tx.send(AppEvent::PersistModelSubSelection {
                         model_sub: Some(trimmed.to_string()),
                     });
                 } else {
                     self.add_error_message(
-                        "Usage: /model-sub <auto|recommended|auto:general|auto:debug|auto:review|recommended:general|recommended:debug|recommended:review|inherit|clear|model-slug>"
-                            .to_string(),
+                        "Usage: /model-sub <inherit|clear|model-slug>".to_string(),
                     );
                 }
-                self.bottom_pane.drain_pending_submission_state();
-            }
-            SlashCommand::TeamProfile if !trimmed.is_empty() => {
-                let vouch_snapshot =
-                    team_profile_vouch::load_team_profile_vouch(&self.config.codex_home);
-                if let Some(profile) = Self::resolve_team_profile_selector(trimmed, &vouch_snapshot)
-                {
-                    self.app_event_tx
-                        .send(AppEvent::PersistTeamProfileSelection {
-                            preset: profile.preset,
-                        });
-                } else {
-                    self.add_error_message(
-                        "Usage: /team-profile <auto|recommended|auto:general|auto:debug|auto:review|recommended:general|recommended:debug|recommended:review|leader-quality|leader-fast|leader-cost-save|deep-reasoning>"
-                            .to_string(),
-                    );
-                }
-                self.bottom_pane.drain_pending_submission_state();
-            }
-            SlashCommand::TeamVouch if !trimmed.is_empty() => {
-                let first_word = trimmed.split_whitespace().next();
-                if first_word.is_some_and(|word| word.eq_ignore_ascii_case("model-duel")) {
-                    let Some((winner_model_sub, loser_model_sub, task_bucket, note)) =
-                        Self::parse_team_vouch_model_duel_args(trimmed)
-                    else {
-                        self.add_error_message(
-                            "Usage: /team-vouch model-duel <winner_model> <loser_model> [general|debug|review] [note]"
-                                .to_string(),
-                        );
-                        self.bottom_pane.drain_pending_submission_state();
-                        return;
-                    };
-                    if winner_model_sub == loser_model_sub {
-                        self.add_error_message(
-                            "Winner and loser utility/sub-agent models must be different."
-                                .to_string(),
-                        );
-                        self.bottom_pane.drain_pending_submission_state();
-                        return;
-                    }
-                    self.app_event_tx.send(AppEvent::RecordModelSubDuelVouch {
-                        winner_model_sub: winner_model_sub.clone(),
-                        loser_model_sub: loser_model_sub.clone(),
-                        task_bucket,
-                        note: note.clone(),
-                    });
-                    let mut message = format!(
-                        "Recorded utility model duel: {winner_model_sub} > {loser_model_sub}"
-                    );
-                    if let Some(task_bucket) = task_bucket {
-                        message.push_str(" [");
-                        message.push_str(task_bucket.label());
-                        message.push(']');
-                    }
-                    if let Some(note) = note.as_deref() {
-                        message.push_str(": ");
-                        message.push_str(note);
-                    }
-                    self.add_info_message(message, /*hint*/ None);
-                    self.bottom_pane.drain_pending_submission_state();
-                    return;
-                }
-                if first_word.is_some_and(|word| word.eq_ignore_ascii_case("model")) {
-                    let Some((verdict, model_sub, task_bucket, note)) =
-                        Self::parse_team_vouch_model_args(trimmed)
-                    else {
-                        self.add_error_message(
-                            "Usage: /team-vouch model <win|loss> <model> [general|debug|review] [note]"
-                                .to_string(),
-                        );
-                        self.bottom_pane.drain_pending_submission_state();
-                        return;
-                    };
-                    self.app_event_tx.send(AppEvent::RecordModelSubVouch {
-                        model_sub: model_sub.clone(),
-                        verdict,
-                        task_bucket,
-                        note: note.clone(),
-                    });
-                    let verdict_label = match verdict {
-                        team_profile_vouch::TeamProfileVouchVerdict::Win => "win",
-                        team_profile_vouch::TeamProfileVouchVerdict::Loss => "loss",
-                    };
-                    let mut message =
-                        format!("Recorded {verdict_label} for utility model {model_sub}");
-                    if let Some(task_bucket) = task_bucket {
-                        message.push_str(" [");
-                        message.push_str(task_bucket.label());
-                        message.push(']');
-                    }
-                    if let Some(note) = note.as_deref() {
-                        message.push_str(": ");
-                        message.push_str(note);
-                    }
-                    self.add_info_message(message, /*hint*/ None);
-                    self.bottom_pane.drain_pending_submission_state();
-                    return;
-                }
-                if first_word.is_some_and(|word| word.eq_ignore_ascii_case("duel")) {
-                    let Some((winner, loser, task_bucket, note)) =
-                        Self::parse_team_vouch_duel_args(trimmed)
-                    else {
-                        self.add_error_message(
-                            "Usage: /team-vouch duel <winner> <loser> [general|debug|review] [note]"
-                                .to_string(),
-                        );
-                        self.bottom_pane.drain_pending_submission_state();
-                        return;
-                    };
-                    if winner.key == loser.key {
-                        self.add_error_message(
-                            "Winner and loser must be different team profiles.".to_string(),
-                        );
-                        self.bottom_pane.drain_pending_submission_state();
-                        return;
-                    }
-                    self.app_event_tx
-                        .send(AppEvent::RecordTeamProfileDuelVouch {
-                            winner: winner.preset,
-                            loser: loser.preset,
-                            task_bucket,
-                            note: note.clone(),
-                        });
-                    let mut message = format!("Recorded duel: {} > {}", winner.label, loser.label);
-                    if let Some(task_bucket) = task_bucket {
-                        message.push_str(" [");
-                        message.push_str(task_bucket.label());
-                        message.push(']');
-                    }
-                    if let Some(note) = note.as_deref() {
-                        message.push_str(": ");
-                        message.push_str(note);
-                    }
-                    self.add_info_message(message, /*hint*/ None);
-                    self.bottom_pane.drain_pending_submission_state();
-                    return;
-                }
-
-                let Some((verdict, task_bucket, note)) = Self::parse_team_vouch_args(trimmed)
-                else {
-                    self.add_error_message(
-                        "Usage: /team-vouch <win|loss> [general|debug|review] [note]".to_string(),
-                    );
-                    self.bottom_pane.drain_pending_submission_state();
-                    return;
-                };
-                let Some(profile) = team_profile::profile_for_config(&self.config) else {
-                    self.add_error_message(
-                        "Current routing does not match a /team-profile preset; run /team-profile first."
-                            .to_string(),
-                    );
-                    self.bottom_pane.drain_pending_submission_state();
-                    return;
-                };
-                self.app_event_tx.send(AppEvent::RecordTeamProfileVouch {
-                    verdict,
-                    task_bucket,
-                    note: note.clone(),
-                });
-                let verdict_label = match verdict {
-                    team_profile_vouch::TeamProfileVouchVerdict::Win => "win",
-                    team_profile_vouch::TeamProfileVouchVerdict::Loss => "loss",
-                };
-                let mut message = format!(
-                    "Recorded {} for team profile {}",
-                    verdict_label, profile.label
-                );
-                if let Some(task_bucket) = task_bucket {
-                    message.push_str(" [");
-                    message.push_str(task_bucket.label());
-                    message.push(']');
-                }
-                if let Some(note) = note.as_deref() {
-                    message.push_str(": ");
-                    message.push_str(note);
-                }
-                self.add_info_message(message, /*hint*/ None);
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
@@ -7877,331 +7641,6 @@ impl ChatWidget {
             }
         };
         self.open_model_popup_with_presets(presets);
-    }
-
-    fn parse_team_vouch_verdict(
-        token: &str,
-    ) -> Option<team_profile_vouch::TeamProfileVouchVerdict> {
-        match token.trim().to_ascii_lowercase().as_str() {
-            "win" | "wins" | "good" | "success" | "+" => {
-                Some(team_profile_vouch::TeamProfileVouchVerdict::Win)
-            }
-            "loss" | "losses" | "bad" | "fail" | "failure" | "-" => {
-                Some(team_profile_vouch::TeamProfileVouchVerdict::Loss)
-            }
-            _ => None,
-        }
-    }
-
-    fn resolve_explicit_team_profile_selector(selector: &str) -> Option<team_profile::TeamProfile> {
-        let selector = Self::normalize_team_profile_selector(selector);
-        team_profile::TEAM_PROFILES.iter().copied().find(|profile| {
-            [profile.key, profile.label, profile.popup_name]
-                .iter()
-                .any(|alias| Self::normalize_team_profile_selector(alias) == selector)
-        })
-    }
-
-    fn parse_team_vouch_duel_args(
-        args: &str,
-    ) -> Option<(
-        team_profile::TeamProfile,
-        team_profile::TeamProfile,
-        Option<team_profile_vouch::TeamProfileTaskBucket>,
-        Option<String>,
-    )> {
-        let mut words = args.split_whitespace();
-        if !words.next()?.trim().eq_ignore_ascii_case("duel") {
-            return None;
-        }
-        let winner = Self::resolve_explicit_team_profile_selector(words.next()?)?;
-        let loser = Self::resolve_explicit_team_profile_selector(words.next()?)?;
-        let Some(next_word) = words.next() else {
-            return Some((winner, loser, None, None));
-        };
-        let next_word_normalized = next_word.to_ascii_lowercase();
-        if let Some(task_bucket) =
-            team_profile_vouch::TeamProfileTaskBucket::from_selector(&next_word_normalized)
-        {
-            let note = words.collect::<Vec<_>>().join(" ");
-            let note = (!note.is_empty()).then_some(note);
-            Some((winner, loser, Some(task_bucket), note))
-        } else {
-            let mut note_words = vec![next_word];
-            note_words.extend(words);
-            let note = note_words.join(" ");
-            Some((winner, loser, None, Some(note)))
-        }
-    }
-
-    fn parse_team_vouch_model_duel_args(
-        args: &str,
-    ) -> Option<(
-        String,
-        String,
-        Option<team_profile_vouch::TeamProfileTaskBucket>,
-        Option<String>,
-    )> {
-        let mut words = args.split_whitespace();
-        if !words.next()?.trim().eq_ignore_ascii_case("model-duel") {
-            return None;
-        }
-        let winner_model_sub = words.next()?.to_string();
-        let loser_model_sub = words.next()?.to_string();
-        let Some(next_word) = words.next() else {
-            return Some((winner_model_sub, loser_model_sub, None, None));
-        };
-
-        let next_word_normalized = next_word.to_ascii_lowercase();
-        if let Some(task_bucket) =
-            team_profile_vouch::TeamProfileTaskBucket::from_selector(&next_word_normalized)
-        {
-            let note = words.collect::<Vec<_>>().join(" ");
-            let note = (!note.is_empty()).then_some(note);
-            Some((winner_model_sub, loser_model_sub, Some(task_bucket), note))
-        } else {
-            let mut note_words = vec![next_word];
-            note_words.extend(words);
-            let note = note_words.join(" ");
-            Some((winner_model_sub, loser_model_sub, None, Some(note)))
-        }
-    }
-
-    fn parse_team_vouch_model_args(
-        args: &str,
-    ) -> Option<(
-        team_profile_vouch::TeamProfileVouchVerdict,
-        String,
-        Option<team_profile_vouch::TeamProfileTaskBucket>,
-        Option<String>,
-    )> {
-        let mut words = args.split_whitespace();
-        if !words.next()?.trim().eq_ignore_ascii_case("model") {
-            return None;
-        }
-        let verdict_token = words.next()?;
-        let verdict = Self::parse_team_vouch_verdict(verdict_token)?;
-        let model_sub = words.next()?.to_string();
-        let Some(next_word) = words.next() else {
-            return Some((verdict, model_sub, None, None));
-        };
-
-        let next_word_normalized = next_word.to_ascii_lowercase();
-        if let Some(task_bucket) =
-            team_profile_vouch::TeamProfileTaskBucket::from_selector(&next_word_normalized)
-        {
-            let note = words.collect::<Vec<_>>().join(" ");
-            let note = (!note.is_empty()).then_some(note);
-            Some((verdict, model_sub, Some(task_bucket), note))
-        } else {
-            let mut note_words = vec![next_word];
-            note_words.extend(words);
-            let note = note_words.join(" ");
-            Some((verdict, model_sub, None, Some(note)))
-        }
-    }
-
-    fn parse_team_vouch_args(
-        args: &str,
-    ) -> Option<(
-        team_profile_vouch::TeamProfileVouchVerdict,
-        Option<team_profile_vouch::TeamProfileTaskBucket>,
-        Option<String>,
-    )> {
-        let mut words = args.split_whitespace();
-        let verdict_token = words.next()?;
-        let verdict = Self::parse_team_vouch_verdict(verdict_token)?;
-        let Some(second_token) = words.next() else {
-            return Some((verdict, None, None));
-        };
-
-        let second_lower = second_token.to_ascii_lowercase();
-        if let Some(task_bucket) =
-            team_profile_vouch::TeamProfileTaskBucket::from_selector(second_lower.as_str())
-        {
-            let note = words.collect::<Vec<_>>().join(" ");
-            let note = (!note.is_empty()).then_some(note);
-            Some((verdict, Some(task_bucket), note))
-        } else {
-            let mut note_words = vec![second_token];
-            note_words.extend(words);
-            let note = note_words.join(" ");
-            Some((verdict, None, Some(note)))
-        }
-    }
-
-    fn normalize_team_profile_selector(value: &str) -> String {
-        value.trim().to_ascii_lowercase().replace([' ', '_'], "-")
-    }
-
-    fn resolve_team_profile_selector(
-        selector: &str,
-        vouch_snapshot: &team_profile_vouch::TeamProfileVouchSnapshot,
-    ) -> Option<team_profile::TeamProfile> {
-        let selector = Self::normalize_team_profile_selector(selector);
-        if let Some((base, bucket_selector)) = selector.split_once(':') {
-            if base != "auto" && base != "recommended" {
-                return None;
-            }
-            let task_bucket =
-                team_profile_vouch::TeamProfileTaskBucket::from_selector(bucket_selector)?;
-            return Some(team_profile::recommended_profile(
-                vouch_snapshot,
-                Some(task_bucket),
-            ));
-        }
-
-        if selector == "auto" || selector == "recommended" {
-            return Some(team_profile::recommended_profile(
-                vouch_snapshot,
-                /*task_bucket*/ None,
-            ));
-        }
-
-        team_profile::TEAM_PROFILES.iter().copied().find(|profile| {
-            [profile.key, profile.label, profile.popup_name]
-                .iter()
-                .any(|alias| Self::normalize_team_profile_selector(alias) == selector)
-        })
-    }
-
-    fn format_team_profile_vouch(
-        profile: team_profile::TeamProfile,
-        vouch_snapshot: &team_profile_vouch::TeamProfileVouchSnapshot,
-        vouch_load_error: Option<&str>,
-    ) -> String {
-        let Some(entry) = vouch_snapshot.entry_for(profile.key) else {
-            return if let Some(err) = vouch_load_error {
-                format!("unavailable ({err})")
-            } else {
-                "no leader verdicts recorded yet".to_string()
-            };
-        };
-
-        let mut summary = format!(
-            "global +{} / -{} (net {:+})",
-            entry.wins,
-            entry.losses,
-            entry.net_score()
-        );
-        if let Some(recent) = entry.recent_signal(/*task_bucket*/ None)
-            && recent.sample_count() > 0
-        {
-            summary.push_str(" | recent +");
-            summary.push_str(&recent.wins.to_string());
-            summary.push_str(" / -");
-            summary.push_str(&recent.losses.to_string());
-            summary.push_str(" (weighted ");
-            summary.push_str(&format!("{:+}", recent.weighted_score));
-            summary.push(')');
-        }
-        for task_bucket in team_profile_vouch::TeamProfileTaskBucket::ALL {
-            if let Some(task_entry) = entry.task_entry(task_bucket)
-                && task_entry.sample_count() > 0
-            {
-                summary.push_str(" | ");
-                summary.push_str(task_bucket.label());
-                summary.push_str(" +");
-                summary.push_str(&task_entry.wins.to_string());
-                summary.push_str(" / -");
-                summary.push_str(&task_entry.losses.to_string());
-                summary.push_str(" (net ");
-                summary.push_str(&format!("{:+}", task_entry.net_score()));
-                summary.push(')');
-                if let Some(recent) = entry.recent_signal(Some(task_bucket))
-                    && recent.sample_count() > 0
-                {
-                    summary.push_str(" [recent +");
-                    summary.push_str(&recent.wins.to_string());
-                    summary.push_str(" / -");
-                    summary.push_str(&recent.losses.to_string());
-                    summary.push_str(", weighted ");
-                    summary.push_str(&format!("{:+}", recent.weighted_score));
-                    summary.push(']');
-                }
-            }
-        }
-        if let Some(note) = entry.note.as_deref()
-            && !note.is_empty()
-        {
-            summary.push_str(" | note: ");
-            summary.push_str(note);
-        }
-        summary
-    }
-
-    pub(crate) fn open_team_profile_popup(&mut self) {
-        if !self.is_session_configured() {
-            self.add_info_message(
-                "Team profile selection is disabled until startup completes.".to_string(),
-                /*hint*/ None,
-            );
-            return;
-        }
-
-        let vouch_snapshot = team_profile_vouch::load_team_profile_vouch(&self.config.codex_home);
-        let vouch_load_error = vouch_snapshot.load_error().map(ToOwned::to_owned);
-        let recommended =
-            team_profile::recommended_profile(&vouch_snapshot, /*task_bucket*/ None);
-
-        let mut items: Vec<SelectionItem> = Vec::new();
-        for profile in team_profile::TEAM_PROFILES {
-            let strengths = profile.strengths.join("; ");
-            let tradeoffs = profile.tradeoffs.join("; ");
-            let vouch = Self::format_team_profile_vouch(
-                profile,
-                &vouch_snapshot,
-                vouch_load_error.as_deref(),
-            );
-            let details = format!(
-                "{description}\nvouch: {vouch}\nstrengths: {strengths}\ntradeoffs: {tradeoffs}\nevidence: {evidence}\nleader_model={leader_model}, model_sub={model_sub}, model_sub_responses={model_sub_responses}, memories.phase_1_model={phase_1_model}, memories.phase_2_model={phase_2_model}",
-                description = profile.description,
-                vouch = vouch,
-                strengths = strengths,
-                tradeoffs = tradeoffs,
-                evidence = profile.evidence,
-                leader_model = profile.leader_model,
-                model_sub = profile.model_sub,
-                model_sub_responses = profile.model_sub_responses,
-                phase_1_model = profile.phase_1_model,
-                phase_2_model = profile.phase_2_model
-            );
-            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                tx.send(AppEvent::PersistTeamProfileSelection {
-                    preset: profile.preset,
-                });
-            })];
-            let is_current = profile.matches(
-                self.config.model.as_deref(),
-                self.config.model_sub.as_deref(),
-                self.config.model_sub_responses.as_deref(),
-                self.config.memories.phase_1_model.as_deref(),
-                self.config.memories.phase_2_model.as_deref(),
-            );
-            items.push(SelectionItem {
-                name: if profile.key == recommended.key {
-                    format!("{} (Recommended)", profile.popup_name)
-                } else {
-                    profile.popup_name.to_string()
-                },
-                description: Some(details),
-                is_current,
-                actions,
-                dismiss_on_select: true,
-                ..Default::default()
-            });
-        }
-
-        let header = self.model_menu_header(
-            "Select Team Profile",
-            "One-click presets for leader model plus utility/sub-agent and memories routing.",
-        );
-        self.bottom_pane.show_selection_view(SelectionViewParams {
-            footer_hint: Some(standard_popup_hint_line()),
-            items,
-            header,
-            ..Default::default()
-        });
     }
 
     /// Open a popup to choose the utility ("sub") model used for internal tasks.

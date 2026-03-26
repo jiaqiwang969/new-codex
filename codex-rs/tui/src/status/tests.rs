@@ -560,46 +560,6 @@ async fn status_shows_entire_tracing_when_notify_uses_entire_hook() {
 }
 
 #[tokio::test]
-async fn status_shows_team_profile_when_routing_matches_a_preset() {
-    let temp_home = TempDir::new().expect("temp home");
-    let mut config = test_config(&temp_home).await;
-    config.model = Some("gpt-5.3-codex".to_string());
-    config.model_sub = Some("claude-sonnet-4-6".to_string());
-    config.model_sub_responses = Some("gpt-5.2-codex".to_string());
-    config.memories.phase_1_model = Some("claude-sonnet-4-6".to_string());
-    config.memories.phase_2_model = Some("claude-opus-4-6".to_string());
-
-    let auth_manager = test_auth_manager(&config);
-    let usage = TokenUsage::default();
-    let captured_at = chrono::Local
-        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
-        .single()
-        .expect("timestamp");
-    let model_slug = codex_core::test_support::get_model_offline(config.model.as_deref());
-    let composite = new_status_output(
-        &config,
-        &auth_manager,
-        None,
-        &usage,
-        &None,
-        None,
-        None,
-        None,
-        None,
-        captured_at,
-        &model_slug,
-        None,
-        None,
-    );
-    let rendered = render_lines(&composite.display_lines(120));
-    let team_profile_line = rendered
-        .iter()
-        .find(|line| line.contains("Team profile:"))
-        .expect("status card should include team profile line");
-    assert_eq!(team_profile_line.contains("Leader-Quality"), true);
-}
-
-#[tokio::test]
 async fn status_shows_auto_utility_routing_source_when_hint_is_available() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
@@ -650,7 +610,7 @@ async fn status_shows_auto_utility_routing_source_when_hint_is_available() {
 }
 
 #[tokio::test]
-async fn status_shows_vouch_recommended_utility_source_without_runtime_hint() {
+async fn status_ignores_removed_model_sub_vouch_without_runtime_hint() {
     let temp_home = TempDir::new().expect("temp home");
     let config = test_config(&temp_home).await;
     let memories_dir = config.codex_home.join("memories");
@@ -697,16 +657,16 @@ async fn status_shows_vouch_recommended_utility_source_without_runtime_hint() {
         .iter()
         .find(|line| line.contains("Utility/sub-agent:"))
         .expect("status card should include utility/sub-agent line");
-    assert_eq!(utility_line.contains("claude-sonnet-4-6 (auto)"), true);
+    assert_eq!(utility_line.contains("task defaults (inherit)"), true);
     let source_line = rendered
         .iter()
         .find(|line| line.contains("Utility source:"))
         .expect("status card should include utility source line");
-    assert_eq!(source_line.contains("auto (model_sub_vouch)"), true);
+    assert_eq!(source_line.contains("task defaults (parent/role)"), true);
 }
 
 #[tokio::test]
-async fn status_shows_team_profile_vouch_when_available() {
+async fn status_does_not_show_removed_team_profile_fields() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.3-codex".to_string());
@@ -757,18 +717,12 @@ async fn status_shows_team_profile_vouch_when_available() {
         None,
     );
     let rendered = render_lines(&composite.display_lines(120));
-    let vouch_line = rendered
-        .iter()
-        .find(|line| line.contains("Team profile vouch:"))
-        .expect("status card should include team profile vouch line");
-    assert_eq!(vouch_line.contains("global +3 / -1 (net +2)"), true);
-    assert_eq!(vouch_line.contains("debug +2 / -0 (net +2)"), true);
-    assert_eq!(vouch_line.contains("stable wins"), true);
-    let auto_line = rendered
-        .iter()
-        .find(|line| line.contains("Team profile auto:"))
-        .expect("status card should include team profile auto line");
-    assert_eq!(auto_line.contains("Leader-Quality"), true);
+    assert_eq!(
+        rendered
+            .iter()
+            .any(|line| line.contains("Team profile:") || line.contains("Team profile vouch:")),
+        false
+    );
 }
 
 #[tokio::test]

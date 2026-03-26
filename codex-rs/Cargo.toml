@@ -80,7 +80,6 @@ members = [
     "state",
     "terminal-detection",
     "codex-experimental-api-macros",
-    "git-graph",
     "test-macros",
     "package-manager",
     "plugin",
@@ -179,7 +178,6 @@ codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-template = { path = "utils/template" }
 codex-utils-string = { path = "utils/string" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
-git-graph = { path = "git-graph" }
 core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
 

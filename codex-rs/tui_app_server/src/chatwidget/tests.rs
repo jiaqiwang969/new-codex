@@ -4927,9 +4927,9 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
-                        agent_type: None,
-                        model: None,
-                        model_provider_id: None,
+                        agent_type: Some("explorer".to_string()),
+                        model: Some("gpt-5-mini".to_string()),
+                        model_provider_id: Some("anthropic".to_string()),
                     },
                 )]),
                 memory: None,
@@ -4943,6 +4943,18 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         .map(|lines| lines_to_single_string(&lines))
         .collect::<Vec<_>>()
         .join("\n");
+    assert!(
+        combined.contains("explorer"),
+        "expected live spawn history to preserve agent type, got {combined:?}"
+    );
+    assert!(
+        combined.contains("gpt-5-mini"),
+        "expected live spawn history to preserve completed agent model, got {combined:?}"
+    );
+    assert!(
+        combined.contains("anthropic"),
+        "expected live spawn history to preserve completed agent provider, got {combined:?}"
+    );
     assert_snapshot!(
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
         combined

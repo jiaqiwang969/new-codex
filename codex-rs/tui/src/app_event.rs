@@ -29,9 +29,6 @@ use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::history_cell::HistoryCell;
 use crate::resume_picker::SessionTarget;
-pub(crate) use crate::team_profile::TeamProfilePreset;
-use crate::team_profile_vouch::TeamProfileTaskBucket;
-use crate::team_profile_vouch::TeamProfileVouchVerdict;
 
 use codex_core::config::types::ApprovalsReviewer;
 use codex_features::Feature;
@@ -274,6 +271,7 @@ pub(crate) enum AppEvent {
 
     /// Prefetched session-bar data computed in the background.
     SessionBarPrefetched {
+        cwd: PathBuf,
         sessions: Vec<SessionInfo>,
     },
 
@@ -297,11 +295,6 @@ pub(crate) enum AppEvent {
     /// Persist the selected utility ("sub") model to the appropriate config.
     PersistModelSubSelection {
         model_sub: Option<String>,
-    },
-
-    /// Persist a collaboration team profile preset across leader, utility, and memories models.
-    PersistTeamProfileSelection {
-        preset: TeamProfilePreset,
     },
 
     /// Persist the selected utility ("sub") model used for Responses-only internal tasks.
@@ -565,38 +558,6 @@ pub(crate) enum AppEvent {
     /// Open the upload consent popup for feedback after selecting a category.
     OpenFeedbackConsent {
         category: FeedbackCategory,
-    },
-
-    /// Record a win/loss verdict for the active team profile routing.
-    RecordTeamProfileVouch {
-        verdict: TeamProfileVouchVerdict,
-        /// Optional task bucket label (e.g. debug/review) for scoped routing stats.
-        task_bucket: Option<TeamProfileTaskBucket>,
-        note: Option<String>,
-    },
-
-    /// Record a head-to-head team profile comparison result.
-    RecordTeamProfileDuelVouch {
-        winner: TeamProfilePreset,
-        loser: TeamProfilePreset,
-        task_bucket: Option<TeamProfileTaskBucket>,
-        note: Option<String>,
-    },
-
-    /// Record a win/loss verdict for a utility/sub-agent model.
-    RecordModelSubVouch {
-        model_sub: String,
-        verdict: TeamProfileVouchVerdict,
-        task_bucket: Option<TeamProfileTaskBucket>,
-        note: Option<String>,
-    },
-
-    /// Record a head-to-head utility/sub-agent model comparison result.
-    RecordModelSubDuelVouch {
-        winner_model_sub: String,
-        loser_model_sub: String,
-        task_bucket: Option<TeamProfileTaskBucket>,
-        note: Option<String>,
     },
 
     /// Launch the external editor after a normal draw has completed.

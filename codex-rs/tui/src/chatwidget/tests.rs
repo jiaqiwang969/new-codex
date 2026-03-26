@@ -2245,6 +2245,146 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
 }
 
 #[tokio::test]
+async fn ralph_loop_completion_promise_stops_loop_and_cleans_state_file() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    let temp = tempdir().expect("tempdir");
+    let state_file = crate::ralph_loop::ralph_state_file_path(temp.path());
+    let state = crate::ralph_loop::RalphLoopState::new(
+        5,
+        "COMPLETE".to_string(),
+        "Fix the issue".to_string(),
+        1,
+    );
+
+    chat.current_cwd = Some(temp.path().to_path_buf());
+    chat.thread_id = Some(ThreadId::new());
+    crate::ralph_loop::save_ralph_state_file(temp.path(), &state);
+    chat.ralph_loop_state = Some(state);
+    chat.ralph_loop_turn_had_error = true;
+
+    assert!(
+        state_file.exists(),
+        "expected Ralph Loop state file to exist"
+    );
+
+    chat.on_task_complete(Some("<promise>COMPLETE</promise>".to_string()), false);
+
+    assert!(chat.ralph_loop_state.is_none());
+    assert!(!chat.ralph_loop_turn_had_error);
+    assert!(
+        !state_file.exists(),
+        "expected Ralph Loop state file to be removed"
+    );
+    assert_no_submit_op(&mut op_rx);
+
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined.contains("Ralph Loop complete: promise detected after 1 iteration(s)."),
+        "expected completion message, got {combined:?}"
+    );
+}
+
+#[tokio::test]
+async fn ralph_loop_error_delay_emits_delayed_continue_and_resubmits_original_prompt() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    let temp = tempdir().expect("tempdir");
+    let state = crate::ralph_loop::RalphLoopState::new(
+        5,
+        "COMPLETE".to_string(),
+        "Retry the task".to_string(),
+        1,
+    );
+
+    chat.current_cwd = Some(temp.path().to_path_buf());
+    chat.thread_id = Some(ThreadId::new());
+    crate::ralph_loop::save_ralph_state_file(temp.path(), &state);
+    chat.ralph_loop_state = Some(state);
+
+    chat.on_task_started();
+    chat.on_error("boom".to_string());
+    chat.on_task_complete(None, false);
+
+    assert_eq!(chat.ralph_loop_state.as_ref().map(|s| s.iteration), Some(2));
+    assert!(!chat.ralph_loop_turn_had_error);
+    assert!(chat.queued_user_messages.is_empty());
+    assert_no_submit_op(&mut op_rx);
+
+    tokio::time::timeout(std::time::Duration::from_millis(1_500), async {
+        loop {
+            match rx.recv().await {
+                Some(AppEvent::RalphLoopDelayedContinue) => break,
+                Some(_) => continue,
+                None => panic!("expected RalphLoopDelayedContinue event"),
+            }
+        }
+    })
+    .await
+    .expect("expected RalphLoopDelayedContinue event before timeout");
+
+    chat.handle_ralph_loop_delayed_continue();
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(
+        items,
+        vec![UserInput::Text {
+            text: "Retry the task".to_string(),
+            text_elements: Vec::new(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn ralph_loop_cancel_clears_state_and_state_file() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let temp = tempdir().expect("tempdir");
+    let state_file = crate::ralph_loop::ralph_state_file_path(temp.path());
+    let state = crate::ralph_loop::RalphLoopState::new(
+        5,
+        "COMPLETE".to_string(),
+        "Retry the task".to_string(),
+        1,
+    );
+
+    chat.current_cwd = Some(temp.path().to_path_buf());
+    crate::ralph_loop::save_ralph_state_file(temp.path(), &state);
+    chat.ralph_loop_state = Some(state);
+    chat.ralph_loop_turn_had_error = true;
+
+    assert!(
+        state_file.exists(),
+        "expected Ralph Loop state file to exist"
+    );
+
+    chat.handle_cancel_ralph_command();
+
+    assert!(chat.ralph_loop_state.is_none());
+    assert!(!chat.ralph_loop_turn_had_error);
+    assert!(
+        !state_file.exists(),
+        "expected Ralph Loop state file to be removed"
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined.contains("Ralph Loop cancelled after 1 iteration(s)."),
+        "expected cancel message, got {combined:?}"
+    );
+}
+
+#[tokio::test]
 async fn collab_spawn_end_shows_requested_model_and_effort() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
     let sender_thread_id = ThreadId::new();
@@ -9286,6 +9426,28 @@ async fn disabled_slash_command_while_task_running_snapshot() {
     );
     let blob = lines_to_single_string(cells.last().unwrap());
     assert_snapshot!(blob);
+}
+
+#[tokio::test]
+async fn model_sub_slash_command_rejects_removed_auto_selector() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let temp_home = tempdir().expect("tempdir");
+    chat.config.codex_home = temp_home.path().to_path_buf();
+
+    chat.bottom_pane
+        .set_composer_text("/model-sub auto".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        !cells.is_empty(),
+        "expected an error history cell for removed auto selector",
+    );
+    let blob = lines_to_single_string(cells.last().unwrap());
+    assert!(
+        blob.contains("Usage: /model-sub <inherit|clear|model-slug>"),
+        "expected /model-sub auto to show simplified usage, got: {blob}"
+    );
 }
 
 #[tokio::test]

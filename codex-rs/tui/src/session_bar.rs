@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -99,6 +100,30 @@ impl SessionBar {
         self.set_sessions(sessions);
         self.last_refresh_at = Some(Instant::now());
         true
+    }
+
+    /// Update the tracked cwd for session discovery.
+    ///
+    /// When the active project changes, discard the cached session list so the
+    /// next refresh or accepted prefetch repopulates the bar from the new cwd.
+    pub fn set_cwd(&mut self, cwd: PathBuf) {
+        if self.cwd == cwd {
+            return;
+        }
+
+        self.cwd = cwd;
+        self.sessions.clear();
+        self.selected_index = 0;
+        self.selected_on_new = true;
+        self.loading = false;
+        self.error = None;
+        self.current_session_status = None;
+        self.label_cache.clear();
+        self.last_refresh_at = None;
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     /// Refresh the session list from disk

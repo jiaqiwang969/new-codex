@@ -3561,14 +3561,19 @@ impl ChatWidget {
                                     }
                                 })
                         });
+                    let first_receiver_state = first_receiver
+                        .as_ref()
+                        .and_then(|thread_id| agents_states.get(&thread_id.to_string()));
                     self.on_collab_event(multi_agents::spawn_end(
                         codex_protocol::protocol::CollabAgentSpawnEndEvent {
                             call_id: id,
                             sender_thread_id,
                             memory: None,
-                            agent_type: None,
-                            model: None,
-                            model_provider_id: None,
+                            agent_type: first_receiver_state
+                                .and_then(|state| state.agent_type.clone()),
+                            model: first_receiver_state.and_then(|state| state.model.clone()),
+                            model_provider_id: first_receiver_state
+                                .and_then(|state| state.model_provider_id.clone()),
                             new_thread_id: first_receiver,
                             new_agent_nickname: first_receiver_metadata
                                 .as_ref()
@@ -3577,9 +3582,7 @@ impl ChatWidget {
                                 .as_ref()
                                 .and_then(|metadata| metadata.agent_role.clone()),
                             prompt: prompt.unwrap_or_default(),
-                            status: first_receiver
-                                .as_ref()
-                                .and_then(|thread_id| agents_states.get(&thread_id.to_string()))
+                            status: first_receiver_state
                                 .map(app_server_collab_state_to_core)
                                 .unwrap_or_else(|| {
                                     AgentStatus::Errored("Agent spawn failed".into())

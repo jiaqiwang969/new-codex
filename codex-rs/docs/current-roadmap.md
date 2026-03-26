@@ -1,7 +1,7 @@
 # Codex-RS 当前工程路线图（基于现有代码盘点）
 
-> 版本：2026-02-10 盘点版  
-> 范围：`core/`、`tui/`、`app-server/`、`exec/`、`state/`、`git-graph/`，以及本机 `~/.codex/config.toml` 运行配置。  
+> 版本：2026-02-10 盘点版
+> 范围：`core/`、`tui/`、`app-server/`、`exec/`、`state/`，以及本机 `~/.codex/config.toml` 运行配置。
 > 目标：按“现状 → 可复用资产 → 短板 → 路线图”逐项梳理，优先沉淀可复用能力。
 
 ---
@@ -12,7 +12,7 @@
 2. Ralph Loop 向 Automation 演进
 3. 多模型协作底座（Grok / Gemini / Gemma）
 4. Infra 稳定性（Agent API Pool / Provider Failover）
-5. Git Graph 可视化协作进展
+5. Git Graph 资产已 parked，当前主线不再激活
 6. 运行治理与可观测中台（建议提升为独立主线）
 7. （补充）App-Server 协议化能力沉淀
 8. （补充）质量与回归自动化（防回退体系）
@@ -145,29 +145,31 @@
 
 ---
 
-## 5) Git Graph 可视化协作进展
+## 5) Git Graph 资产已 parked，当前主线不再激活
 
 ### 5.1 现状（代码已落地）
 
-- `git-graph` crate 已纳入 workspace（`Cargo.toml`）。
-- TUI 已支持 `Ctrl+G` 打开 Git Graph overlay（`tui/src/app.rs`）。
-- 优先使用嵌入式 `git-graph` 库，失败时回退 `git log --graph`（`tui/src/git_graph_widget.rs`）。
+- 当前 merge 主线已经把 `Ctrl+G` 恢复为官方 external editor 快捷键（`tui/src/app.rs`）。
+- `git-graph` 不再是活跃 workspace 成员，也不再接入当前 TUI 编译图。
+- 仓库里仍保留 parked 的 `codex-rs/git-graph/` 资产，便于后续单独评估是否重启。
 
 ### 5.2 可复用资产
 
-- Overlay + refresh callback 模式可复用于任意“可视化侧边面板”。
-- `generate_git_graph()` 双路径策略（库优先 + 命令回退）可复用于其他诊断视图。
+- vendored `git-graph` 树本身仍可作为独立能力候选，必要时再单独接回。
+- 旧 overlay 的经验说明：如果未来要重启这类视图，应该走独立 feature block，
+  而不是混进主 TUI merge 面。
 
-### 5.3 短板与风险
+### 5.3 当前判断
 
-- 目前是纯历史图，尚未与线程/agent/任务关联。
-- 无“按协作任务过滤”与“关键节点标注”（例如某次子 agent 产出的 commit）。
+- 继续把它当活跃功能会引入额外依赖、锁文件和文档维护成本。
+- 当前主线没有对应快捷键、测试和用户文档闭环，强行保留只会制造误导。
 
 ### 5.4 路线图
 
-- **P0（1-2 周）**：增加 branch/range/filter 基础参数。
-- **P1（2-4 周）**：把 thread_id / turn_id 映射到 commit 注释层。
-- **P2（4-8 周）**：形成“协作进度图”（任务-代理-提交 联动视图）。
+- **P0**：维持 parked 状态，不再占用当前 upstream merge 收口精力。
+- **P1**：如果后续确认仍有价值，再单独决定是重启 vendored crate，还是只保留轻量
+  `git log --graph` 视图。
+- **P2**：只有在重新立项后，才考虑任务/代理/提交联动这类增强。
 
 ---
 
@@ -243,7 +245,7 @@
 | Agent 守卫机制 | `core/src/agent/guards.rs` | sub-agent 生命周期 | 动态深度策略/资源配额 |
 | Provider Account Pool | `core/src/model_provider_info.rs` + `core/src/codex.rs` | 模型请求容灾 | 健康探针 + 权重路由 |
 | Exec JSONL 事件模型 | `exec/src/exec_events.rs` | 自动化消费端 | 观测平台统一上报格式 |
-| Git Graph Overlay | `tui/src/git_graph_widget.rs` | TUI | 任务/线程/commit 联动视图 |
+| Parked git-graph assets | `git-graph/` | 当前主线未启用 | 独立重评是否需要轻量重接 |
 
 ---
 

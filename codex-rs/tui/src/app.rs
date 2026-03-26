@@ -146,6 +146,7 @@ use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 
+const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 const SESSION_BAR_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SESSION_BAR_PREFETCH_DELAY: Duration = Duration::from_millis(150);
@@ -1051,6 +1052,7 @@ impl App {
             .await?;
         self.apply_runtime_policy_overrides(&mut config);
         self.config = config;
+        self.sync_session_bar_cwd_from_config();
         self.chat_widget.sync_plugin_mentions_config(&self.config);
         Ok(())
     }
@@ -2664,6 +2666,7 @@ impl App {
             let cwd = app.config.cwd.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(SESSION_BAR_PREFETCH_DELAY).await;
+                let prefetched_cwd = cwd.to_path_buf();
                 let sessions = tokio::task::spawn_blocking(move || {
                     crate::session_utils::get_cwd_sessions_for(codex_home.as_path(), cwd.as_path())
                         .unwrap_or_default()
@@ -2673,7 +2676,10 @@ impl App {
                 match sessions {
                     Ok(sessions) => {
                         if !sessions.is_empty() {
-                            tx.send(AppEvent::SessionBarPrefetched { sessions });
+                            tx.send(AppEvent::SessionBarPrefetched {
+                                cwd: prefetched_cwd,
+                                sessions,
+                            });
                         }
                     }
                     Err(err) => {
@@ -2990,6 +2996,7 @@ impl App {
             Ok(resumed) => {
                 self.shutdown_current_thread().await;
                 self.config = resume_config;
+                self.sync_session_bar_cwd_from_config();
                 tui.set_notification_method(self.config.tui_notification_method);
                 self.file_search
                     .update_search_dir(self.config.cwd.to_path_buf());
@@ -3092,6 +3099,7 @@ impl App {
                             Ok(resumed) => {
                                 self.shutdown_current_thread().await;
                                 self.config = resume_config;
+                                self.sync_session_bar_cwd_from_config();
                                 tui.set_notification_method(self.config.tui_notification_method);
                                 self.file_search
                                     .update_search_dir(self.config.cwd.to_path_buf());
@@ -3439,8 +3447,8 @@ impl App {
                 self.on_update_reasoning_effort(effort);
                 self.refresh_status_surfaces();
             }
-            AppEvent::SessionBarPrefetched { sessions } => {
-                if self.session_bar.apply_prefetched_sessions(sessions)
+            AppEvent::SessionBarPrefetched { cwd, sessions } => {
+                if self.apply_session_bar_prefetch(cwd.as_path(), sessions)
                     && self.panel_focus == PanelFocus::Sessions
                 {
                     tui.frame_requester().schedule_frame();
@@ -3501,187 +3509,6 @@ impl App {
             }
             AppEvent::OpenFeedbackConsent { category } => {
                 self.chat_widget.open_feedback_consent(category);
-            }
-            AppEvent::RecordTeamProfileVouch {
-                verdict,
-                task_bucket,
-                note,
-            } => {
-                if let Some(profile) = crate::team_profile::profile_for_config(&self.config) {
-                    match crate::team_profile_vouch::record_team_profile_vouch(
-                        &self.config.codex_home,
-                        profile.key,
-                        verdict,
-                        task_bucket,
-                        note.as_deref(),
-                    ) {
-                        Ok(entry) => {
-                            tracing::info!(
-                                profile = profile.key,
-                                task_bucket = task_bucket.map(|bucket| bucket.key()),
-                                wins = entry.wins,
-                                losses = entry.losses,
-                                "updated team profile vouch ledger"
-                            );
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                profile = profile.key,
-                                error = %err,
-                                "failed to update team profile vouch ledger"
-                            );
-                        }
-                    }
-                }
-            }
-            AppEvent::RecordTeamProfileDuelVouch {
-                winner,
-                loser,
-                task_bucket,
-                note,
-            } => {
-                let winner_profile = crate::team_profile::profile_for_preset(winner);
-                let loser_profile = crate::team_profile::profile_for_preset(loser);
-                if winner_profile.key == loser_profile.key {
-                    tracing::warn!(
-                        profile = winner_profile.key,
-                        "ignoring duel vouch event where winner and loser are identical"
-                    );
-                } else {
-                    let winner_result = crate::team_profile_vouch::record_team_profile_vouch(
-                        &self.config.codex_home,
-                        winner_profile.key,
-                        crate::team_profile_vouch::TeamProfileVouchVerdict::Win,
-                        task_bucket,
-                        note.as_deref(),
-                    );
-                    let loser_result = crate::team_profile_vouch::record_team_profile_vouch(
-                        &self.config.codex_home,
-                        loser_profile.key,
-                        crate::team_profile_vouch::TeamProfileVouchVerdict::Loss,
-                        task_bucket,
-                        note.as_deref(),
-                    );
-                    match (winner_result, loser_result) {
-                        (Ok(winner_entry), Ok(loser_entry)) => {
-                            tracing::info!(
-                                winner = winner_profile.key,
-                                loser = loser_profile.key,
-                                task_bucket = task_bucket.map(|bucket| bucket.key()),
-                                winner_wins = winner_entry.wins,
-                                winner_losses = winner_entry.losses,
-                                loser_wins = loser_entry.wins,
-                                loser_losses = loser_entry.losses,
-                                "updated team profile duel vouch ledger"
-                            );
-                        }
-                        (winner_result, loser_result) => {
-                            if let Err(err) = winner_result {
-                                tracing::warn!(
-                                    profile = winner_profile.key,
-                                    error = %err,
-                                    "failed to update winner duel vouch"
-                                );
-                            }
-                            if let Err(err) = loser_result {
-                                tracing::warn!(
-                                    profile = loser_profile.key,
-                                    error = %err,
-                                    "failed to update loser duel vouch"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            AppEvent::RecordModelSubVouch {
-                model_sub,
-                verdict,
-                task_bucket,
-                note,
-            } => {
-                match crate::model_sub_vouch::record_model_sub_vouch(
-                    &self.config.codex_home,
-                    &model_sub,
-                    verdict,
-                    task_bucket,
-                    note.as_deref(),
-                ) {
-                    Ok(entry) => {
-                        tracing::info!(
-                            model_sub = model_sub.as_str(),
-                            task_bucket = task_bucket.map(|bucket| bucket.key()),
-                            wins = entry.wins,
-                            losses = entry.losses,
-                            "updated model-sub vouch ledger"
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            model_sub = model_sub.as_str(),
-                            error = %err,
-                            "failed to update model-sub vouch ledger"
-                        );
-                    }
-                }
-            }
-            AppEvent::RecordModelSubDuelVouch {
-                winner_model_sub,
-                loser_model_sub,
-                task_bucket,
-                note,
-            } => {
-                if winner_model_sub == loser_model_sub {
-                    tracing::warn!(
-                        model_sub = winner_model_sub.as_str(),
-                        "ignoring model-sub duel event where winner and loser are identical"
-                    );
-                } else {
-                    let winner_result = crate::model_sub_vouch::record_model_sub_vouch(
-                        &self.config.codex_home,
-                        &winner_model_sub,
-                        crate::team_profile_vouch::TeamProfileVouchVerdict::Win,
-                        task_bucket,
-                        note.as_deref(),
-                    );
-                    let loser_result = crate::model_sub_vouch::record_model_sub_vouch(
-                        &self.config.codex_home,
-                        &loser_model_sub,
-                        crate::team_profile_vouch::TeamProfileVouchVerdict::Loss,
-                        task_bucket,
-                        note.as_deref(),
-                    );
-                    match (winner_result, loser_result) {
-                        (Ok(winner_entry), Ok(loser_entry)) => {
-                            tracing::info!(
-                                winner_model_sub = winner_model_sub.as_str(),
-                                loser_model_sub = loser_model_sub.as_str(),
-                                task_bucket = task_bucket.map(|bucket| bucket.key()),
-                                winner_wins = winner_entry.wins,
-                                winner_losses = winner_entry.losses,
-                                loser_wins = loser_entry.wins,
-                                loser_losses = loser_entry.losses,
-                                "updated model-sub duel vouch ledger"
-                            );
-                        }
-                        (winner_result, loser_result) => {
-                            if let Err(err) = winner_result {
-                                tracing::warn!(
-                                    model_sub = winner_model_sub.as_str(),
-                                    error = %err,
-                                    "failed to update winner model-sub duel vouch"
-                                );
-                            }
-                            if let Err(err) = loser_result {
-                                tracing::warn!(
-                                    model_sub = loser_model_sub.as_str(),
-                                    error = %err,
-                                    "failed to update loser model-sub duel vouch"
-                                );
-                            }
-                        }
-                    }
-                }
             }
             AppEvent::LaunchExternalEditor => {
                 if self.chat_widget.external_editor_state() == ExternalEditorState::Active {
@@ -4086,71 +3913,6 @@ impl App {
                     }
                 }
             }
-            AppEvent::PersistTeamProfileSelection { preset } => {
-                let profile = self.active_profile.as_deref();
-                let team_profile = crate::team_profile::profile_for_preset(preset);
-                match ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(profile)
-                    .set_model(Some(team_profile.leader_model), /*effort*/ None)
-                    .set_model_sub(Some(team_profile.model_sub))
-                    .set_model_sub_responses(Some(team_profile.model_sub_responses))
-                    .set_memories_phase_models(
-                        Some(team_profile.phase_1_model),
-                        Some(team_profile.phase_2_model),
-                    )
-                    .apply()
-                    .await
-                {
-                    Ok(()) => {
-                        self.config.model = Some(team_profile.leader_model.to_string());
-                        self.config.model_sub = Some(team_profile.model_sub.to_string());
-                        self.config.model_sub_responses =
-                            Some(team_profile.model_sub_responses.to_string());
-                        self.config.memories.phase_1_model =
-                            Some(team_profile.phase_1_model.to_string());
-                        self.config.memories.phase_2_model =
-                            Some(team_profile.phase_2_model.to_string());
-                        self.chat_widget
-                            .set_model(team_profile.leader_model, /*provider_label*/ None);
-                        self.chat_widget
-                            .set_model_sub(Some(team_profile.model_sub.to_string()));
-                        self.chat_widget.set_model_sub_responses(Some(
-                            team_profile.model_sub_responses.to_string(),
-                        ));
-                        let mut message = format!(
-                            "Team profile set to {} (leader_model={}, model_sub={}, responses_fallback={}, memories.phase_1_model={}, memories.phase_2_model={})",
-                            team_profile.label,
-                            team_profile.leader_model,
-                            team_profile.model_sub,
-                            team_profile.model_sub_responses,
-                            team_profile.phase_1_model,
-                            team_profile.phase_2_model
-                        );
-                        if let Some(profile) = profile {
-                            message.push_str(" for ");
-                            message.push_str(profile);
-                            message.push_str(" profile");
-                        }
-                        self.chat_widget.add_info_message(message, /*hint*/ None);
-                        self.app_event_tx
-                            .send(AppEvent::CodexOp(Op::ReloadUserConfig));
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            error = %err,
-                            "failed to persist team profile selection"
-                        );
-                        if let Some(profile) = profile {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to save team profile for `{profile}`: {err}"
-                            ));
-                        } else {
-                            self.chat_widget
-                                .add_error_message(format!("Failed to save team profile: {err}"));
-                        }
-                    }
-                }
-            }
             AppEvent::PersistModelSubResponsesSelection {
                 model_sub_responses,
             } => {
@@ -4502,6 +4264,32 @@ impl App {
                 self.runtime_approvals_reviewer_override = Some(policy);
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
+                let profile = self.active_profile.as_deref();
+                let segments = if let Some(profile) = profile {
+                    vec![
+                        "profiles".to_string(),
+                        profile.to_string(),
+                        "approvals_reviewer".to_string(),
+                    ]
+                } else {
+                    vec!["approvals_reviewer".to_string()]
+                };
+                if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .with_edits([ConfigEdit::SetPath {
+                        segments,
+                        value: policy.to_string().into(),
+                    }])
+                    .apply()
+                    .await
+                {
+                    tracing::error!(
+                        error = %err,
+                        "failed to persist approvals reviewer update"
+                    );
+                    self.chat_widget
+                        .add_error_message(format!("Failed to save approvals reviewer: {err}"));
+                }
             }
             AppEvent::UpdateSandboxPolicy(policy) => {
                 #[cfg(target_os = "windows")]
@@ -4559,36 +4347,6 @@ impl App {
                             tx,
                         );
                     }
-                }
-            }
-            AppEvent::UpdateApprovalsReviewer(policy) => {
-                self.config.approvals_reviewer = policy;
-                self.chat_widget.set_approvals_reviewer(policy);
-                let profile = self.active_profile.as_deref();
-                let segments = if let Some(profile) = profile {
-                    vec![
-                        "profiles".to_string(),
-                        profile.to_string(),
-                        "approvals_reviewer".to_string(),
-                    ]
-                } else {
-                    vec!["approvals_reviewer".to_string()]
-                };
-                if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(profile)
-                    .with_edits([ConfigEdit::SetPath {
-                        segments,
-                        value: policy.to_string().into(),
-                    }])
-                    .apply()
-                    .await
-                {
-                    tracing::error!(
-                        error = %err,
-                        "failed to persist approvals reviewer update"
-                    );
-                    self.chat_widget
-                        .add_error_message(format!("Failed to save approvals reviewer: {err}"));
                 }
             }
             AppEvent::UpdateFeatureFlags { updates } => {
@@ -5316,6 +5074,27 @@ impl App {
         tui.frame_requester().schedule_frame();
     }
 
+    fn request_external_editor_launch(&mut self) {
+        self.chat_widget
+            .set_external_editor_state(ExternalEditorState::Requested);
+        self.chat_widget.set_footer_hint_override(Some(vec![(
+            EXTERNAL_EDITOR_HINT.to_string(),
+            String::new(),
+        )]));
+    }
+
+    fn handle_ctrl_g_without_overlay(&mut self) -> bool {
+        if self.overlay.is_none()
+            && self.chat_widget.can_launch_external_editor()
+            && self.chat_widget.external_editor_state() == ExternalEditorState::Closed
+        {
+            self.request_external_editor_launch();
+            return true;
+        }
+
+        false
+    }
+
     fn reset_external_editor_state(&mut self, tui: &mut tui::Tui) {
         self.chat_widget
             .set_external_editor_state(ExternalEditorState::Closed);
@@ -5335,6 +5114,22 @@ impl App {
             });
         }
         AppEvent::NewSession
+    }
+
+    fn sync_session_bar_cwd_from_config(&mut self) {
+        self.session_bar.set_cwd(self.config.cwd.to_path_buf());
+    }
+
+    fn apply_session_bar_prefetch(
+        &mut self,
+        cwd: &Path,
+        sessions: Vec<crate::session_utils::SessionInfo>,
+    ) -> bool {
+        if cwd != self.config.cwd.as_path() {
+            return false;
+        }
+
+        self.session_bar.apply_prefetched_sessions(sessions)
     }
 
     async fn handle_session_bar_key(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
@@ -5497,28 +5292,8 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                // Open git graph overlay (Ctrl+G)
-                if self.overlay.is_none() {
-                    match crate::git_graph_widget::create_git_graph_overlay(".") {
-                        Ok(overlay) => {
-                            let _ = tui.enter_alt_screen();
-                            self.overlay = Some(overlay);
-                            tui.frame_requester().schedule_frame();
-                        }
-                        Err(err) => {
-                            let error_lines = vec![
-                                Line::from(format!("Failed to generate git graph: {err}")),
-                                Line::from(""),
-                                Line::from("Make sure you are in a git repository."),
-                            ];
-                            let _ = tui.enter_alt_screen();
-                            self.overlay = Some(Overlay::new_static_with_lines(
-                                error_lines,
-                                "GIT GRAPH ERROR".to_string(),
-                            ));
-                            tui.frame_requester().schedule_frame();
-                        }
-                    }
+                if self.handle_ctrl_g_without_overlay() {
+                    tui.frame_requester().schedule_frame();
                 }
             }
             KeyEvent {
@@ -7973,6 +7748,24 @@ guardian_approval = true
     }
 
     #[tokio::test]
+    async fn ctrl_g_requests_external_editor_when_available() {
+        let mut app = make_test_app().await;
+
+        assert_eq!(
+            app.chat_widget.external_editor_state(),
+            ExternalEditorState::Closed
+        );
+        assert!(app.overlay.is_none());
+
+        assert!(app.handle_ctrl_g_without_overlay());
+        assert_eq!(
+            app.chat_widget.external_editor_state(),
+            ExternalEditorState::Requested
+        );
+        assert!(app.overlay.is_none());
+    }
+
+    #[tokio::test]
     async fn session_bar_enter_event_uses_resume_for_selected_history() {
         let mut app = make_test_app().await;
         let session_path = app.config.codex_home.join("sessions/history.jsonl");
@@ -8022,6 +7815,60 @@ guardian_approval = true
             app.session_bar_enter_event(),
             AppEvent::NewSession
         ));
+    }
+
+    #[tokio::test]
+    async fn session_bar_prefetch_ignores_stale_cwd_after_config_change() -> Result<()> {
+        let mut app = make_test_app().await;
+        let original_cwd = app.config.cwd.to_path_buf();
+        let next_cwd_tmp = tempdir()?;
+        let next_cwd = next_cwd_tmp.path().to_path_buf();
+        app.config.cwd = next_cwd.clone().abs();
+        app.sync_session_bar_cwd_from_config();
+
+        let stale_sessions = vec![SessionInfo {
+            id: "stale-1".to_string(),
+            path: app.config.codex_home.join("sessions/stale.jsonl"),
+            cwd: original_cwd.display().to_string(),
+            age: "1m ago".to_string(),
+            mtime: 1,
+            message_count: 3,
+            last_role: "Assistant".to_string(),
+            model: "gpt-5".to_string(),
+            last_user_snippet: Some("hello world".to_string()),
+        }];
+        assert_eq!(
+            app.apply_session_bar_prefetch(original_cwd.as_path(), stale_sessions),
+            false
+        );
+        assert!(app.session_bar.selected_session().is_none());
+
+        let current_sessions = vec![SessionInfo {
+            id: "current-1".to_string(),
+            path: app.config.codex_home.join("sessions/current.jsonl"),
+            cwd: next_cwd.display().to_string(),
+            age: "1m ago".to_string(),
+            mtime: 2,
+            message_count: 4,
+            last_role: "Assistant".to_string(),
+            model: "gpt-5".to_string(),
+            last_user_snippet: Some("fresh session".to_string()),
+        }];
+        assert_eq!(
+            app.apply_session_bar_prefetch(next_cwd.as_path(), current_sessions),
+            true
+        );
+        assert!(app.session_bar.selected_is_new());
+
+        app.session_bar.select_next();
+        assert_eq!(
+            app.session_bar
+                .selected_session()
+                .map(|session| session.id.as_str()),
+            Some("current-1")
+        );
+
+        Ok(())
     }
 
     async fn make_test_app_with_channels() -> (
@@ -8568,6 +8415,10 @@ guardian_approval = true
         app.refresh_in_memory_config_from_disk().await?;
 
         assert_eq!(app.config.cwd, app.chat_widget.config_ref().cwd);
+        assert_eq!(
+            app.session_bar.cwd(),
+            app.chat_widget.config_ref().cwd.as_path()
+        );
         Ok(())
     }
 

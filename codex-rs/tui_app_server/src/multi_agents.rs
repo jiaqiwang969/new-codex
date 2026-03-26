@@ -178,6 +178,9 @@ pub(crate) fn spawn_end(
     let CollabAgentSpawnEndEvent {
         call_id: _,
         sender_thread_id: _,
+        agent_type,
+        model,
+        model_provider_id,
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
@@ -200,6 +203,15 @@ pub(crate) fn spawn_end(
     };
 
     let mut details = Vec::new();
+    if let Some(agent_type) = agent_type {
+        details.push(detail_line("role", agent_type));
+    }
+    if let Some(model) = model {
+        details.push(detail_line("model", model));
+    }
+    if let Some(model_provider_id) = model_provider_id {
+        details.push(detail_line("provider", model_provider_id));
+    }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
@@ -436,6 +448,11 @@ fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<
     };
 
     vec![Span::from(" ").dim(), Span::from(details).magenta()]
+}
+
+fn detail_line(label: &str, value: impl Into<String>) -> Line<'static> {
+    let value: String = value.into();
+    vec![Span::from(format!("{label}: ")).dim(), Span::from(value)].into()
 }
 
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
@@ -781,6 +798,47 @@ mod tests {
         assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
         assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn spawn_end_renders_agent_metadata_details() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let cell = spawn_end(
+            CollabAgentSpawnEndEvent {
+                call_id: "call-spawn".to_string(),
+                sender_thread_id,
+                memory: None,
+                agent_type: Some("explorer".to_string()),
+                model: Some("gpt-5-mini".to_string()),
+                model_provider_id: Some("anthropic".to_string()),
+                new_thread_id: Some(robie_id),
+                new_agent_nickname: Some("Robie".to_string()),
+                new_agent_role: Some("explorer".to_string()),
+                prompt: "Explore the repo".to_string(),
+                status: AgentStatus::PendingInit,
+            },
+            Some(&SpawnRequestSummary {
+                model: "gpt-5".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
+            }),
+        );
+
+        let rendered = cell_to_text(&cell);
+        assert!(
+            rendered.contains("explorer"),
+            "expected role metadata in spawn history, got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("gpt-5-mini"),
+            "expected completed agent model in spawn history, got {rendered:?}"
+        );
+        assert!(
+            rendered.contains("anthropic"),
+            "expected provider metadata in spawn history, got {rendered:?}"
+        );
     }
 
     #[test]

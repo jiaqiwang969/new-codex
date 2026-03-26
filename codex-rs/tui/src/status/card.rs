@@ -42,9 +42,6 @@ use super::rate_limits::compose_rate_limit_data;
 use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
-use crate::model_sub_vouch;
-use crate::team_profile;
-use crate::team_profile_vouch;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 use codex_core::AuthManager;
@@ -80,9 +77,6 @@ struct StatusMemoryModel {
 struct StatusHistoryCell {
     model_name: String,
     model_details: Vec<String>,
-    team_profile_label: Option<&'static str>,
-    team_profile_vouch: Option<String>,
-    team_profile_auto: Option<String>,
     utility_model_name: String,
     utility_model_configured: bool,
     utility_model_auto_selected: bool,
@@ -304,109 +298,20 @@ impl StatusHistoryCell {
             compose_rate_limit_data_many(rate_limits, now)
         };
 
-        let utility_model_vouch = if config.model_sub.is_none() && utility_routing_hint.is_none() {
-            let vouch_snapshot = model_sub_vouch::load_model_sub_vouch(&config.codex_home);
-            model_sub_vouch::recommended_model_sub_from_snapshot(
-                &vouch_snapshot,
-                /*task_bucket*/ None,
-            )
-        } else {
-            None
-        };
         let utility_model_runtime = config
             .model_sub
             .clone()
-            .or_else(|| utility_routing_hint.as_ref().map(|hint| hint.model.clone()))
-            .or_else(|| utility_model_vouch.clone());
+            .or_else(|| utility_routing_hint.as_ref().map(|hint| hint.model.clone()));
         let utility_model_name = utility_model_runtime
             .clone()
             .unwrap_or_else(|| "task defaults".to_string());
-        let active_team_profile = team_profile::profile_for_config(config);
-        let team_profile_label = active_team_profile.map(|profile| profile.label);
-        let vouch_snapshot = team_profile_vouch::load_team_profile_vouch(&config.codex_home);
-        let team_profile_vouch = active_team_profile.and_then(|profile| {
-            let entry = vouch_snapshot.entry_for(profile.key)?;
-            let mut summary = format!(
-                "global +{} / -{} (net {:+})",
-                entry.wins,
-                entry.losses,
-                entry.net_score()
-            );
-            if let Some(recent) = entry.recent_signal(/*task_bucket*/ None)
-                && recent.sample_count() > 0
-            {
-                summary.push_str(" | recent +");
-                summary.push_str(&recent.wins.to_string());
-                summary.push_str(" / -");
-                summary.push_str(&recent.losses.to_string());
-                summary.push_str(" (weighted ");
-                summary.push_str(&format!("{:+}", recent.weighted_score));
-                summary.push(')');
-            }
-            for task_bucket in team_profile_vouch::TeamProfileTaskBucket::ALL {
-                if let Some(task_entry) = entry.task_entry(task_bucket)
-                    && task_entry.sample_count() > 0
-                {
-                    summary.push_str(" | ");
-                    summary.push_str(task_bucket.label());
-                    summary.push_str(" +");
-                    summary.push_str(&task_entry.wins.to_string());
-                    summary.push_str(" / -");
-                    summary.push_str(&task_entry.losses.to_string());
-                    summary.push_str(" (net ");
-                    summary.push_str(&format!("{:+}", task_entry.net_score()));
-                    summary.push(')');
-                    if let Some(recent) = entry.recent_signal(Some(task_bucket))
-                        && recent.sample_count() > 0
-                    {
-                        summary.push_str(" [recent +");
-                        summary.push_str(&recent.wins.to_string());
-                        summary.push_str(" / -");
-                        summary.push_str(&recent.losses.to_string());
-                        summary.push_str(", weighted ");
-                        summary.push_str(&format!("{:+}", recent.weighted_score));
-                        summary.push(']');
-                    }
-                }
-            }
-            if let Some(note) = entry.note.as_deref()
-                && !note.is_empty()
-            {
-                summary.push_str(" | note: ");
-                summary.push_str(note);
-            }
-            Some(summary)
-        });
-        let team_profile_auto = if active_team_profile.is_some() && vouch_snapshot.has_signal() {
-            let general =
-                team_profile::recommended_profile(&vouch_snapshot, /*task_bucket*/ None).label;
-            let debug = team_profile::recommended_profile(
-                &vouch_snapshot,
-                Some(team_profile_vouch::TeamProfileTaskBucket::Debug),
-            )
-            .label;
-            let review = team_profile::recommended_profile(
-                &vouch_snapshot,
-                Some(team_profile_vouch::TeamProfileTaskBucket::Review),
-            )
-            .label;
-            Some(if general == debug && debug == review {
-                format!("all -> {general}")
-            } else {
-                format!("general -> {general}; debug -> {debug}; review -> {review}")
-            })
-        } else {
-            None
-        };
         let utility_model_configured = config.model_sub.is_some();
-        let utility_model_auto_selected = !utility_model_configured
-            && (utility_routing_hint.is_some() || utility_model_vouch.is_some());
+        let utility_model_auto_selected =
+            !utility_model_configured && utility_routing_hint.is_some();
         let utility_model_source = if utility_model_configured {
             "config.model_sub".to_string()
         } else if let Some(hint) = utility_routing_hint.as_ref() {
             format!("auto ({})", hint.source_label)
-        } else if utility_model_vouch.is_some() {
-            "auto (model_sub_vouch)".to_string()
         } else {
             "task defaults (parent/role)".to_string()
         };
@@ -451,9 +356,6 @@ impl StatusHistoryCell {
         Self {
             model_name,
             model_details,
-            team_profile_label,
-            team_profile_vouch,
-            team_profile_auto,
             utility_model_name,
             utility_model_configured,
             utility_model_auto_selected,
@@ -656,15 +558,6 @@ impl HistoryCell for StatusHistoryCell {
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
         let thread_name = self.thread_name.as_deref().filter(|name| !name.is_empty());
 
-        if self.team_profile_label.is_some() {
-            push_label(&mut labels, &mut seen, "Team profile");
-        }
-        if self.team_profile_vouch.is_some() {
-            push_label(&mut labels, &mut seen, "Team profile vouch");
-        }
-        if self.team_profile_auto.is_some() {
-            push_label(&mut labels, &mut seen, "Team profile auto");
-        }
         if self.model_provider.is_some() {
             push_label(&mut labels, &mut seen, "Model provider");
         }
@@ -737,21 +630,6 @@ impl HistoryCell for StatusHistoryCell {
         lines.push(formatter.line("Model", model_spans));
         if let Some(model_provider) = self.model_provider.as_ref() {
             lines.push(formatter.line("Model provider", vec![Span::from(model_provider.clone())]));
-        }
-        if let Some(team_profile_label) = self.team_profile_label {
-            lines.push(formatter.line("Team profile", vec![Span::from(team_profile_label)]));
-        }
-        if let Some(team_profile_vouch) = self.team_profile_vouch.as_ref() {
-            lines.push(formatter.line(
-                "Team profile vouch",
-                vec![Span::from(team_profile_vouch.clone())],
-            ));
-        }
-        if let Some(team_profile_auto) = self.team_profile_auto.as_ref() {
-            lines.push(formatter.line(
-                "Team profile auto",
-                vec![Span::from(team_profile_auto.clone())],
-            ));
         }
         let mut utility_model_spans = vec![Span::from(self.utility_model_name.clone())];
         if !self.utility_model_configured {
