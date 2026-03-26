@@ -1467,6 +1467,7 @@ mod tests {
                 ),
             )
             .await;
+            let _ = websocket.next().await;
         })
         .await;
         let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
