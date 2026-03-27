@@ -250,6 +250,81 @@ async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted
     ));
 }
 
+#[tokio::test]
+async fn startup_prewarm_uses_resolved_account_pool_provider() {
+    let provider_id = "openai";
+    let account = ModelProviderAccount {
+        base_url: Some("https://pool.example/v1".to_string()),
+        env_key: Some("OPENAI_API_KEY_POOL".to_string()),
+    };
+    let mut logical_provider =
+        crate::model_provider_info::ModelProviderInfo::create_openai_provider(Some(
+            "https://logical.example/v1".to_string(),
+        ));
+    logical_provider.supports_websockets = false;
+    logical_provider.account_pool = vec![account.clone()];
+
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    let mut config = (*session_configuration.original_config_do_not_use).clone();
+    config.model_provider_id = provider_id.to_string();
+    config.model_provider = logical_provider.clone();
+    config
+        .model_providers
+        .insert(provider_id.to_string(), logical_provider.clone());
+    let config = Arc::new(config);
+    session_configuration.provider_id = provider_id.to_string();
+    session_configuration.provider = logical_provider.clone();
+    session_configuration.original_config_do_not_use = Arc::clone(&config);
+
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+    let models_manager = Arc::new(ModelsManager::new(
+        config.codex_home.clone(),
+        auth_manager.clone(),
+        None,
+        CollaborationModesConfig::default(),
+    ));
+    let (tx_event, _rx_event) = async_channel::unbounded();
+    let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
+    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
+    let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
+    let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone(), true));
+    let session = Session::new(
+        session_configuration,
+        Arc::clone(&config),
+        auth_manager,
+        models_manager,
+        Arc::new(ExecPolicyManager::default()),
+        tx_event,
+        agent_status_tx,
+        InitialHistory::New,
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::new(
+            /*exec_server_url*/ None,
+        )),
+        skills_manager,
+        plugins_manager,
+        mcp_manager,
+        Arc::new(SkillsWatcher::noop()),
+        AgentControl::default(),
+    )
+    .await
+    .expect("create test session with custom provider");
+    let prewarm = session
+        .consume_startup_prewarm_for_regular_turn(&CancellationToken::new())
+        .await;
+
+    let crate::session_startup_prewarm::SessionStartupPrewarmResolution::Ready(prewarmed_session) =
+        prewarm
+    else {
+        panic!("expected startup prewarm to be ready");
+    };
+
+    assert_eq!(
+        prewarmed_session.provider_for_test(),
+        logical_provider.with_account(&account)
+    );
+}
+
 fn test_model_client_session() -> crate::client::ModelClientSession {
     crate::client::ModelClient::new(
         None,
@@ -2470,7 +2545,7 @@ async fn session_configuration_apply_restores_user_provider_after_family_auto_sw
 }
 
 #[test]
-fn format_provider_switch_label_previews_first_normalized_pool_account() {
+fn format_provider_switch_label_reports_only_family_switch_and_model() {
     let mut provider = test_config()
         .model_providers
         .get("anthropic")
@@ -2496,9 +2571,90 @@ fn format_provider_switch_label_previews_first_normalized_pool_account() {
     ];
 
     assert_eq!(
-        format_provider_switch_label("openai", "anthropic", "claude-opus-4-1", &provider,),
-        "openai -> anthropic [key 1/2] @ https://code.ppchat.vip (model: claude-opus-4-1)"
+        format_provider_switch_label("openai", "anthropic", "claude-opus-4-1"),
+        "openai -> anthropic (model: claude-opus-4-1)"
     );
+}
+
+#[tokio::test]
+async fn new_turn_with_sub_id_reports_resolved_pool_account_without_preview_duplication() {
+    let (session, _turn_context, rx) = make_session_and_context_with_rx().await;
+    let provider_id = "anthropic".to_string();
+    let account_1 = ModelProviderAccount {
+        base_url: Some("https://code.ppchat.vip".to_string()),
+        env_key: Some("ANTHROPIC_API_KEY_PRIMARY".to_string()),
+    };
+    let account_2 = ModelProviderAccount {
+        base_url: Some("https://backup.ppchat.vip".to_string()),
+        env_key: Some("ANTHROPIC_API_KEY_SECONDARY".to_string()),
+    };
+
+    {
+        let mut state = session.state.lock().await;
+        let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+        let mut logical_provider = config
+            .model_providers
+            .get(&provider_id)
+            .expect("anthropic provider should exist")
+            .clone();
+        logical_provider.base_url = None;
+        logical_provider.env_key = None;
+        logical_provider.account_pool = vec![account_1.clone(), account_2.clone()];
+        config
+            .model_providers
+            .insert(provider_id.clone(), logical_provider.clone());
+        state.session_configuration.original_config_do_not_use = Arc::new(config);
+        state.mark_pool_account_cooling(
+            provider_id.as_str(),
+            account_1,
+            std::time::Instant::now(),
+            Duration::from_secs(10 * 60),
+        );
+    }
+
+    let turn_context = session
+        .new_turn_with_sub_id(
+            "sub-1".to_string(),
+            SessionSettingsUpdate {
+                collaboration_mode: Some(CollaborationMode {
+                    mode: ModeKind::Default,
+                    settings: Settings {
+                        model: "claude-opus-4-1".to_string(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("provider switch turn should succeed");
+
+    assert_eq!(
+        turn_context.provider.current_account(),
+        Some(account_2.clone())
+    );
+
+    let deadline = tokio::time::Instant::now() + StdDuration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let evt = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("timeout waiting for provider event")
+            .expect("provider event");
+        let EventMsg::BackgroundEvent(event) = evt.msg else {
+            continue;
+        };
+        if !event.message.starts_with("Provider: ") {
+            continue;
+        }
+
+        assert_eq!(
+            event.message,
+            "Provider: openai -> anthropic (model: claude-opus-4-1) [key 2/2] @ https://backup.ppchat.vip"
+        );
+        break;
+    }
 }
 
 #[tokio::test]
@@ -2596,6 +2752,70 @@ async fn maybe_switch_provider_account_cools_failed_account_for_ten_minutes() {
         )
     };
     assert_eq!(resolved.provider.current_account(), Some(account_2));
+}
+
+#[tokio::test]
+async fn try_switch_pool_account_does_not_restart_single_account_pool() {
+    let (sess, mut turn_context, _rx) = make_session_and_context_with_rx().await;
+    let provider_id = "anthropic".to_string();
+    let account = ModelProviderAccount {
+        base_url: Some("https://code.ppchat.vip".to_string()),
+        env_key: Some("ANTHROPIC_API_KEY_PRIMARY".to_string()),
+    };
+
+    let mut logical_provider = turn_context
+        .config
+        .model_providers
+        .get(&provider_id)
+        .expect("anthropic provider should exist")
+        .clone();
+    logical_provider.base_url = None;
+    logical_provider.env_key = None;
+    logical_provider.account_pool = vec![account.clone()];
+
+    let mut config = (*turn_context.config).clone();
+    config.model = Some("claude-opus-4-1".to_string());
+    config.model_provider_id = provider_id.clone();
+    config.model_provider = logical_provider.clone();
+    config
+        .model_providers
+        .insert(provider_id.clone(), logical_provider.clone());
+
+    let turn_context_mut = Arc::get_mut(&mut turn_context).expect("single turn context ref");
+    turn_context_mut.config = Arc::new(config);
+    turn_context_mut.provider = logical_provider.with_account(&account);
+    turn_context_mut.collaboration_mode = CollaborationMode {
+        mode: ModeKind::Default,
+        settings: Settings {
+            model: "claude-opus-4-1".to_string(),
+            reasoning_effort: turn_context_mut.collaboration_mode.reasoning_effort(),
+            developer_instructions: None,
+        },
+    };
+
+    let mut attempted_accounts = HashSet::from([account]);
+    let mut pool_switch_count = 0usize;
+    let updated_context = try_switch_pool_account(
+        &sess,
+        &turn_context,
+        &mut attempted_accounts,
+        &mut pool_switch_count,
+        /*pool_size*/ 1,
+        /*max_rounds*/ 2,
+        &CodexErr::UsageLimitReached(crate::error::UsageLimitReachedError {
+            plan_type: Some(codex_login::token_data::PlanType::Unknown(
+                "custom".to_string(),
+            )),
+            resets_at: None,
+            rate_limits: None,
+            promo_message: None,
+        }),
+        /*retries*/ 0,
+        /*max_retries*/ 0,
+    )
+    .await;
+
+    assert!(updated_context.is_none());
 }
 
 #[cfg_attr(windows, ignore)]

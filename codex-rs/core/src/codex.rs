@@ -1337,7 +1337,6 @@ impl SessionConfiguration {
                             &old_provider_id,
                             target_provider_id,
                             new_model,
-                            &next_configuration.provider,
                         ));
                     } else {
                         tracing::warn!(
@@ -1375,7 +1374,6 @@ impl SessionConfiguration {
                     &old_provider_id,
                     next_configuration.provider_id.as_str(),
                     new_model,
-                    &next_configuration.provider,
                 ));
             } else if provider_is_auto_switched {
                 // Switching FROM a family-specific provider back to a default
@@ -1393,7 +1391,6 @@ impl SessionConfiguration {
                     &old_provider_id,
                     next_configuration.provider_id.as_str(),
                     new_model,
-                    &next_configuration.provider,
                 ));
             }
         } // End if updates.model.is_some()
@@ -1406,14 +1403,8 @@ fn format_provider_switch_label(
     old_provider_id: &str,
     new_provider_id: &str,
     model: &str,
-    provider: &ModelProviderInfo,
 ) -> String {
-    let preview_provider = preview_provider_with_first_pool_account(new_provider_id, provider);
-    let account_label = account_index_label(&preview_provider);
-    let base_url = preview_provider.base_url.as_deref().unwrap_or("(default)");
-    format!(
-        "{old_provider_id} -> {new_provider_id} [{account_label}] @ {base_url} (model: {model})"
-    )
+    format!("{old_provider_id} -> {new_provider_id} (model: {model})")
 }
 
 fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> usize {
@@ -7077,6 +7068,10 @@ async fn try_switch_pool_account(
     retries: u64,
     max_retries: u64,
 ) -> Option<Arc<TurnContext>> {
+    if pool_size <= 1 {
+        return None;
+    }
+
     // First try within the current round.
     if matches!(
         decide_provider_pool_failover(

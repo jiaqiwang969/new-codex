@@ -194,6 +194,34 @@ fn resolve_provider_api_key_uses_selected_account_env_key_after_provider_switch(
 }
 
 #[test]
+fn session_provider_matches_selected_account_from_account_pool() {
+    let mut provider = crate::model_provider_info::ModelProviderInfo::create_anthropic_provider();
+    provider.account_pool = vec![
+        crate::model_provider_info::ModelProviderAccount {
+            base_url: Some("https://pool-primary.example".to_string()),
+            env_key: Some("__CODEX_TEST_POOL_PRIMARY_KEY__".to_string()),
+        },
+        crate::model_provider_info::ModelProviderAccount {
+            base_url: Some("https://pool-secondary.example".to_string()),
+            env_key: Some("__CODEX_TEST_POOL_SECONDARY_KEY__".to_string()),
+        },
+    ];
+
+    let client = ModelClient::new(
+        None,
+        ThreadId::new(),
+        provider.clone(),
+        SessionSource::Cli,
+        None,
+        false,
+        false,
+        None,
+    );
+
+    assert!(client.session_provider_matches(&provider.with_account(&provider.account_pool[1])));
+}
+
+#[test]
 fn build_reasoning_payload_omits_summary_when_unsupported() {
     let reasoning = build_reasoning_payload(
         false,

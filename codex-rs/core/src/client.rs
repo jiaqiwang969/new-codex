@@ -116,6 +116,7 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::provider_auth::resolve_gemini_api_key;
 use crate::provider_auth::resolve_provider_api_key;
+use crate::provider_routing::providers_match_ignoring_active_account;
 use crate::response_debug_context::extract_response_debug_context;
 use crate::response_debug_context::extract_response_debug_context_from_api_error;
 use crate::response_debug_context::telemetry_api_error_message;
@@ -341,7 +342,7 @@ impl ModelClient {
     }
 
     pub fn session_provider_matches(&self, provider: &ModelProviderInfo) -> bool {
-        &self.state.provider == provider
+        providers_match_ignoring_active_account(&self.state.provider, provider)
     }
     /// Creates a fresh turn-scoped streaming session with a provider override.
     ///
@@ -756,6 +757,11 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    #[cfg(test)]
+    pub(crate) fn provider_for_test(&self) -> ModelProviderInfo {
+        self.client.state.provider.clone()
+    }
+
     fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
