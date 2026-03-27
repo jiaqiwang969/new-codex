@@ -27,7 +27,6 @@ use crate::connectors;
 use crate::exec_policy::ExecPolicyManager;
 use crate::hook_memory::HookMemoryFields;
 use crate::hook_memory::memory_link_from_context;
-use crate::model_compat::is_openai_model_slug;
 #[cfg(test)]
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::manager::ModelsManager;
@@ -41,10 +40,7 @@ use crate::provider_pool_runtime::next_account_from_pool;
 use crate::provider_routing::account_index_label;
 use crate::provider_routing::normalize_account_pool_in_config_order;
 use crate::provider_routing::preview_provider_with_first_pool_account;
-use crate::provider_routing::provider_id_for_model_slug as provider_id_for_model_family;
-use crate::provider_routing::provider_matches_builtin_family;
 use crate::provider_routing::providers_match_ignoring_active_account;
-use crate::provider_routing::resolve_provider_id_for_provider;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
 use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
@@ -1304,96 +1300,10 @@ impl SessionConfiguration {
             next_configuration.original_config_do_not_use = Arc::new(updated_config);
         }
 
-        // Auto-switch provider when the model family changes between
-        // known provider families and default OpenAI-compatible models.
-        // This ensures that `/model` switches at runtime route requests
-        // to the correct API endpoint.
-        let new_model = next_configuration.collaboration_mode.model();
-        let target_provider_id = provider_id_for_model_family(new_model);
-        let original_config = &next_configuration.original_config_do_not_use;
-        // Treat provider identity changes as auto-switches, but preserve runtime
-        // endpoint/account overrides when the configured provider id is unchanged.
-        let provider_is_auto_switched =
-            next_configuration.provider_id != original_config.model_provider_id;
-
-        let mut provider_switch_label: Option<String> = None;
-
-        if updates.collaboration_mode.is_some() {
-            if let Some(target_provider_id) = target_provider_id {
-                if !provider_matches_builtin_family(
-                    &next_configuration.provider,
-                    target_provider_id,
-                ) {
-                    // Use the merged provider map (built-in + user-defined from config.toml)
-                    // so that custom providers with account_pool, env_keys, etc. are preserved.
-                    let providers = &next_configuration
-                        .original_config_do_not_use
-                        .model_providers;
-                    let old_provider_id = next_configuration.provider_id.clone();
-                    if let Some(provider) = providers.get(target_provider_id) {
-                        next_configuration.provider_id = target_provider_id.to_string();
-                        next_configuration.provider = provider.clone();
-                        provider_switch_label = Some(format_provider_switch_label(
-                            &old_provider_id,
-                            target_provider_id,
-                            new_model,
-                        ));
-                    } else {
-                        tracing::warn!(
-                            target_provider_id,
-                            available_providers = ?providers.keys().collect::<Vec<_>>(),
-                            "auto-switch: target provider not found in merged provider map"
-                        );
-                    }
-                }
-            } else if is_openai_model_slug(new_model)
-                && next_configuration.provider.wire_api
-                    != crate::model_provider_info::WireApi::Responses
-            {
-                let providers = &next_configuration
-                    .original_config_do_not_use
-                    .model_providers;
-                let old_provider_id = next_configuration.provider_id.clone();
-
-                let restored_provider = if original_config.user_configured_provider.wire_api
-                    == crate::model_provider_info::WireApi::Responses
-                {
-                    original_config.user_configured_provider.clone()
-                } else if let Some(openai) = providers.get("openai") {
-                    openai.clone()
-                } else {
-                    original_config.user_configured_provider.clone()
-                };
-                next_configuration.provider_id = resolve_provider_id_for_provider(
-                    providers,
-                    &restored_provider,
-                    &original_config.model_provider_id,
-                );
-                next_configuration.provider = restored_provider;
-                provider_switch_label = Some(format_provider_switch_label(
-                    &old_provider_id,
-                    next_configuration.provider_id.as_str(),
-                    new_model,
-                ));
-            } else if provider_is_auto_switched {
-                // Switching FROM a family-specific provider back to a default
-                // model family: restore the user's explicitly configured provider
-                // (before auto-switching).
-                let old_provider_id = next_configuration.provider_id.clone();
-                let restored_provider = original_config.user_configured_provider.clone();
-                next_configuration.provider_id = resolve_provider_id_for_provider(
-                    &original_config.model_providers,
-                    &restored_provider,
-                    &original_config.model_provider_id,
-                );
-                next_configuration.provider = restored_provider;
-                provider_switch_label = Some(format_provider_switch_label(
-                    &old_provider_id,
-                    next_configuration.provider_id.as_str(),
-                    new_model,
-                ));
-            }
-        } // End if updates.model.is_some()
+        let provider_switch_label = session_provider_switch::apply_runtime_provider_switch(
+            &mut next_configuration,
+            updates,
+        );
 
         Ok((next_configuration, provider_switch_label))
     }
@@ -8692,6 +8602,8 @@ fn derive_reference_images_for_turn(input: &[ResponseItem]) -> Vec<String> {
 }
 
 use crate::memories::prompts::build_memory_tool_developer_instructions;
+#[path = "codex/session_provider_switch.rs"]
+mod session_provider_switch;
 #[cfg(test)]
 pub(crate) use tests::make_session_and_context;
 #[cfg(test)]
