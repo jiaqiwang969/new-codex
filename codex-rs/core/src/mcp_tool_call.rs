@@ -625,16 +625,18 @@ async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, 
     let hook_event = if let EventMsg::McpToolCallEnd(tool_call_end) = &event {
         let memory_context = turn_context.resolve_hook_memory_context().await;
         let memory = turn_context.resolve_memory_link().await;
-        let memory_scope_version = memory
+        let memory_scope_version = memory_context
             .as_ref()
-            .and_then(|memory| memory.scope_version.clone());
-        let memory_scope_kind = memory.as_ref().and_then(|memory| memory.scope_kind.clone());
-        let memory_summary_sha256 = memory
+            .and_then(|memory_context| memory_context.active_memory_scope_version.clone());
+        let memory_scope_kind = memory_context
             .as_ref()
-            .and_then(|memory| memory.summary_sha256.clone());
-        let memory_binding_key = memory
+            .and_then(|memory_context| memory_context.active_scope_kind.clone());
+        let memory_summary_sha256 = memory_context
             .as_ref()
-            .and_then(|memory| memory.binding_key.clone());
+            .and_then(|memory_context| memory_context.active_memory_summary_sha256.clone());
+        let memory_binding_key = memory_context
+            .as_ref()
+            .and_then(|memory_context| memory_context.active_memory_binding_key.clone());
         let (status, error_message) = mcp_tool_call_status_and_error(&tool_call_end.result);
         let duration_ms = u64::try_from(tool_call_end.duration.as_millis()).unwrap_or(u64::MAX);
         let server = tool_call_end.invocation.server.clone();

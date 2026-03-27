@@ -27,7 +27,7 @@ Client -> AppServer : turn/start(threadId, input, modelOverride?)
 AppServer -> Core : start_turn(...)
 
 Core -> MemFS : select active memory\n(cwd > user > global)
-MemFS --> Core : MemoryLink(scopeKind, scopeVersion,\nsummarySha256, bindingKey)
+MemFS --> Core : MemoryLink(scopeVersion, bindingKey)
 
 Core -> LLM : /responses(input + tools + memory summary)
 LLM --> Core : response + tool_call(s)

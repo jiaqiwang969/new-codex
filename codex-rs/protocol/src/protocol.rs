@@ -3427,10 +3427,6 @@ pub struct MemoryLink {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub binding_key: Option<String>,
 }
 

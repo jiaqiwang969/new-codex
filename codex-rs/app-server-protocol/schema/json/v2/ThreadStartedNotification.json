@@ -549,19 +549,7 @@
             "null"
           ]
         },
-        "scopeKind": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "scopeVersion": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "summarySha256": {
           "type": [
             "string",
             "null"

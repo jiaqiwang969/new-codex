@@ -211,8 +211,6 @@ impl CodexThread {
         let source = crate::memories::select_memory_read_path_source(&codex_home, &cwd).await?;
         Some(MemoryLink {
             scope_version: Some(source.memory_scope_version),
-            scope_kind: Some(source.scope_kind.to_string()),
-            summary_sha256: Some(source.memory_summary_sha256),
             binding_key: Some(source.memory_binding_key),
         })
     }

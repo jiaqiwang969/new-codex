@@ -285,15 +285,15 @@ mod tests {
                     last_assistant_message: Some("hi".to_string()),
                     provider_name: "Gemini".to_string(),
                     model_slug: "gemini-2.5-pro".to_string(),
-                    memory: Some(MemoryLink {
-                        scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                        scope_kind: Some("cwd".to_string()),
-                        summary_sha256: Some("a".repeat(64)),
-                        binding_key: Some(
-                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                                .to_string(),
-                        ),
-                    }),
+                    memory: Some(
+                        serde_json::from_value(json!({
+                            "scope_version": "cwd:aaaaaaaaaaaa",
+                            "scope_kind": "cwd",
+                            "summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }))
+                        .expect("valid memory link"),
+                    ),
                     memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                     memory_scope_kind: Some("cwd".to_string()),
                     memory_summary_sha256: Some("a".repeat(64)),
@@ -349,8 +349,6 @@ mod tests {
                 "model_slug": "gemini-2.5-pro",
                 "memory": {
                     "scope_version": "cwd:aaaaaaaaaaaa",
-                    "scope_kind": "cwd",
-                    "summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 },
                 "memory_scope_version": "cwd:aaaaaaaaaaaa",
@@ -404,15 +402,15 @@ mod tests {
                     provider_name: "OpenAI".to_string(),
                     model_slug: "gpt-5".to_string(),
                     agent_name: Some("claude-code".to_string()),
-                    memory: Some(MemoryLink {
-                        scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                        scope_kind: Some("cwd".to_string()),
-                        summary_sha256: Some("a".repeat(64)),
-                        binding_key: Some(
-                            "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                                .to_string(),
-                        ),
-                    }),
+                    memory: Some(
+                        serde_json::from_value(json!({
+                            "scope_version": "cwd:aaaaaaaaaaaa",
+                            "scope_kind": "cwd",
+                            "summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }))
+                        .expect("valid memory link"),
+                    ),
                     memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
                     memory_scope_kind: Some("cwd".to_string()),
                     memory_summary_sha256: Some("a".repeat(64)),
@@ -473,8 +471,6 @@ mod tests {
                 "agent_name": "claude-code",
                 "memory": {
                     "scope_version": "cwd:aaaaaaaaaaaa",
-                    "scope_kind": "cwd",
-                    "summary_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "binding_key": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 },
                 "memory_scope_version": "cwd:aaaaaaaaaaaa",
@@ -520,8 +516,6 @@ mod tests {
                     call_id: "call-1".to_string(),
                     memory: Some(MemoryLink {
                         scope_version: Some("user:bbbbbbbbbbbb".to_string()),
-                        scope_kind: Some("user".to_string()),
-                        summary_sha256: Some("b".repeat(64)),
                         binding_key: Some(
                             "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                                 .to_string(),
@@ -561,8 +555,6 @@ mod tests {
                 "call_id": "call-1",
                 "memory": {
                     "scope_version": "user:bbbbbbbbbbbb",
-                    "scope_kind": "user",
-                    "summary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "binding_key": "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 },
                 "tool_name": "local_shell",

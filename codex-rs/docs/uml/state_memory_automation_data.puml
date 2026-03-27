@@ -40,9 +40,7 @@ class "MemorySummary\n(from memory_summary.md)" as MemorySummary {
 }
 
 class "MemoryLink\n(app-server v2 + protocol)" as MemoryLink {
-  +scope_kind: Option<String>
   +scope_version: Option<String>
-  +summary_sha256: Option<String>
   +binding_key: Option<String>
 }
 

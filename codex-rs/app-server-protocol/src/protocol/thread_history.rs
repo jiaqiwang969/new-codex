@@ -92,8 +92,6 @@ struct KnownAgentMetadata {
 type JsonValue = serde_json::Value;
 
 const MEMORY_SCOPE_VERSION_KEYS: &[&str] = &["memoryScopeVersion", "memory_scope_version"];
-const MEMORY_SCOPE_KIND_KEYS: &[&str] = &["memoryScopeKind", "memory_scope_kind"];
-const MEMORY_SUMMARY_SHA256_KEYS: &[&str] = &["memorySummarySha256", "memory_summary_sha256"];
 const MEMORY_BINDING_KEY_KEYS: &[&str] = &["memoryBindingKey", "memory_binding_key"];
 
 fn has_agent_metadata(state: &CollabAgentState) -> bool {
@@ -115,21 +113,13 @@ fn get_json_string(
 fn memory_link_from_arguments(arguments: Option<&JsonValue>) -> Option<MemoryLink> {
     let object = arguments.and_then(JsonValue::as_object)?;
     let scope_version = get_json_string(object, MEMORY_SCOPE_VERSION_KEYS);
-    let scope_kind = get_json_string(object, MEMORY_SCOPE_KIND_KEYS);
-    let summary_sha256 = get_json_string(object, MEMORY_SUMMARY_SHA256_KEYS);
     let binding_key = get_json_string(object, MEMORY_BINDING_KEY_KEYS);
 
-    if scope_version.is_none()
-        && scope_kind.is_none()
-        && summary_sha256.is_none()
-        && binding_key.is_none()
-    {
+    if scope_version.is_none() && binding_key.is_none() {
         None
     } else {
         Some(MemoryLink {
             scope_version,
-            scope_kind,
-            summary_sha256,
             binding_key,
         })
     }
@@ -2056,12 +2046,13 @@ mod tests {
                     message: "boom".into(),
                 }),
                 duration_ms: Some(8),
-                memory: Some(MemoryLink {
-                    scope_version: Some("user:bbbbbbbbbbbb".into()),
-                    scope_kind: Some("user".into()),
-                    summary_sha256: Some("b".repeat(64)),
-                    binding_key: Some(format!("user:bbbbbbbbbbbb:{}", "b".repeat(64))),
-                }),
+                memory: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "scopeVersion": "user:bbbbbbbbbbbb",
+                        "bindingKey": format!("user:bbbbbbbbbbbb:{}", "b".repeat(64)),
+                    }))
+                    .expect("valid memory link"),
+                ),
             }
         );
     }
@@ -2115,13 +2106,54 @@ mod tests {
                 result: None,
                 error: None,
                 duration_ms: None,
-                memory: Some(MemoryLink {
-                    scope_version: Some("cwd:aaaaaaaaaaaa".into()),
-                    scope_kind: Some("cwd".into()),
-                    summary_sha256: Some("a".repeat(64)),
-                    binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
-                }),
+                memory: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "scopeVersion": "cwd:aaaaaaaaaaaa",
+                        "bindingKey": format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64)),
+                    }))
+                    .expect("valid memory link"),
+                ),
             }
+        );
+    }
+
+    #[test]
+    fn reconstructs_turn_memory_with_minimal_link() {
+        let memory = codex_protocol::protocol::MemoryLink {
+            scope_version: Some("cwd:aaaaaaaaaaaa".into()),
+            binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
+        };
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                memory: Some(memory.clone()),
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                last_agent_message: None,
+                memory: Some(memory),
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(
+            turns,
+            vec![Turn {
+                id: "turn-a".into(),
+                memory: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "scopeVersion": "cwd:aaaaaaaaaaaa",
+                        "bindingKey": format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64)),
+                    }))
+                    .expect("valid memory link"),
+                ),
+                status: TurnStatus::Completed,
+                error: None,
+                items: Vec::new(),
+            }]
         );
     }
 
@@ -3089,8 +3121,6 @@ mod tests {
                 sender_thread_id,
                 memory: Some(codex_protocol::protocol::MemoryLink {
                     scope_version: Some("cwd:aaaaaaaaaaaa".into()),
-                    scope_kind: Some("cwd".into()),
-                    summary_sha256: Some("a".repeat(64)),
                     binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
                 }),
                 agent_type: None,
@@ -3119,12 +3149,13 @@ mod tests {
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(ReasoningEffort::default()),
                 agents_states: HashMap::new(),
-                memory: Some(MemoryLink {
-                    scope_version: Some("cwd:aaaaaaaaaaaa".into()),
-                    scope_kind: Some("cwd".into()),
-                    summary_sha256: Some("a".repeat(64)),
-                    binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
-                }),
+                memory: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "scopeVersion": "cwd:aaaaaaaaaaaa",
+                        "bindingKey": format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64)),
+                    }))
+                    .expect("valid memory link"),
+                ),
             }
         );
     }

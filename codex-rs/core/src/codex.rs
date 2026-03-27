@@ -1129,22 +1129,14 @@ impl TurnContext {
     pub(crate) async fn resolve_memory_link(&self) -> Option<MemoryLink> {
         let memory_context = self.resolve_hook_memory_context().await?;
         let scope_version = memory_context.active_memory_scope_version;
-        let scope_kind = memory_context.active_scope_kind;
-        let summary_sha256 = memory_context.active_memory_summary_sha256;
         let binding_key = memory_context.active_memory_binding_key;
 
-        if scope_version.is_none()
-            && scope_kind.is_none()
-            && summary_sha256.is_none()
-            && binding_key.is_none()
-        {
+        if scope_version.is_none() && binding_key.is_none() {
             return None;
         }
 
         Some(MemoryLink {
             scope_version,
-            scope_kind,
-            summary_sha256,
             binding_key,
         })
     }
@@ -6773,17 +6765,19 @@ pub(crate) async fn run_turn(
                         }
                     }
 
-                    let memory_scope_version = memory
+                    let memory_scope_version = memory_context.as_ref().and_then(|memory_context| {
+                        memory_context.active_memory_scope_version.clone()
+                    });
+                    let memory_scope_kind = memory_context
                         .as_ref()
-                        .and_then(|memory| memory.scope_version.clone());
-                    let memory_scope_kind =
-                        memory.as_ref().and_then(|memory| memory.scope_kind.clone());
-                    let memory_summary_sha256 = memory
-                        .as_ref()
-                        .and_then(|memory| memory.summary_sha256.clone());
-                    let memory_binding_key = memory
-                        .as_ref()
-                        .and_then(|memory| memory.binding_key.clone());
+                        .and_then(|memory_context| memory_context.active_scope_kind.clone());
+                    let memory_summary_sha256 =
+                        memory_context.as_ref().and_then(|memory_context| {
+                            memory_context.active_memory_summary_sha256.clone()
+                        });
+                    let memory_binding_key = memory_context.as_ref().and_then(|memory_context| {
+                        memory_context.active_memory_binding_key.clone()
+                    });
                     let stop_hook_permission_mode = match turn_context.approval_policy.value() {
                         AskForApproval::Never => "bypassPermissions",
                         AskForApproval::UnlessTrusted

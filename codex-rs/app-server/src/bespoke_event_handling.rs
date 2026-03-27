@@ -152,8 +152,6 @@ use tracing::warn;
 type JsonValue = serde_json::Value;
 
 const MEMORY_SCOPE_VERSION_KEYS: &[&str] = &["memoryScopeVersion", "memory_scope_version"];
-const MEMORY_SCOPE_KIND_KEYS: &[&str] = &["memoryScopeKind", "memory_scope_kind"];
-const MEMORY_SUMMARY_SHA256_KEYS: &[&str] = &["memorySummarySha256", "memory_summary_sha256"];
 const MEMORY_BINDING_KEY_KEYS: &[&str] = &["memoryBindingKey", "memory_binding_key"];
 
 fn get_json_string(
@@ -171,21 +169,13 @@ fn get_json_string(
 fn memory_link_from_arguments(arguments: Option<&JsonValue>) -> Option<MemoryLink> {
     let object = arguments.and_then(JsonValue::as_object)?;
     let scope_version = get_json_string(object, MEMORY_SCOPE_VERSION_KEYS);
-    let scope_kind = get_json_string(object, MEMORY_SCOPE_KIND_KEYS);
-    let summary_sha256 = get_json_string(object, MEMORY_SUMMARY_SHA256_KEYS);
     let binding_key = get_json_string(object, MEMORY_BINDING_KEY_KEYS);
 
-    if scope_version.is_none()
-        && scope_kind.is_none()
-        && summary_sha256.is_none()
-        && binding_key.is_none()
-    {
+    if scope_version.is_none() && binding_key.is_none() {
         None
     } else {
         Some(MemoryLink {
             scope_version,
-            scope_kind,
-            summary_sha256,
             binding_key,
         })
     }
@@ -193,17 +183,11 @@ fn memory_link_from_arguments(arguments: Option<&JsonValue>) -> Option<MemoryLin
 
 fn memory_link_from_core(memory: Option<CoreMemoryLink>) -> Option<MemoryLink> {
     let memory = memory?;
-    if memory.scope_version.is_none()
-        && memory.scope_kind.is_none()
-        && memory.summary_sha256.is_none()
-        && memory.binding_key.is_none()
-    {
+    if memory.scope_version.is_none() && memory.binding_key.is_none() {
         None
     } else {
         Some(MemoryLink {
             scope_version: memory.scope_version,
-            scope_kind: memory.scope_kind,
-            summary_sha256: memory.summary_sha256,
             binding_key: memory.binding_key,
         })
     }
@@ -3304,10 +3288,6 @@ mod tests {
             sender_thread_id: ThreadId::new(),
             memory: Some(CoreMemoryLink {
                 scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                scope_kind: Some("cwd".to_string()),
-                summary_sha256: Some(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                ),
                 binding_key: Some(
                     "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         .to_string(),
@@ -3331,10 +3311,6 @@ mod tests {
             agents_states: HashMap::new(),
             memory: Some(MemoryLink {
                 scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                scope_kind: Some("cwd".to_string()),
-                summary_sha256: Some(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-                ),
                 binding_key: Some(
                     "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         .to_string(),
@@ -3351,10 +3327,6 @@ mod tests {
             sender_thread_id: ThreadId::new(),
             memory: Some(CoreMemoryLink {
                 scope_version: Some("user:bbbbbbbbbbbb".to_string()),
-                scope_kind: Some("user".to_string()),
-                summary_sha256: Some(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-                ),
                 binding_key: Some(
                     "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                         .to_string(),
@@ -3385,10 +3357,6 @@ mod tests {
             .collect(),
             memory: Some(MemoryLink {
                 scope_version: Some("user:bbbbbbbbbbbb".to_string()),
-                scope_kind: Some("user".to_string()),
-                summary_sha256: Some(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
-                ),
                 binding_key: Some(
                     "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                         .to_string(),
@@ -3953,17 +3921,13 @@ mod tests {
 
         assert_eq!(
             memory,
-            Some(MemoryLink {
-                scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
-                scope_kind: Some("cwd".to_string()),
-                summary_sha256: Some(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()
-                ),
-                binding_key: Some(
-                    "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_string()
-                ),
-            })
+            Some(
+                serde_json::from_value(serde_json::json!({
+                    "scopeVersion": "cwd:aaaaaaaaaaaa",
+                    "bindingKey": "cwd:aaaaaaaaaaaa:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                }))
+                .expect("valid memory link"),
+            )
         );
     }
 
@@ -4096,17 +4060,13 @@ mod tests {
 
         assert_eq!(
             memory,
-            Some(MemoryLink {
-                scope_version: Some("user:bbbbbbbbbbbb".to_string()),
-                scope_kind: Some("user".to_string()),
-                summary_sha256: Some(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()
-                ),
-                binding_key: Some(
-                    "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                        .to_string()
-                ),
-            })
+            Some(
+                serde_json::from_value(serde_json::json!({
+                    "scopeVersion": "user:bbbbbbbbbbbb",
+                    "bindingKey": "user:bbbbbbbbbbbb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                }))
+                .expect("valid memory link"),
+            )
         );
     }
 
