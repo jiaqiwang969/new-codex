@@ -9,19 +9,24 @@ use crate::config::types::AppToolsConfig;
 use crate::config::types::AppsConfigToml;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerToolConfig;
+use crate::config::types::McpServerTransportConfig;
 use codex_config::CONFIG_TOML_FILE;
+use codex_features::Feature;
 use codex_hooks::HookEventMemoryContext;
 use codex_protocol::protocol::MemoryLink;
+use codex_rmcp_client::OAuthCredentialsStoreMode;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::stdio_server_bin;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::tempdir;
 use tracing::Instrument;
 use tracing::Level;
@@ -118,6 +123,69 @@ fn active_memory_context() -> HookEventMemoryContext {
     }
 }
 
+async fn enable_memory_tool_with_global_summary(
+    turn_context: &mut TurnContext,
+    summary: &str,
+) -> crate::hook_memory::HookMemoryFields {
+    let mut config = (*turn_context.config).clone();
+    config
+        .features
+        .enable(Feature::MemoryTool)
+        .expect("test config should allow enabling memory tool");
+    turn_context.features = config.features.clone();
+    turn_context.config = Arc::new(config);
+
+    let memory_root = crate::memories::memory_root(turn_context.config.codex_home.as_path());
+    tokio::fs::create_dir_all(&memory_root)
+        .await
+        .expect("create global memory root");
+    tokio::fs::write(crate::memories::memory_summary_file(&memory_root), summary)
+        .await
+        .expect("write global memory summary");
+
+    crate::hook_memory::HookMemoryFields::from_context(
+        turn_context.resolve_hook_memory_context().await,
+    )
+}
+
+async fn configure_rmcp_test_server(session: &Session, turn_context: &TurnContext) {
+    let rmcp_test_server_bin = stdio_server_bin().expect("stdio test server binary");
+    let mcp_servers = HashMap::from([(
+        "rmcp".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: rmcp_test_server_bin,
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: Some(Duration::from_secs(10)),
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    session
+        .refresh_mcp_servers_now(turn_context, mcp_servers, OAuthCredentialsStoreMode::Auto)
+        .await;
+
+    let manager = session.services.mcp_connection_manager.read().await;
+    assert!(
+        manager
+            .wait_for_server_ready("rmcp", Duration::from_secs(10))
+            .await,
+        "rmcp test server should become ready"
+    );
+}
+
 #[test]
 fn hook_memory_fields_include_memory_link_and_compatibility_fields() {
     let memory_context = active_memory_context();
@@ -170,6 +238,84 @@ fn hook_memory_fields_preserve_partial_memory_link_values() {
         Some(MemoryLink {
             scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
             binding_key: None,
+        })
+    );
+}
+
+#[tokio::test]
+async fn maybe_inject_mcp_agent_context_injects_camel_case_memory_fields() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let expected_fields =
+        enable_memory_tool_with_global_summary(&mut turn_context, "global memory summary").await;
+    configure_rmcp_test_server(&session, &turn_context).await;
+
+    let injected = maybe_inject_mcp_agent_context(
+        &session,
+        &turn_context,
+        "rmcp",
+        "agent_context_echo",
+        Some(serde_json::json!({
+            "message": "ping",
+            "context": "keep context",
+            "workFolder": "/already/set",
+        })),
+    )
+    .await
+    .expect("object arguments");
+
+    assert_eq!(
+        injected,
+        serde_json::json!({
+            "message": "ping",
+            "context": "keep context",
+            "workFolder": "/already/set",
+            "memoryScopeVersion": expected_fields
+                .memory_scope_version
+                .expect("memory scope version"),
+            "memoryScopeKind": expected_fields.memory_scope_kind.expect("memory scope kind"),
+            "memorySummarySha256": expected_fields
+                .memory_summary_sha256
+                .expect("memory summary sha256"),
+            "memoryBindingKey": expected_fields.memory_binding_key.expect("memory binding key"),
+        })
+    );
+}
+
+#[tokio::test]
+async fn maybe_inject_mcp_agent_context_injects_snake_case_memory_fields() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let expected_fields =
+        enable_memory_tool_with_global_summary(&mut turn_context, "global memory summary").await;
+    configure_rmcp_test_server(&session, &turn_context).await;
+
+    let injected = maybe_inject_mcp_agent_context(
+        &session,
+        &turn_context,
+        "rmcp",
+        "agent_context_echo_snake",
+        Some(serde_json::json!({
+            "message": "ping",
+            "context": "keep context",
+            "workdir": "/already/set",
+        })),
+    )
+    .await
+    .expect("object arguments");
+
+    assert_eq!(
+        injected,
+        serde_json::json!({
+            "message": "ping",
+            "context": "keep context",
+            "workdir": "/already/set",
+            "memory_scope_version": expected_fields
+                .memory_scope_version
+                .expect("memory scope version"),
+            "memory_scope_kind": expected_fields.memory_scope_kind.expect("memory scope kind"),
+            "memory_summary_sha256": expected_fields
+                .memory_summary_sha256
+                .expect("memory summary sha256"),
+            "memory_binding_key": expected_fields.memory_binding_key.expect("memory binding key"),
         })
     );
 }

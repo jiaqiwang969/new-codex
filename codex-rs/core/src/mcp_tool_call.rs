@@ -509,59 +509,67 @@ async fn maybe_inject_mcp_agent_context(
         }
     }
 
-    let memory_scope_version_key =
-        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_VERSION_KEYS);
-    let memory_scope_kind_key =
-        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_KIND_KEYS);
-    let memory_summary_sha256_key =
-        supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS);
-    let memory_binding_key = supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_BINDING_KEYS);
-    if (memory_scope_version_key.is_some()
-        || memory_scope_kind_key.is_some()
-        || memory_summary_sha256_key.is_some()
-        || memory_binding_key.is_some())
-        && let Some(memory_context) = turn_context.resolve_hook_memory_context().await
+    if supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_VERSION_KEYS).is_some()
+        || supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SCOPE_KIND_KEYS).is_some()
+        || supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS).is_some()
+        || supported_schema_key(&tool_properties, MCP_AGENT_MEMORY_BINDING_KEYS).is_some()
     {
-        if let Some(memory_scope_version_key) = memory_scope_version_key
-            && should_inject_string_argument(&args, memory_scope_version_key)
-            && let Some(scope_version) = memory_context.active_memory_scope_version.as_ref()
-        {
-            args.insert(
-                memory_scope_version_key.to_string(),
-                Value::String(scope_version.clone()),
-            );
-        }
-        if let Some(memory_scope_kind_key) = memory_scope_kind_key
-            && should_inject_string_argument(&args, memory_scope_kind_key)
-            && let Some(scope_kind) = memory_context.active_scope_kind.as_ref()
-        {
-            args.insert(
-                memory_scope_kind_key.to_string(),
-                Value::String(scope_kind.clone()),
-            );
-        }
-        if let Some(memory_summary_sha256_key) = memory_summary_sha256_key
-            && should_inject_string_argument(&args, memory_summary_sha256_key)
-            && let Some(memory_summary_sha256) =
-                memory_context.active_memory_summary_sha256.as_ref()
-        {
-            args.insert(
-                memory_summary_sha256_key.to_string(),
-                Value::String(memory_summary_sha256.clone()),
-            );
-        }
-        if let Some(memory_binding_key) = memory_binding_key
-            && should_inject_string_argument(&args, memory_binding_key)
-            && let Some(binding_key) = memory_context.active_memory_binding_key.as_ref()
-        {
-            args.insert(
-                memory_binding_key.to_string(),
-                Value::String(binding_key.clone()),
-            );
-        }
+        let memory_fields =
+            HookMemoryFields::from_context(turn_context.resolve_hook_memory_context().await);
+        inject_mcp_agent_memory_arguments(&mut args, &tool_properties, &memory_fields);
     }
 
     Some(Value::Object(args))
+}
+
+fn inject_mcp_agent_memory_arguments(
+    args: &mut serde_json::Map<String, Value>,
+    tool_properties: &Option<serde_json::Map<String, Value>>,
+    memory_fields: &HookMemoryFields,
+) {
+    inject_supported_string_argument(
+        args,
+        tool_properties,
+        MCP_AGENT_MEMORY_SCOPE_VERSION_KEYS,
+        memory_fields.memory_scope_version.as_deref(),
+    );
+    inject_supported_string_argument(
+        args,
+        tool_properties,
+        MCP_AGENT_MEMORY_SCOPE_KIND_KEYS,
+        memory_fields.memory_scope_kind.as_deref(),
+    );
+    inject_supported_string_argument(
+        args,
+        tool_properties,
+        MCP_AGENT_MEMORY_SUMMARY_SHA256_KEYS,
+        memory_fields.memory_summary_sha256.as_deref(),
+    );
+    inject_supported_string_argument(
+        args,
+        tool_properties,
+        MCP_AGENT_MEMORY_BINDING_KEYS,
+        memory_fields.memory_binding_key.as_deref(),
+    );
+}
+
+fn inject_supported_string_argument(
+    args: &mut serde_json::Map<String, Value>,
+    tool_properties: &Option<serde_json::Map<String, Value>>,
+    candidate_keys: &[&str],
+    value: Option<&str>,
+) {
+    let Some(key) = supported_schema_key(tool_properties, candidate_keys) else {
+        return;
+    };
+    if !should_inject_string_argument(args, key) {
+        return;
+    }
+    let Some(value) = value else {
+        return;
+    };
+
+    args.insert(key.to_string(), Value::String(value.to_string()));
 }
 
 fn should_inject_string_argument(args: &serde_json::Map<String, Value>, key: &str) -> bool {
