@@ -2571,7 +2571,11 @@ fn format_provider_switch_label_reports_only_family_switch_and_model() {
     ];
 
     assert_eq!(
-        format_provider_switch_label("openai", "anthropic", "claude-opus-4-1"),
+        session_provider_switch::format_provider_switch_label(
+            "openai",
+            "anthropic",
+            "claude-opus-4-1",
+        ),
         "openai -> anthropic (model: claude-opus-4-1)"
     );
 }

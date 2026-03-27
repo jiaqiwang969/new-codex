@@ -1214,127 +1214,6 @@ impl SessionConfiguration {
             session_source: self.session_source.clone(),
         }
     }
-
-    /// Apply settings updates and return the new configuration plus an
-    /// optional provider-switch label when the provider was auto-switched
-    /// for a different model family.
-    pub(crate) fn apply(
-        &self,
-        updates: &SessionSettingsUpdate,
-    ) -> ConstraintResult<(Self, Option<String>)> {
-        let mut next_configuration = self.clone();
-        let file_system_policy_matches_legacy = self.file_system_sandbox_policy
-            == FileSystemSandboxPolicy::from_legacy_sandbox_policy(
-                self.sandbox_policy.get(),
-                &self.cwd,
-            );
-        if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
-            next_configuration.collaboration_mode = collaboration_mode;
-        }
-        if let Some(summary) = updates.reasoning_summary {
-            next_configuration.model_reasoning_summary = Some(summary);
-        }
-        if let Some(service_tier) = updates.service_tier {
-            next_configuration.service_tier = service_tier;
-        }
-        if let Some(personality) = updates.personality {
-            next_configuration.personality = Some(personality);
-        }
-        if let Some(approval_policy) = updates.approval_policy {
-            next_configuration.approval_policy.set(approval_policy)?;
-        }
-        if let Some(approvals_reviewer) = updates.approvals_reviewer {
-            next_configuration.approvals_reviewer = approvals_reviewer;
-        }
-        let mut sandbox_policy_changed = false;
-        if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
-            next_configuration.sandbox_policy.set(sandbox_policy)?;
-            next_configuration.network_sandbox_policy =
-                NetworkSandboxPolicy::from(next_configuration.sandbox_policy.get());
-            sandbox_policy_changed = true;
-        }
-        if let Some(windows_sandbox_level) = updates.windows_sandbox_level {
-            next_configuration.windows_sandbox_level = windows_sandbox_level;
-        }
-
-        let absolute_cwd = updates
-            .cwd
-            .as_ref()
-            .map(|cwd| {
-                AbsolutePathBuf::relative_to_current_dir(normalize_for_native_workdir(
-                    cwd.as_path(),
-                ))
-                .unwrap_or_else(|e| {
-                    warn!("failed to normalize update cwd: {cwd:?}: {e}");
-                    self.cwd.clone()
-                })
-            })
-            .unwrap_or_else(|| self.cwd.clone());
-
-        let cwd_changed = absolute_cwd.as_path() != self.cwd.as_path();
-        next_configuration.cwd = absolute_cwd;
-        if sandbox_policy_changed || (cwd_changed && file_system_policy_matches_legacy) {
-            // Preserve richer split policies across cwd-only updates; only
-            // rederive when the session is already using the legacy bridge.
-            next_configuration.file_system_sandbox_policy =
-                FileSystemSandboxPolicy::from_legacy_sandbox_policy(
-                    next_configuration.sandbox_policy.get(),
-                    &next_configuration.cwd,
-                );
-        }
-        if let Some(app_server_client_name) = updates.app_server_client_name.clone() {
-            next_configuration.app_server_client_name = Some(app_server_client_name);
-        }
-        if let (Some(provider_id), Some(provider)) = (
-            updates.model_provider_id.clone(),
-            updates.model_provider.clone(),
-        ) {
-            next_configuration.provider_id = provider_id;
-            next_configuration.provider = provider;
-            let mut updated_config = (*next_configuration.original_config_do_not_use).clone();
-            updated_config.model_provider_id = next_configuration.provider_id.clone();
-            updated_config.model_provider = next_configuration.provider.clone();
-            next_configuration.original_config_do_not_use = Arc::new(updated_config);
-        }
-
-        let provider_switch_label = session_provider_switch::apply_runtime_provider_switch(
-            &mut next_configuration,
-            updates,
-        );
-
-        Ok((next_configuration, provider_switch_label))
-    }
-}
-
-fn format_provider_switch_label(
-    old_provider_id: &str,
-    new_provider_id: &str,
-    model: &str,
-) -> String {
-    format!("{old_provider_id} -> {new_provider_id} (model: {model})")
-}
-
-fn drop_provider_specific_encrypted_history_items(state: &mut SessionState) -> usize {
-    let snapshot = state.clone_history();
-    let original = snapshot.raw_items();
-    let filtered = original
-        .iter()
-        .filter(|item| {
-            !matches!(
-                item,
-                ResponseItem::Reasoning {
-                    encrypted_content: Some(_),
-                    ..
-                } | ResponseItem::Compaction { .. }
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let removed_count = original.len().saturating_sub(filtered.len());
-    if removed_count > 0 {
-        state.replace_history(filtered, /*reference_context_item*/ None);
-    }
-    removed_count
 }
 
 #[derive(Default, Clone)]
@@ -2489,7 +2368,9 @@ impl Session {
                     let session_source = updated.session_source.clone();
                     state.session_configuration = updated;
                     let dropped_items_count = if provider_label.is_some() {
-                        drop_provider_specific_encrypted_history_items(&mut state)
+                        session_provider_switch::drop_provider_specific_encrypted_history_items(
+                            &mut state,
+                        )
                     } else {
                         0
                     };
@@ -2560,7 +2441,9 @@ impl Session {
                     let session_source = next.session_source.clone();
                     state.session_configuration = next.clone();
                     let dropped_items_count = if provider_label.is_some() {
-                        drop_provider_specific_encrypted_history_items(&mut state)
+                        session_provider_switch::drop_provider_specific_encrypted_history_items(
+                            &mut state,
+                        )
                     } else {
                         0
                     };
