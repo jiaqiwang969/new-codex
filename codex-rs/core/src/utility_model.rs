@@ -151,13 +151,18 @@ mod tests {
     use crate::auth::AuthManager;
     use crate::auth::CodexAuth;
     use crate::client::ModelClient;
+    use crate::config::Config;
+    use crate::config::ConfigOverrides;
+    use crate::config::ConfigToml;
     use crate::config::test_config;
+    use crate::config_loader::ConfigLayerStack;
     use crate::model_provider_info::ModelProviderAccount;
     use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
     use crate::models_manager::manager::ModelsManager;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::SessionSource;
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     #[test]
     fn provider_id_for_model_slug_routes_known_families() {
@@ -336,6 +341,34 @@ mod tests {
 
         config.model_sub_responses = Some("gpt-5.1-codex-mini".to_string());
         assert_eq!(responses_utility_model_slug(&config), "gpt-5.1-codex-mini");
+    }
+
+    #[test]
+    fn model_sub_responses_warns_and_is_cleared_when_non_openai_slug() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model_sub_responses: Some("claude-sonnet-4-6".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_config_with_layer_stack(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+            ConfigLayerStack::default(),
+        )?;
+
+        assert_eq!(config.model_sub_responses, None);
+        assert!(
+            config
+                .startup_warnings
+                .iter()
+                .any(|warning| warning.contains("model_sub_responses")),
+            "{:?}",
+            config.startup_warnings
+        );
+
+        Ok(())
     }
 
     #[tokio::test]

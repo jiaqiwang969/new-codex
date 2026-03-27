@@ -5930,33 +5930,6 @@ trust_level = "trusted"
     }
 
     #[test]
-    fn model_sub_responses_warns_and_is_cleared_when_non_openai_slug() -> std::io::Result<()> {
-        let codex_home = TempDir::new()?;
-        let cfg = ConfigToml {
-            model_sub_responses: Some("claude-sonnet-4-6".to_string()),
-            ..Default::default()
-        };
-
-        let config = Config::load_from_base_config_with_overrides(
-            cfg,
-            ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
-        )?;
-
-        assert_eq!(config.model_sub_responses, None);
-        assert!(
-            config
-                .startup_warnings
-                .iter()
-                .any(|warning| warning.contains("model_sub_responses")),
-            "{:?}",
-            config.startup_warnings
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn test_set_default_oss_provider() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let codex_home = temp_dir.path();
@@ -6000,32 +5973,6 @@ trust_level = "trusted"
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(
-            error
-                .to_string()
-                .contains(OLLAMA_CHAT_PROVIDER_REMOVED_ERROR)
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_load_config_rejects_legacy_ollama_chat_provider_with_helpful_error()
-    -> std::io::Result<()> {
-        let codex_home = TempDir::new()?;
-        let cfg = ConfigToml {
-            model_provider: Some(LEGACY_OLLAMA_CHAT_PROVIDER_ID.to_string()),
-            ..Default::default()
-        };
-
-        let result = Config::load_from_base_config_with_overrides(
-            cfg,
-            ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
-        );
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert!(
             error
                 .to_string()

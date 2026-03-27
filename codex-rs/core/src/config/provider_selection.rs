@@ -69,8 +69,10 @@ mod tests {
     use crate::model_provider_info::GEMINI_PROVIDER_ID;
     use crate::model_provider_info::GEMMA_PROVIDER_ID;
     use crate::model_provider_info::GROK_PROVIDER_ID;
+    use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
     use crate::model_provider_info::ModelProviderAccount;
     use crate::model_provider_info::ModelProviderInfo;
+    use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
     use crate::model_provider_info::OPENAI_PROVIDER_ID;
     use crate::model_provider_info::WireApi;
     use crate::model_provider_info::built_in_model_providers;
@@ -626,6 +628,31 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
         assert_eq!(config.model_provider_id, GEMMA_PROVIDER_ID);
         assert_eq!(config.model_provider.name, "Gemma");
         assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_config_rejects_legacy_ollama_chat_provider_with_helpful_error() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model_provider: Some(LEGACY_OLLAMA_CHAT_PROVIDER_ID.to_string()),
+            ..Default::default()
+        };
+
+        let result = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        );
+        assert!(result.is_err());
+        let error = result.expect_err("legacy ollama-chat provider should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            error
+                .to_string()
+                .contains(OLLAMA_CHAT_PROVIDER_REMOVED_ERROR)
+        );
 
         Ok(())
     }
