@@ -1,10 +1,50 @@
+use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+use crate::model_provider_info::OPENAI_PROVIDER_ID;
 use crate::model_provider_info::built_in_model_providers;
 use crate::provider_pool::load_pool_config;
 use crate::provider_pool::overlay_pool_config;
 use crate::provider_routing::provider_matches_builtin_family;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+
+pub(super) fn validate_reserved_model_provider_ids(
+    model_providers: &HashMap<String, ModelProviderInfo>,
+) -> Result<(), String> {
+    let mut conflicts = model_providers
+        .keys()
+        .filter(|key| {
+            matches!(
+                key.as_str(),
+                OPENAI_PROVIDER_ID | OLLAMA_OSS_PROVIDER_ID | LMSTUDIO_OSS_PROVIDER_ID
+            )
+        })
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>();
+    conflicts.sort_unstable();
+    if conflicts.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "model_providers contains reserved provider IDs with dedicated config fields: {}. \
+Rename your custom provider (for example, `openai-custom`).",
+            conflicts.join(", ")
+        ))
+    }
+}
+
+pub(super) fn deserialize_model_providers<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, ModelProviderInfo>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let model_providers = HashMap::<String, ModelProviderInfo>::deserialize(deserializer)?;
+    validate_reserved_model_provider_ids(&model_providers).map_err(serde::de::Error::custom)?;
+    Ok(model_providers)
+}
 
 pub(crate) fn build_model_providers(
     codex_home: &Path,
@@ -39,10 +79,12 @@ pub(crate) fn build_model_providers(
 #[cfg(test)]
 mod tests {
     use super::build_model_providers;
+    use super::validate_reserved_model_provider_ids;
     use crate::config::ConfigToml;
     use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
     use crate::model_provider_info::ModelProviderAccount;
     use crate::model_provider_info::ModelProviderInfo;
+    use crate::model_provider_info::OPENAI_PROVIDER_ID;
     use crate::model_provider_info::WireApi;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
@@ -157,5 +199,34 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn validate_reserved_model_provider_ids_rejects_reserved_keys() {
+        let built_in_openai = crate::model_provider_info::built_in_model_providers(None)
+            .remove(OPENAI_PROVIDER_ID)
+            .expect("openai provider should exist");
+        let model_providers = HashMap::from([(OPENAI_PROVIDER_ID.to_string(), built_in_openai)]);
+
+        let error = validate_reserved_model_provider_ids(&model_providers)
+            .expect_err("reserved provider keys should be rejected");
+        assert!(
+            error.contains("reserved provider IDs with dedicated config fields"),
+            "unexpected error: {error}"
+        );
+        assert!(error.contains("`openai`"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_reserved_model_provider_ids_allows_custom_keys() {
+        let built_in_openai = crate::model_provider_info::built_in_model_providers(None)
+            .remove(OPENAI_PROVIDER_ID)
+            .expect("openai provider should exist");
+        let model_providers = HashMap::from([("openai-custom".to_string(), built_in_openai)]);
+
+        assert_eq!(
+            validate_reserved_model_provider_ids(&model_providers),
+            Ok(())
+        );
     }
 }
