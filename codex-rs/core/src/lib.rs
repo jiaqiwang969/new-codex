@@ -61,6 +61,7 @@ mod network_policy_decision;
 pub mod network_proxy_loader;
 mod original_image_detail;
 mod provider_auth;
+mod provider_inventory;
 mod provider_pool;
 mod provider_pool_failover;
 #[cfg(test)]
