@@ -276,6 +276,51 @@ impl ModelProviderInfo {
         provider
     }
 
+    pub(crate) fn with_builtin_family_override(&self, override_provider: &Self) -> Self {
+        let mut provider = self.clone();
+        if !override_provider.account_pool.is_empty() {
+            provider.account_pool = override_provider.account_pool.clone();
+        }
+
+        if provider.account_pool.is_empty() {
+            if override_provider.base_url.is_some() {
+                provider.base_url = override_provider.base_url.clone();
+            }
+            if let Some(env_key) = &override_provider.env_key {
+                provider.env_key = Some(env_key.clone());
+                provider.env_key_instructions = override_provider.env_key_instructions.clone();
+            } else if override_provider.env_key_instructions.is_some() {
+                provider.env_key_instructions = override_provider.env_key_instructions.clone();
+            }
+        }
+
+        if let Some(token) = &override_provider.experimental_bearer_token {
+            provider.experimental_bearer_token = Some(token.clone());
+        }
+        provider.query_params =
+            merge_string_maps(&provider.query_params, &override_provider.query_params);
+        provider.http_headers =
+            merge_string_maps(&provider.http_headers, &override_provider.http_headers);
+        provider.env_http_headers = merge_string_maps(
+            &provider.env_http_headers,
+            &override_provider.env_http_headers,
+        );
+        if let Some(request_max_retries) = override_provider.request_max_retries {
+            provider.request_max_retries = Some(request_max_retries);
+        }
+        if let Some(stream_max_retries) = override_provider.stream_max_retries {
+            provider.stream_max_retries = Some(stream_max_retries);
+        }
+        if let Some(stream_idle_timeout_ms) = override_provider.stream_idle_timeout_ms {
+            provider.stream_idle_timeout_ms = Some(stream_idle_timeout_ms);
+        }
+        if let Some(websocket_connect_timeout_ms) = override_provider.websocket_connect_timeout_ms {
+            provider.websocket_connect_timeout_ms = Some(websocket_connect_timeout_ms);
+        }
+
+        provider
+    }
+
     /// Effective maximum number of request retries for this provider.
     pub fn request_max_retries(&self) -> u64 {
         self.request_max_retries
@@ -563,6 +608,22 @@ impl ModelProviderInfo {
             supports_websockets: false,
             account_pool: Vec::new(),
         }
+    }
+}
+
+fn merge_string_maps(
+    base: &Option<HashMap<String, String>>,
+    override_map: &Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    match (base, override_map) {
+        (Some(base), Some(override_map)) => {
+            let mut merged = base.clone();
+            merged.extend(override_map.clone());
+            Some(merged)
+        }
+        (None, Some(override_map)) => Some(override_map.clone()),
+        (Some(base), None) => Some(base.clone()),
+        (None, None) => None,
     }
 }
 

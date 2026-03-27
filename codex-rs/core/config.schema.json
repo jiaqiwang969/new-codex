@@ -2384,7 +2384,7 @@
         "$ref": "#/definitions/ModelProviderInfo"
       },
       "default": {},
-      "description": "User-defined provider entries that extend the built-in list. Built-in IDs cannot be overridden.",
+      "description": "User-defined provider entries that extend the built-in list. Provider IDs with dedicated top-level config fields remain reserved; other built-in families can be patched here.",
       "type": "object"
     },
     "model_reasoning_effort": {

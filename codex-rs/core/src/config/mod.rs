@@ -41,12 +41,6 @@ use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
 use crate::memories::memory_root;
 use crate::model_compat::is_openai_model_slug;
-use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
-use crate::model_provider_info::ANTIGRAVITY_ANTHROPIC_PROVIDER_ID;
-use crate::model_provider_info::ANTIGRAVITY_GEMINI_PROVIDER_ID;
-use crate::model_provider_info::GEMINI_PROVIDER_ID;
-use crate::model_provider_info::GEMMA_PROVIDER_ID;
-use crate::model_provider_info::GROK_PROVIDER_ID;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
@@ -1247,8 +1241,9 @@ pub struct ConfigToml {
     /// to 127.0.0.1 (using `mcp_oauth_callback_port` when provided).
     pub mcp_oauth_callback_url: Option<String>,
 
-    /// User-defined provider entries that extend the built-in list. Built-in
-    /// IDs cannot be overridden.
+    /// User-defined provider entries that extend the built-in list.
+    /// Provider IDs with dedicated top-level config fields remain reserved;
+    /// other built-in families can be patched here.
     #[serde(default, deserialize_with = "deserialize_model_providers")]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
@@ -1892,8 +1887,8 @@ fn validate_reserved_model_provider_ids(
         Ok(())
     } else {
         Err(format!(
-            "model_providers contains reserved built-in provider IDs: {}. \
-Built-in providers cannot be overridden. Rename your custom provider (for example, `openai-custom`).",
+            "model_providers contains reserved provider IDs with dedicated config fields: {}. \
+Rename your custom provider (for example, `openai-custom`).",
             conflicts.join(", ")
         ))
     }
@@ -2318,23 +2313,17 @@ impl Config {
         let effective_openai_base_url = openai_base_url.or(openai_base_url_from_env);
 
         let mut model_providers = built_in_model_providers(effective_openai_base_url);
-        // Merge user-defined providers into the built-in list, allowing local
-        // providers to extend or override built-ins while preserving canonical
-        // names for known provider families.
-        for (key, mut provider) in cfg.model_providers.into_iter() {
-            if matches!(
-                key.as_str(),
-                OPENAI_PROVIDER_ID
-                    | GEMINI_PROVIDER_ID
-                    | GEMMA_PROVIDER_ID
-                    | GROK_PROVIDER_ID
-                    | ANTHROPIC_PROVIDER_ID
-                    | ANTIGRAVITY_GEMINI_PROVIDER_ID
-                    | ANTIGRAVITY_ANTHROPIC_PROVIDER_ID
-            ) && let Some(existing) = model_providers.get(&key)
+        // Merge user-defined providers into the built-in list. Known built-in
+        // families keep their canonical identity while accepting local
+        // endpoint/account-pool overrides.
+        for (key, provider) in cfg.model_providers.into_iter() {
+            let provider = if let Some(existing) = model_providers.get(&key)
+                && provider_matches_builtin_family(existing, &key)
             {
-                provider.name = existing.name.clone();
-            }
+                existing.with_builtin_family_override(&provider)
+            } else {
+                provider
+            };
             model_providers.insert(key, provider);
         }
 

@@ -27,6 +27,13 @@ when the current account fails. The provider is still selected by
 `model_provider` (or by a profile), and only accounts in that provider's
 `account_pool` are rotated.
 
+In practice, keep the logical provider definition in `~/.codex/config.toml`.
+Use `~/.codex/config-pool.toml` as an operational overlay for `account_pool`
+entries, and keep the matching API keys in `~/.codex/auth-pool.json`. This
+also works for built-in families such as `anthropic`: the logical built-in
+provider stays intact, while each pool entry can carry its own endpoint and
+`env_key`.
+
 Each account entry is a `(base_url, env_key)` pair:
 
 ```toml

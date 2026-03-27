@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
 
 #[test]
 fn test_deserialize_ollama_model_provider_toml() {
@@ -183,4 +184,98 @@ fn built_in_model_providers_include_anthropic() {
     assert_eq!(anthropic.wire_api, WireApi::Anthropic);
     assert!(!anthropic.requires_openai_auth);
     assert!(!anthropic.supports_websockets);
+}
+
+#[test]
+fn builtin_family_override_retargets_endpoint_without_losing_defaults() {
+    let built_in = ModelProviderInfo::create_anthropic_provider();
+    let override_provider = ModelProviderInfo {
+        name: "Anthropic Proxy".into(),
+        base_url: Some("https://code.ppchat.vip".into()),
+        env_key: Some("ANTHROPIC_PROXY_API_KEY".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        wire_api: WireApi::Responses,
+        query_params: Some(HashMap::from([("routing".to_string(), "pool".to_string())])),
+        http_headers: Some(HashMap::from([(
+            "x-custom-header".to_string(),
+            "enabled".to_string(),
+        )])),
+        env_http_headers: None,
+        request_max_retries: Some(9),
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: true,
+        supports_websockets: true,
+        account_pool: Vec::new(),
+    };
+
+    let merged = built_in.with_builtin_family_override(&override_provider);
+
+    assert_eq!(merged.name, built_in.name);
+    assert_eq!(merged.base_url, override_provider.base_url);
+    assert_eq!(merged.env_key, override_provider.env_key);
+    assert_eq!(merged.env_key_instructions, None);
+    assert_eq!(merged.wire_api, built_in.wire_api);
+    assert_eq!(merged.query_params, override_provider.query_params);
+    assert_eq!(
+        merged.http_headers,
+        Some(HashMap::from([
+            ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ("x-custom-header".to_string(), "enabled".to_string()),
+        ]))
+    );
+    assert_eq!(merged.request_max_retries, Some(9));
+    assert_eq!(merged.stream_max_retries, built_in.stream_max_retries);
+    assert_eq!(merged.requires_openai_auth, built_in.requires_openai_auth);
+    assert_eq!(merged.supports_websockets, built_in.supports_websockets);
+}
+
+#[test]
+fn builtin_family_override_keeps_logical_identity_when_pool_present() {
+    let built_in = ModelProviderInfo::create_anthropic_provider();
+    let override_provider = ModelProviderInfo {
+        name: "Anthropic Proxy".into(),
+        base_url: Some("https://code.ppchat.vip".into()),
+        env_key: Some("ANTHROPIC_PROXY_API_KEY".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: Some(HashMap::from([(
+            "x-custom-header".to_string(),
+            "enabled".to_string(),
+        )])),
+        env_http_headers: None,
+        request_max_retries: Some(9),
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: true,
+        supports_websockets: true,
+        account_pool: vec![ModelProviderAccount {
+            base_url: Some("https://code.ppchat.vip".into()),
+            env_key: Some("ANTHROPIC_POOL_1".into()),
+        }],
+    };
+
+    let merged = built_in.with_builtin_family_override(&override_provider);
+
+    assert_eq!(merged.name, built_in.name);
+    assert_eq!(merged.base_url, built_in.base_url);
+    assert_eq!(merged.env_key, built_in.env_key);
+    assert_eq!(merged.env_key_instructions, built_in.env_key_instructions);
+    assert_eq!(merged.wire_api, built_in.wire_api);
+    assert_eq!(merged.account_pool, override_provider.account_pool);
+    assert_eq!(
+        merged.http_headers,
+        Some(HashMap::from([
+            ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ("x-custom-header".to_string(), "enabled".to_string()),
+        ]))
+    );
+    assert_eq!(merged.request_max_retries, Some(9));
+    assert_eq!(merged.requires_openai_auth, built_in.requires_openai_auth);
+    assert_eq!(merged.supports_websockets, built_in.supports_websockets);
 }

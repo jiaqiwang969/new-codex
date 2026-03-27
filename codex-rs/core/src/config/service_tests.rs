@@ -497,7 +497,11 @@ async fn reserved_builtin_provider_override_rejected() {
         error.write_error_code(),
         Some(ConfigWriteErrorCode::ConfigValidationError)
     );
-    assert!(error.to_string().contains("reserved built-in provider IDs"));
+    assert!(
+        error
+            .to_string()
+            .contains("reserved provider IDs with dedicated config fields")
+    );
     assert!(error.to_string().contains("`openai`"));
 
     let contents = std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).expect("read config");
