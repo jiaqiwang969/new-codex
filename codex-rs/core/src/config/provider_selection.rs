@@ -62,12 +62,20 @@ pub(crate) fn select_model_provider(
 #[cfg(test)]
 mod tests {
     use super::select_model_provider;
+    use crate::config::Config;
+    use crate::config::ConfigOverrides;
+    use crate::config::ConfigToml;
     use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
+    use crate::model_provider_info::GEMINI_PROVIDER_ID;
+    use crate::model_provider_info::GEMMA_PROVIDER_ID;
+    use crate::model_provider_info::GROK_PROVIDER_ID;
     use crate::model_provider_info::ModelProviderInfo;
     use crate::model_provider_info::OPENAI_PROVIDER_ID;
     use crate::model_provider_info::WireApi;
     use crate::model_provider_info::built_in_model_providers;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
 
     #[test]
     fn select_model_provider_switches_to_builtin_family_provider() -> std::io::Result<()> {
@@ -136,6 +144,342 @@ mod tests {
         assert_eq!(selection.model_provider_id, OPENAI_PROVIDER_ID);
         assert_eq!(selection.model_provider.name, "OpenAI");
         assert_eq!(selection.user_configured_provider.name, "Anthropic");
+
+        Ok(())
+    }
+
+    #[test]
+    fn grok_model_auto_switches_to_grok_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("grok-4-latest".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GROK_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Grok");
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("XAI_API_KEY")
+        );
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemini_model_auto_switches_to_gemini_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gemini-2.5-pro".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMINI_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemini");
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("GEMINI_API_KEY")
+        );
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn claude_model_auto_switches_to_anthropic_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("claude-opus-4-6".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Anthropic");
+        assert_eq!(
+            config.model_provider.env_key.as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_model_auto_switches_to_gemma_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gemma-3n".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMMA_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemma");
+        assert_eq!(config.model_provider.env_key, None);
+        assert_eq!(config.user_configured_provider.name, "OpenAI");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_model_overrides_builtin_gemini_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gemma-3n".to_string()),
+            model_provider: Some(GEMINI_PROVIDER_ID.to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, GEMMA_PROVIDER_ID);
+        assert_eq!(config.model_provider.name, "Gemma");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemma_model_does_not_override_custom_gemini_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "gemini-proxy".to_string();
+        let custom_gemini_provider = ModelProviderInfo {
+            name: "Gemini Proxy".to_string(),
+            base_url: Some("http://localhost:5001/v1beta".to_string()),
+            env_key: None,
+            wire_api: WireApi::Gemini,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(custom_provider_id.clone(), custom_gemini_provider.clone());
+
+        let cfg = ConfigToml {
+            model: Some("gemma-3n".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_gemini_provider);
+        assert_eq!(config.user_configured_provider, custom_gemini_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gemini_model_does_not_override_custom_gemini_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "gemini-proxy".to_string();
+        let custom_gemini_provider = ModelProviderInfo {
+            name: "Gemini Proxy".to_string(),
+            base_url: Some("https://example.com/gemini".to_string()),
+            env_key: Some("GEMINI_API_KEY".to_string()),
+            wire_api: WireApi::Gemini,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(custom_provider_id.clone(), custom_gemini_provider.clone());
+
+        let cfg = ConfigToml {
+            model: Some("gemini-2.5-pro".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_gemini_provider);
+        assert_eq!(config.user_configured_provider, custom_gemini_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn grok_model_does_not_override_custom_grok_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "grok-proxy".to_string();
+        let custom_grok_provider = ModelProviderInfo {
+            name: "Grok".to_string(),
+            base_url: Some("https://example.com/grok".to_string()),
+            env_key: Some("XAI_API_KEY".to_string()),
+            wire_api: WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(custom_provider_id.clone(), custom_grok_provider.clone());
+
+        let cfg = ConfigToml {
+            model: Some("grok-4-latest".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_grok_provider);
+        assert_eq!(config.user_configured_provider, custom_grok_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn claude_model_does_not_override_custom_anthropic_providers() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let custom_provider_id = "anthropic-proxy".to_string();
+        let custom_anthropic_provider = ModelProviderInfo {
+            name: "Anthropic Proxy".to_string(),
+            base_url: Some("https://example.com/anthropic".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY".to_string()),
+            wire_api: WireApi::Anthropic,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: Vec::new(),
+        };
+
+        let mut model_providers = HashMap::new();
+        model_providers.insert(
+            custom_provider_id.clone(),
+            custom_anthropic_provider.clone(),
+        );
+
+        let cfg = ConfigToml {
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider: Some(custom_provider_id.clone()),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, custom_provider_id);
+        assert_eq!(config.model_provider, custom_anthropic_provider);
+        assert_eq!(config.user_configured_provider, custom_anthropic_provider);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gpt_model_auto_switches_to_openai_provider_when_current_provider_is_non_responses()
+    -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            model: Some("gpt-5.3-codex".to_string()),
+            model_provider: Some("anthropic".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(config.model_provider_id, "openai");
+        assert_eq!(config.model_provider.name, "OpenAI");
+        assert_eq!(config.user_configured_provider.name, "Anthropic");
 
         Ok(())
     }
