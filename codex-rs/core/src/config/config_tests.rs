@@ -18,6 +18,7 @@ use crate::config_loader::RequirementSource;
 use crate::model_provider_info::ANTHROPIC_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderAccount;
 use crate::model_provider_info::WireApi;
+use crate::model_provider_info::built_in_model_providers;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;

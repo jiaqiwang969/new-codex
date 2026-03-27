@@ -47,15 +47,12 @@ use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use crate::model_provider_info::OPENAI_PROVIDER_ID;
-use crate::model_provider_info::built_in_model_providers;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
 use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
 use crate::protocol::ReadOnlyAccess;
 use crate::protocol::SandboxPolicy;
-use crate::provider_pool::load_pool_config;
-use crate::provider_pool::overlay_pool_config;
 use crate::provider_routing::provider_id_for_model_slug as provider_id_for_model_family;
 use crate::provider_routing::provider_matches_builtin_family;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
@@ -117,6 +114,7 @@ mod managed_features;
 mod network_proxy_spec;
 mod permissions;
 pub mod profile;
+mod provider_registry;
 pub mod schema;
 pub mod service;
 pub mod types;
@@ -2312,30 +2310,11 @@ impl Config {
         }
         let effective_openai_base_url = openai_base_url.or(openai_base_url_from_env);
 
-        let mut model_providers = built_in_model_providers(effective_openai_base_url);
-        // Merge user-defined providers into the built-in list. Known built-in
-        // families keep their canonical identity while accepting local
-        // endpoint/account-pool overrides.
-        for (key, provider) in cfg.model_providers.into_iter() {
-            let provider = if let Some(existing) = model_providers.get(&key)
-                && provider_matches_builtin_family(existing, &key)
-            {
-                existing.with_builtin_family_override(&provider)
-            } else {
-                provider
-            };
-            model_providers.insert(key, provider);
-        }
-
-        // Overlay account_pool entries from config-pool.toml (isolated pool config).
-        if let Some(pool_config) = load_pool_config(&codex_home) {
-            for key in overlay_pool_config(&mut model_providers, pool_config) {
-                tracing::warn!(
-                    "config-pool.toml references unknown provider '{key}'; \
-                     define it in config.toml first"
-                );
-            }
-        }
+        let model_providers = provider_registry::build_model_providers(
+            &codex_home,
+            effective_openai_base_url,
+            cfg.model_providers,
+        );
 
         let mut model_provider_id = model_provider
             .or(config_profile.model_provider)
