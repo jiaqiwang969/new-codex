@@ -209,9 +209,15 @@ pub(crate) fn account_index_label(provider: &ModelProviderInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::config::ConfigOverrides;
+    use crate::config::ConfigToml;
     use crate::config::test_config;
+    use crate::config_loader::ConfigLayerStack;
     use crate::model_provider_info::ModelProviderAccount;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
 
     #[test]
     fn provider_id_for_model_slug_routes_known_families() {
@@ -434,5 +440,119 @@ mod tests {
         };
 
         assert_eq!(account_index_label(&provider), "OPENAI_API_KEY_POOL_1");
+    }
+
+    #[test]
+    fn account_pool_primary_entry_is_not_selected_on_config_load() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let provider_id = "openai-main".to_string();
+        let provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: None,
+            env_key: None,
+            wire_api: WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("KEY_PREFERRED".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://fallback.example/v1".to_string()),
+                    env_key: Some("KEY_FALLBACK".to_string()),
+                },
+            ],
+        };
+        let mut model_providers = HashMap::new();
+        model_providers.insert(provider_id.clone(), provider);
+
+        let cfg = ConfigToml {
+            model_provider: Some(provider_id),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_config_with_layer_stack(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+            ConfigLayerStack::default(),
+        )?;
+
+        assert_eq!(config.model_provider.base_url, None);
+        assert_eq!(config.model_provider.env_key, None);
+        assert_eq!(config.user_configured_provider.base_url, None);
+        assert_eq!(config.user_configured_provider.env_key, None);
+        assert_eq!(config.model_provider.account_pool.len(), 2);
+        assert_eq!(config.user_configured_provider.account_pool.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn account_pool_ignores_invalid_entries_without_selecting_first_valid_entry()
+    -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let provider_id = "openai-main".to_string();
+        let provider = ModelProviderInfo {
+            name: "OpenAI Main".to_string(),
+            base_url: None,
+            env_key: None,
+            wire_api: WireApi::Responses,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+            account_pool: vec![
+                ModelProviderAccount {
+                    base_url: Some("".to_string()),
+                    env_key: Some("KEY_SKIP".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://preferred.example/v1".to_string()),
+                    env_key: Some("KEY_PREFERRED".to_string()),
+                },
+            ],
+        };
+        let mut model_providers = HashMap::new();
+        model_providers.insert(provider_id.clone(), provider);
+
+        let cfg = ConfigToml {
+            model_provider: Some(provider_id),
+            model_providers,
+            ..Default::default()
+        };
+
+        let config = Config::load_config_with_layer_stack(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+            ConfigLayerStack::default(),
+        )?;
+
+        assert_eq!(config.model_provider.base_url, None);
+        assert_eq!(config.model_provider.env_key, None);
+        assert_eq!(config.model_provider.account_pool.len(), 2);
+
+        Ok(())
     }
 }
