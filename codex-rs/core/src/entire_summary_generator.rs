@@ -208,3 +208,49 @@ pub async fn load_summary_if_exists(
         .ok()
         .flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::model_slug;
+    use crate::config::Config;
+    use crate::config::ConfigBuilder;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    async fn build_test_config() -> (TempDir, Config) {
+        let codex_home = TempDir::new().expect("temp dir");
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("config");
+        (codex_home, config)
+    }
+
+    #[tokio::test]
+    async fn model_slug_prefers_explicit_entire_summary_model() {
+        let (_codex_home, mut config) = build_test_config().await;
+        config.memories.entire_summary_model = Some("claude-opus-4-6".to_string());
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+
+        assert_eq!(model_slug(&config), "claude-opus-4-6");
+    }
+
+    #[tokio::test]
+    async fn model_slug_falls_back_to_model_sub() {
+        let (_codex_home, mut config) = build_test_config().await;
+        config.memories.entire_summary_model = None;
+        config.model_sub = Some("claude-sonnet-4-6".to_string());
+
+        assert_eq!(model_slug(&config), "claude-sonnet-4-6");
+    }
+
+    #[tokio::test]
+    async fn model_slug_uses_default_entire_summary_model() {
+        let (_codex_home, mut config) = build_test_config().await;
+        config.memories.entire_summary_model = None;
+        config.model_sub = None;
+
+        assert_eq!(model_slug(&config), crate::DEFAULT_ENTIRE_SUMMARY_MODEL);
+    }
+}

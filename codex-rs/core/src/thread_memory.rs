@@ -430,6 +430,7 @@ mod tests {
     use super::*;
     use codex_protocol::models::ContentItem;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     #[test]
     fn build_thread_memory_trace_items_filters_outputs_and_reasoning() {
@@ -470,5 +471,32 @@ mod tests {
         assert_eq!(trace[0]["type"], "message");
         assert_eq!(trace[1]["type"], "function_call");
         assert_eq!(trace[1]["arguments"], "{}");
+    }
+
+    #[test]
+    fn build_thread_memory_trace_items_rewrites_summary_messages() {
+        let items = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("{}\nsummary body", compact::SUMMARY_PREFIX),
+            }],
+            end_turn: None,
+            phase: None,
+            thought_signature: None,
+        }];
+
+        let trace = build_thread_memory_trace_items(&items);
+        assert_eq!(
+            trace,
+            vec![json!({
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Session summary:\nsummary body",
+                }],
+            })]
+        );
     }
 }

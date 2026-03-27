@@ -339,3 +339,68 @@ fn format_time_ago(timestamp: &DateTime<Utc>) -> String {
         format!("{}mo ago", duration.num_weeks() / 4)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn format_checkpoints_summary_prefers_meaningful_ai_summary() {
+        let checkpoint = EntireCheckpoint {
+            checkpoint_id: "checkpoint-12345678".to_string(),
+            commit_hash: "abc123".to_string(),
+            timestamp: Utc::now() - Duration::minutes(5),
+            prompt_summary: "fallback prompt".to_string(),
+            files_changed: vec!["src/lib.rs".to_string()],
+            model_used: "claude-sonnet-4-6".to_string(),
+            ai_summary: Some(codex_hooks::EntireSummary {
+                is_meaningful: true,
+                motivation: Some("keep account pool".to_string()),
+                approach: Some("preserve local merge slice".to_string()),
+                challenges: None,
+                tradeoffs: None,
+                outcome: Some("locked memory contract".to_string()),
+            }),
+        };
+
+        let summary = format_checkpoints_summary(&[checkpoint]);
+        assert!(summary.contains("keep account pool → locked memory contract"));
+        assert!(!summary.contains("fallback prompt"));
+    }
+
+    #[test]
+    fn format_checkpoints_summary_falls_back_to_prompt_when_ai_summary_is_not_meaningful() {
+        let checkpoint = EntireCheckpoint {
+            checkpoint_id: "checkpoint-12345678".to_string(),
+            commit_hash: "abc123".to_string(),
+            timestamp: Utc::now() - Duration::minutes(5),
+            prompt_summary: "fallback prompt".to_string(),
+            files_changed: vec!["src/lib.rs".to_string()],
+            model_used: "claude-sonnet-4-6".to_string(),
+            ai_summary: Some(codex_hooks::EntireSummary {
+                is_meaningful: false,
+                motivation: None,
+                approach: None,
+                challenges: None,
+                tradeoffs: None,
+                outcome: None,
+            }),
+        };
+
+        let summary = format_checkpoints_summary(&[checkpoint]);
+        assert!(summary.contains("fallback prompt"));
+    }
+
+    #[test]
+    fn format_files_list_compacts_long_lists() {
+        let files = vec![
+            "a.rs".to_string(),
+            "b.rs".to_string(),
+            "c.rs".to_string(),
+            "d.rs".to_string(),
+        ];
+
+        assert_eq!(format_files_list(&files), "a.rs, b.rs, +2 more");
+    }
+}

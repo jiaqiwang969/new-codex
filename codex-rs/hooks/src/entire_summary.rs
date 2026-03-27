@@ -24,7 +24,7 @@ pub struct EntireSummaryInput {
 }
 
 /// Generated WHY-focused summary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntireSummary {
     pub is_meaningful: bool,
     pub motivation: Option<String>,
@@ -138,6 +138,8 @@ pub async fn load_summary(repo_root: &Path, checkpoint_id: &str) -> Result<Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     #[test]
     fn test_build_why_prompt() {
@@ -165,5 +167,35 @@ mod tests {
         let truncated = truncate_response(&long, 50);
         assert!(truncated.len() < 100);
         assert!(truncated.contains("[truncated]"));
+    }
+
+    #[tokio::test]
+    async fn save_and_load_summary_round_trips() {
+        let repo_root = TempDir::new().expect("temp dir");
+        let summary = EntireSummary {
+            is_meaningful: true,
+            motivation: Some("keep memory continuity".to_string()),
+            approach: Some("persist summary JSON".to_string()),
+            challenges: None,
+            tradeoffs: Some("test-only coverage slice".to_string()),
+            outcome: Some("round-trip succeeded".to_string()),
+        };
+
+        let saved_path = save_summary(repo_root.path(), "checkpoint-1", &summary)
+            .await
+            .expect("save summary");
+        assert_eq!(
+            saved_path,
+            repo_root
+                .path()
+                .join(".entire")
+                .join("summaries")
+                .join("checkpoint-1.json")
+        );
+
+        let loaded = load_summary(repo_root.path(), "checkpoint-1")
+            .await
+            .expect("load summary");
+        assert_eq!(loaded, Some(summary));
     }
 }
