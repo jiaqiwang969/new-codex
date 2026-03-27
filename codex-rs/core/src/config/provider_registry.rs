@@ -374,6 +374,106 @@ env_key = "ANTHROPIC_API_KEY_POOL_2"
     }
 
     #[test]
+    fn config_pool_overlays_anthropic_account_pool_on_builtin_provider() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let pool_toml = r#"
+[model_providers.anthropic]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_1"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+"#;
+        std::fs::write(codex_home.path().join("config-pool.toml"), pool_toml)?;
+
+        let cfg = ConfigToml {
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+        let built_in_anthropic = crate::model_provider_info::built_in_model_providers(None)
+            .remove(ANTHROPIC_PROVIDER_ID)
+            .expect("built-in anthropic provider");
+
+        assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+        assert_eq!(config.model_provider.base_url, built_in_anthropic.base_url);
+        assert_eq!(config.model_provider.env_key, built_in_anthropic.env_key);
+        assert_eq!(
+            config.model_provider.account_pool,
+            vec![
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_1".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_2".to_string()),
+                },
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_pool_accepts_account_pool_without_top_level_provider_row() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let pool_toml = r#"
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_1"
+
+[[model_providers.anthropic.account_pool]]
+base_url = "https://pool.example"
+env_key = "ANTHROPIC_API_KEY_POOL_2"
+"#;
+        std::fs::write(codex_home.path().join("config-pool.toml"), pool_toml)?;
+
+        let cfg = ConfigToml {
+            model: Some("claude-sonnet-4-6".to_string()),
+            model_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+        let built_in_anthropic = crate::model_provider_info::built_in_model_providers(None)
+            .remove(ANTHROPIC_PROVIDER_ID)
+            .expect("built-in anthropic provider");
+
+        assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+        assert_eq!(config.model_provider.base_url, built_in_anthropic.base_url);
+        assert_eq!(config.model_provider.env_key, built_in_anthropic.env_key);
+        assert_eq!(
+            config.model_provider.account_pool,
+            vec![
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_1".to_string()),
+                },
+                ModelProviderAccount {
+                    base_url: Some("https://pool.example".to_string()),
+                    env_key: Some("ANTHROPIC_API_KEY_POOL_2".to_string()),
+                },
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn validate_reserved_model_provider_ids_rejects_reserved_keys() {
         let built_in_openai = crate::model_provider_info::built_in_model_providers(None)
             .remove(OPENAI_PROVIDER_ID)
