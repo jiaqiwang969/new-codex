@@ -332,13 +332,25 @@ fn is_capability_instruction_text(text: &str) -> bool {
 }
 
 fn normalize_dynamic_snapshot_paths(text: &str) -> String {
+    static ENTIRE_RELATIVE_TIME_RE: OnceLock<Regex> = OnceLock::new();
     static SYSTEM_SKILL_PATH_RE: OnceLock<Regex> = OnceLock::new();
+    let text = if text.contains("Recent AI Sessions (via Entire):") {
+        let entire_relative_time_re = ENTIRE_RELATIVE_TIME_RE.get_or_init(|| {
+            Regex::new(r"\[(?:just now|\d+[mhdw] ago|\d+mo ago)\]")
+                .expect("entire relative time regex should compile")
+        });
+        entire_relative_time_re
+            .replace_all(text, "[<RELATIVE_TIME>]")
+            .into_owned()
+    } else {
+        text.to_string()
+    };
     let system_skill_path_re = SYSTEM_SKILL_PATH_RE.get_or_init(|| {
         Regex::new(r"/[^)\n]*/skills/\.system/([^/\n]+)/SKILL\.md")
             .expect("system skill path regex should compile")
     });
     system_skill_path_re
-        .replace_all(text, "<SYSTEM_SKILLS_ROOT>/$1/SKILL.md")
+        .replace_all(&text, "<SYSTEM_SKILLS_ROOT>/$1/SKILL.md")
         .into_owned()
 }
 
@@ -597,6 +609,25 @@ mod tests {
         assert_eq!(
             rendered,
             "00:message/developer:## Skills\\n- openai-docs: helper (file: <SYSTEM_SKILLS_ROOT>/openai-docs/SKILL.md)"
+        );
+    }
+
+    #[test]
+    fn redacted_text_mode_normalizes_entire_relative_time_labels() {
+        let items = vec![json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": "Recent AI Sessions (via Entire):\n- [3w ago] a9ebad29: Merge upstream main\n- [1mo ago] deadbeef: Continue merge"
+            }]
+        })];
+
+        let rendered = format_response_items_snapshot(&items, &ContextSnapshotOptions::default());
+
+        assert_eq!(
+            rendered,
+            "00:message/developer:Recent AI Sessions (via Entire):\\n- [<RELATIVE_TIME>] a9ebad29: Merge upstream main\\n- [<RELATIVE_TIME>] deadbeef: Continue merge"
         );
     }
 }

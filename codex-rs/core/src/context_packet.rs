@@ -2,8 +2,6 @@ use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::compact;
 use crate::entire_integration;
-use crate::state_db;
-use codex_features::Feature;
 use codex_protocol::models::ResponseItem;
 use codex_utils_string::take_bytes_at_char_boundary;
 use codex_utils_string::take_last_bytes_at_char_boundary;
@@ -66,22 +64,6 @@ pub(crate) const CLAUDE_CODE_LARGE_CONTEXT_PACKET_CONFIG: ContextPacketConfig =
         max_entire_summary_bytes: 0,
     };
 
-fn render_active_memory_scope_section(
-    scope_kind: &str,
-    scope_version: &str,
-    summary_sha256: &str,
-    binding_key: &str,
-    memory_root: &std::path::Path,
-    memory_summary: &str,
-    max_memory_summary_bytes: usize,
-) -> String {
-    let memory_root = memory_root.display();
-    let memory_summary = truncate_text_bytes(memory_summary.trim(), max_memory_summary_bytes);
-    format!(
-        "Active memory scope: {scope_kind}\nActive memory scope version: {scope_version}\nActive memory summary sha256: {summary_sha256}\nActive memory binding key: {binding_key}\nActive memory root: {memory_root}\nActive memory summary:\n{memory_summary}"
-    )
-}
-
 pub(crate) async fn build_context_packet(
     sess: &Session,
     turn_context: &TurnContext,
@@ -105,80 +87,9 @@ pub(crate) async fn build_context_packet(
         }
     }
 
-    if turn_context.features.enabled(Feature::MemoryTool)
-        && let Some(active_memory_source) = turn_context.resolve_memory_read_path_source().await
-    {
-        sections.push(render_active_memory_scope_section(
-            active_memory_source.scope_kind,
-            &active_memory_source.memory_scope_version,
-            &active_memory_source.memory_summary_sha256,
-            &active_memory_source.memory_binding_key,
-            active_memory_source.memory_root.as_path(),
-            &active_memory_source.memory_summary,
-            config.max_memory_summary_bytes,
-        ));
-    }
-
-    let include_memory_sections =
-        sess.state_db().is_some() && turn_context.features.enabled(Feature::MemoryTool);
-
-    if include_memory_sections {
-        if let Some(memory) = state_db::get_thread_memory(
-            sess.state_db().as_deref(),
-            sess.conversation_id,
-            "context_packet_thread_memory",
-        )
-        .await
-        {
-            let trace_summary =
-                truncate_text_bytes(memory.raw_memory.trim(), config.max_trace_summary_bytes);
-            let memory_summary = truncate_text_bytes(
-                memory.memory_summary.trim(),
-                config.max_memory_summary_bytes,
-            );
-            sections.push(format!(
-                "Saved thread memory:\nTrace summary:\n{trace_summary}\n\nMemory summary:\n{memory_summary}"
-            ));
-        }
-
-        if config.max_project_memories > 0
-            && let Some(memories) = state_db::get_last_n_thread_memories_for_cwd(
-                sess.state_db().as_deref(),
-                turn_context.cwd.as_path(),
-                config.max_project_memories.saturating_add(1),
-                "context_packet_project_memory",
-            )
-            .await
-        {
-            let mut selected = Vec::new();
-            for memory in memories {
-                if memory.thread_id == sess.conversation_id {
-                    continue;
-                }
-                selected.push(memory);
-                if selected.len() >= config.max_project_memories {
-                    break;
-                }
-            }
-
-            if !selected.is_empty() {
-                let mut out = String::new();
-                for (idx, memory) in selected.into_iter().enumerate() {
-                    if idx > 0 {
-                        out.push('\n');
-                        out.push('\n');
-                    }
-                    let thread_id = memory.thread_id;
-                    let summary = truncate_text_bytes(
-                        memory.memory_summary.trim(),
-                        config.max_project_memory_summary_bytes,
-                    );
-                    out.push_str(&format!("- Thread {thread_id}:\n{summary}"));
-                }
-                sections.push(format!("Recent project memories (same cwd):\n{out}"));
-            }
-        }
-    }
+    sections.extend(
+        crate::context_packet_memory::build_memory_sections(sess, turn_context, config).await,
+    );
 
     // Add Entire summary section
     if config.include_entire_summary && config.max_entire_checkpoints > 0 {
@@ -309,7 +220,7 @@ fn take_last_messages_with_byte_budget(
     selected_rev
 }
 
-fn truncate_text_bytes(text: &str, max_bytes: usize) -> String {
+pub(crate) fn truncate_text_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
@@ -349,9 +260,143 @@ fn truncate_context(mut context: String, config: ContextPacketConfig) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex::make_session_and_context;
+    use chrono::TimeZone;
+    use codex_features::Feature;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::ContentItem;
+    use codex_protocol::protocol::SessionSource;
     use pretty_assertions::assert_eq;
     use std::path::Path;
+
+    async fn init_state_db(
+        codex_home: &std::path::Path,
+        provider_id: &str,
+    ) -> crate::state_db::StateDbHandle {
+        let state_db =
+            codex_state::StateRuntime::init(codex_home.to_path_buf(), provider_id.to_string())
+                .await
+                .expect("state db should initialize");
+        state_db
+            .mark_backfill_complete(None)
+            .await
+            .expect("backfill should be complete");
+        state_db
+    }
+
+    async fn upsert_thread_metadata_for_test(
+        state_db: &crate::state_db::StateDbHandle,
+        thread_id: ThreadId,
+        rollout_path: std::path::PathBuf,
+        cwd: std::path::PathBuf,
+        provider_id: &str,
+    ) {
+        let created_at = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 3, 12, 0, 0)
+            .single()
+            .expect("valid datetime");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            rollout_path,
+            created_at,
+            SessionSource::Cli,
+        );
+        builder.cwd = cwd;
+        builder.model_provider = Some(provider_id.to_string());
+        state_db
+            .upsert_thread(&builder.build(provider_id))
+            .await
+            .expect("upsert thread metadata");
+    }
+
+    #[tokio::test]
+    async fn build_memory_sections_returns_empty_when_memory_tool_is_disabled() {
+        let (session, turn_context) = make_session_and_context().await;
+
+        let sections = crate::context_packet_memory::build_memory_sections(
+            &session,
+            &turn_context,
+            CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
+        )
+        .await;
+
+        assert_eq!(sections, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn build_memory_sections_include_saved_thread_and_project_memory() {
+        let (mut session, mut turn_context) = make_session_and_context().await;
+        turn_context
+            .features
+            .enable(Feature::MemoryTool)
+            .expect("test setup should allow memory tool");
+
+        let provider_id = turn_context.config.model_provider_id.clone();
+        let state_db = init_state_db(&turn_context.config.codex_home, provider_id.as_str()).await;
+        session.services.state_db = Some(state_db.clone());
+
+        upsert_thread_metadata_for_test(
+            &state_db,
+            session.conversation_id,
+            turn_context
+                .config
+                .codex_home
+                .join("sessions/2025/01/03/rollout-current.jsonl"),
+            turn_context.cwd.to_path_buf(),
+            provider_id.as_str(),
+        )
+        .await;
+
+        state_db
+            .upsert_stage1_output(
+                session.conversation_id,
+                1,
+                "raw memory for current thread",
+                "summary for current thread",
+            )
+            .await
+            .expect("write current thread stage1 output");
+
+        let other_thread_id =
+            ThreadId::from_string("00000000-0000-4000-8000-000000000001").expect("thread id");
+        upsert_thread_metadata_for_test(
+            &state_db,
+            other_thread_id,
+            turn_context
+                .config
+                .codex_home
+                .join("sessions/2025/01/03/rollout-other.jsonl"),
+            turn_context.cwd.to_path_buf(),
+            provider_id.as_str(),
+        )
+        .await;
+        state_db
+            .upsert_stage1_output(
+                other_thread_id,
+                2,
+                "raw memory for project thread",
+                "summary for project thread",
+            )
+            .await
+            .expect("write project thread stage1 output");
+
+        let sections = crate::context_packet_memory::build_memory_sections(
+            &session,
+            &turn_context,
+            CLAUDE_CODE_CONTEXT_PACKET_CONFIG,
+        )
+        .await;
+
+        assert_eq!(
+            sections,
+            vec![
+                "Saved thread memory:\nTrace summary:\nraw memory for current thread\n\nMemory summary:\nsummary for current thread".to_string(),
+                format!(
+                    "Recent project memories (same cwd):\n- Thread {other_thread_id}:\nsummary for project thread"
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn collect_history_context_prefers_last_summary_and_only_keeps_messages_after_it() {
@@ -422,7 +467,7 @@ mod tests {
     #[test]
     fn render_active_memory_scope_section_includes_scope_version_and_root() {
         let summary_sha256 = "a".repeat(64);
-        let section = render_active_memory_scope_section(
+        let section = crate::context_packet_memory::render_active_memory_scope_section(
             "user",
             "user:123456789abc",
             &summary_sha256,
@@ -445,7 +490,7 @@ memory summary text";
     #[test]
     fn render_active_memory_scope_section_truncates_summary() {
         let summary_sha256 = "a".repeat(64);
-        let section = render_active_memory_scope_section(
+        let section = crate::context_packet_memory::render_active_memory_scope_section(
             "cwd",
             "cwd:aaaaaaaaaaaa",
             &summary_sha256,

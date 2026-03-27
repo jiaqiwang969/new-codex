@@ -10,6 +10,8 @@ use crate::config::types::AppsConfigToml;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerToolConfig;
 use codex_config::CONFIG_TOML_FILE;
+use codex_hooks::HookEventMemoryContext;
+use codex_protocol::protocol::MemoryLink;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -95,6 +97,81 @@ fn approval_required_when_annotations_are_absent() {
 fn approval_not_required_when_read_only_and_other_hints_are_absent() {
     let annotations = annotations(Some(true), None, None);
     assert_eq!(requires_mcp_tool_approval(Some(&annotations)), false);
+}
+
+fn active_memory_context() -> HookEventMemoryContext {
+    HookEventMemoryContext {
+        cwd_scope_key: "/repo".to_string(),
+        cwd_memory_root: "/repo/.codex/memories/cwd".to_string(),
+        cwd_memory_summary_path: "/repo/.codex/memories/cwd/summary.md".to_string(),
+        cwd_memory_summary_exists: true,
+        user_memory_root: "/Users/test/.codex/memories/user".to_string(),
+        user_memory_summary_path: "/Users/test/.codex/memories/user/summary.md".to_string(),
+        user_memory_summary_exists: true,
+        active_scope_kind: Some("cwd".to_string()),
+        active_memory_root: Some("/repo/.codex/memories/cwd".to_string()),
+        active_memory_summary_path: Some("/repo/.codex/memories/cwd/summary.md".to_string()),
+        active_memory_summary_sha256: Some("a".repeat(64)),
+        active_memory_summary_bytes: Some(512),
+        active_memory_scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+        active_memory_binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
+    }
+}
+
+#[test]
+fn hook_memory_fields_include_memory_link_and_compatibility_fields() {
+    let memory_context = active_memory_context();
+
+    let fields = crate::hook_memory::HookMemoryFields::from_context(Some(memory_context.clone()));
+
+    assert_eq!(
+        fields.memory,
+        Some(MemoryLink {
+            scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+            binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
+        })
+    );
+    assert_eq!(
+        fields.memory_scope_version,
+        Some("cwd:aaaaaaaaaaaa".to_string())
+    );
+    assert_eq!(fields.memory_scope_kind, Some("cwd".to_string()));
+    assert_eq!(fields.memory_summary_sha256, Some("a".repeat(64)));
+    assert_eq!(
+        fields.memory_binding_key,
+        Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64)))
+    );
+    assert_eq!(fields.memory_context, Some(memory_context));
+}
+
+#[test]
+fn hook_memory_fields_omit_memory_link_when_scope_and_binding_are_missing() {
+    let mut memory_context = active_memory_context();
+    memory_context.active_memory_scope_version = None;
+    memory_context.active_memory_binding_key = None;
+
+    let fields = crate::hook_memory::HookMemoryFields::from_context(Some(memory_context.clone()));
+
+    assert_eq!(fields.memory, None);
+    assert_eq!(fields.memory_scope_kind, Some("cwd".to_string()));
+    assert_eq!(fields.memory_summary_sha256, Some("a".repeat(64)));
+    assert_eq!(fields.memory_context, Some(memory_context));
+}
+
+#[test]
+fn hook_memory_fields_preserve_partial_memory_link_values() {
+    let mut memory_context = active_memory_context();
+    memory_context.active_memory_binding_key = None;
+
+    let fields = crate::hook_memory::HookMemoryFields::from_context(Some(memory_context));
+
+    assert_eq!(
+        fields.memory,
+        Some(MemoryLink {
+            scope_version: Some("cwd:aaaaaaaaaaaa".to_string()),
+            binding_key: None,
+        })
+    );
 }
 
 #[test]

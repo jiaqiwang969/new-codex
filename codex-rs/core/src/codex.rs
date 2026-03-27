@@ -25,6 +25,8 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::config::ManagedFeatures;
 use crate::connectors;
 use crate::exec_policy::ExecPolicyManager;
+use crate::hook_memory::HookMemoryFields;
+use crate::hook_memory::memory_link_from_context;
 use crate::model_compat::is_openai_model_slug;
 #[cfg(test)]
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
@@ -1126,18 +1128,7 @@ impl TurnContext {
     }
 
     pub(crate) async fn resolve_memory_link(&self) -> Option<MemoryLink> {
-        let memory_context = self.resolve_hook_memory_context().await?;
-        let scope_version = memory_context.active_memory_scope_version;
-        let binding_key = memory_context.active_memory_binding_key;
-
-        if scope_version.is_none() && binding_key.is_none() {
-            return None;
-        }
-
-        Some(MemoryLink {
-            scope_version,
-            binding_key,
-        })
+        memory_link_from_context(self.resolve_hook_memory_context().await.as_ref())
     }
 }
 
@@ -6660,9 +6651,6 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
-                    let memory_context = turn_context.resolve_hook_memory_context().await;
-                    let memory = turn_context.resolve_memory_link().await;
-
                     let mut sampling_request_input_messages = sampling_request_input_messages;
 
                     if turn_context.config.memories.entire_summary_enabled {
@@ -6744,19 +6732,16 @@ pub(crate) async fn run_turn(
                         }
                     }
 
-                    let memory_scope_version = memory_context.as_ref().and_then(|memory_context| {
-                        memory_context.active_memory_scope_version.clone()
-                    });
-                    let memory_scope_kind = memory_context
-                        .as_ref()
-                        .and_then(|memory_context| memory_context.active_scope_kind.clone());
-                    let memory_summary_sha256 =
-                        memory_context.as_ref().and_then(|memory_context| {
-                            memory_context.active_memory_summary_sha256.clone()
-                        });
-                    let memory_binding_key = memory_context.as_ref().and_then(|memory_context| {
-                        memory_context.active_memory_binding_key.clone()
-                    });
+                    let HookMemoryFields {
+                        memory,
+                        memory_scope_version,
+                        memory_scope_kind,
+                        memory_summary_sha256,
+                        memory_binding_key,
+                        memory_context,
+                    } = HookMemoryFields::from_context(
+                        turn_context.resolve_hook_memory_context().await,
+                    );
                     let stop_hook_permission_mode = match turn_context.approval_policy.value() {
                         AskForApproval::Never => "bypassPermissions",
                         AskForApproval::UnlessTrusted

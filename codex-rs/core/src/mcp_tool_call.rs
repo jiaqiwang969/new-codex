@@ -27,6 +27,7 @@ use crate::guardian::GuardianMcpAnnotations;
 use crate::guardian::guardian_approval_request_to_json;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
+use crate::hook_memory::HookMemoryFields;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam;
 use crate::mcp_tool_approval_templates::render_mcp_tool_approval_template;
@@ -623,20 +624,14 @@ fn sanitize_mcp_tool_result_for_model(
 
 async fn notify_mcp_tool_call_event(sess: &Session, turn_context: &TurnContext, event: EventMsg) {
     let hook_event = if let EventMsg::McpToolCallEnd(tool_call_end) = &event {
-        let memory_context = turn_context.resolve_hook_memory_context().await;
-        let memory = turn_context.resolve_memory_link().await;
-        let memory_scope_version = memory_context
-            .as_ref()
-            .and_then(|memory_context| memory_context.active_memory_scope_version.clone());
-        let memory_scope_kind = memory_context
-            .as_ref()
-            .and_then(|memory_context| memory_context.active_scope_kind.clone());
-        let memory_summary_sha256 = memory_context
-            .as_ref()
-            .and_then(|memory_context| memory_context.active_memory_summary_sha256.clone());
-        let memory_binding_key = memory_context
-            .as_ref()
-            .and_then(|memory_context| memory_context.active_memory_binding_key.clone());
+        let HookMemoryFields {
+            memory,
+            memory_scope_version,
+            memory_scope_kind,
+            memory_summary_sha256,
+            memory_binding_key,
+            memory_context,
+        } = HookMemoryFields::from_context(turn_context.resolve_hook_memory_context().await);
         let (status, error_message) = mcp_tool_call_status_and_error(&tool_call_end.result);
         let duration_ms = u64::try_from(tool_call_end.duration.as_millis()).unwrap_or(u64::MAX);
         let server = tool_call_end.invocation.server.clone();
