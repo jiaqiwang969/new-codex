@@ -2701,7 +2701,7 @@ async fn maybe_switch_provider_account_cools_failed_account_for_ten_minutes() {
     };
 
     let mut attempted_accounts = HashSet::from([account_1.clone()]);
-    let updated_context = maybe_switch_provider_account(
+    let updated_context = provider_pool_switch::maybe_switch_provider_account(
         &sess,
         &turn_context,
         &mut attempted_accounts,
@@ -2795,7 +2795,7 @@ async fn try_switch_pool_account_does_not_restart_single_account_pool() {
 
     let mut attempted_accounts = HashSet::from([account]);
     let mut pool_switch_count = 0usize;
-    let updated_context = try_switch_pool_account(
+    let updated_context = provider_pool_switch::try_switch_pool_account(
         &sess,
         &turn_context,
         &mut attempted_accounts,
