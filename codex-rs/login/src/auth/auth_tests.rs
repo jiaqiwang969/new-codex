@@ -185,6 +185,40 @@ async fn loads_provider_specific_api_keys_from_auth_json() {
     );
 }
 
+#[tokio::test]
+#[serial(codex_api_key)]
+async fn loads_pool_api_keys_from_auth_pool_json() {
+    let dir = tempdir().unwrap();
+    let auth_file = dir.path().join("auth.json");
+    std::fs::write(
+        auth_file,
+        r#"{
+            "OPENAI_API_KEY":"sk-openai"
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("auth-pool.json"),
+        r#"{
+            "ANTHROPIC_API_KEY_POOL_1":"anthropic-key-1",
+            "ANTHROPIC_API_KEY_POOL_2":"anthropic-key-2"
+        }"#,
+    )
+    .unwrap();
+
+    let auth = super::load_auth(dir.path(), false, AuthCredentialsStoreMode::File)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        auth.api_key_for_env_key("ANTHROPIC_API_KEY_POOL_1"),
+        Some("anthropic-key-1")
+    );
+    assert_eq!(
+        auth.api_key_for_env_key("ANTHROPIC_API_KEY_POOL_2"),
+        Some("anthropic-key-2")
+    );
+}
+
 #[test]
 fn logout_removes_auth_file() -> Result<(), std::io::Error> {
     let dir = tempdir()?;

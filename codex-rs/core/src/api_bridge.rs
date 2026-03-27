@@ -16,6 +16,7 @@ use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::provider_auth::resolve_provider_api_key;
 use crate::token_data::PlanType;
 
 pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
@@ -177,21 +178,9 @@ pub(crate) fn auth_provider_from_auth(
         }
         Ok(None) => {}
         Err(env_err) => {
-            if let Some(env_key) = provider.env_key.as_deref()
-                && let Some(api_key) = auth
-                    .as_ref()
-                    .and_then(|auth| auth.api_key_for_env_key(env_key))
-            {
+            if let Some(api_key) = resolve_provider_api_key(provider, auth.as_ref()) {
                 return Ok(CoreAuthProvider {
-                    token: Some(api_key.to_string()),
-                    account_id: None,
-                });
-            }
-            if let Some(api_key) = auth.as_ref().and_then(|auth| auth.api_key()) {
-                // Allow auth.json API key fallback when provider env keys are
-                // unset, so custom providers can be configured via auth+config.
-                return Ok(CoreAuthProvider {
-                    token: Some(api_key.to_string()),
+                    token: Some(api_key),
                     account_id: None,
                 });
             }

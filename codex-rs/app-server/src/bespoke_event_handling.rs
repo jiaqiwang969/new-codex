@@ -1126,7 +1126,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 receiver_thread_ids,
                 prompt: Some(end_event.prompt),
                 model: end_event.model,
-                reasoning_effort: None,
+                reasoning_effort: Some(end_event.reasoning_effort),
                 agents_states,
                 memory,
             };

@@ -156,10 +156,12 @@ pub(crate) fn next_account_from_pool(
 mod tests {
     use super::ProviderPoolState;
     use super::ResolvedTurnProvider;
+    use super::next_account_from_pool;
     use crate::model_provider_info::ModelProviderAccount;
     use crate::model_provider_info::ModelProviderInfo;
     use crate::model_provider_info::WireApi;
     use pretty_assertions::assert_eq;
+    use std::collections::HashSet;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -239,6 +241,69 @@ mod tests {
                         .to_string()
                 ),
             }
+        );
+    }
+
+    #[test]
+    fn resolve_turn_provider_retries_first_key_after_cooldown_expires() {
+        let provider_id = "anthropic";
+        let now = Instant::now();
+        let account_1 = ModelProviderAccount {
+            base_url: Some("https://pool-primary.example".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY_PRIMARY".to_string()),
+        };
+        let account_2 = ModelProviderAccount {
+            base_url: Some("https://pool-secondary.example".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY_SECONDARY".to_string()),
+        };
+        let logical_provider = provider(vec![account_1.clone(), account_2]);
+        let mut state = ProviderPoolState::default();
+
+        state.mark_account_cooling(provider_id, account_1.clone(), now, Duration::from_secs(60));
+
+        assert_eq!(
+            state.resolve_turn_provider(
+                provider_id,
+                &logical_provider,
+                now + Duration::from_secs(60)
+            ),
+            ResolvedTurnProvider {
+                provider: logical_provider.with_account(&account_1),
+                background_message: Some("Provider pool anthropic: trying key 1/2".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn next_account_from_pool_skips_accounts_already_attempted_this_round() {
+        let provider_id = "anthropic";
+        let account_1 = ModelProviderAccount {
+            base_url: Some("https://pool-primary.example".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY_PRIMARY".to_string()),
+        };
+        let account_2 = ModelProviderAccount {
+            base_url: Some("https://pool-secondary.example".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY_SECONDARY".to_string()),
+        };
+        let account_3 = ModelProviderAccount {
+            base_url: Some("https://pool-tertiary.example".to_string()),
+            env_key: Some("ANTHROPIC_API_KEY_TERTIARY".to_string()),
+        };
+        let logical_provider = provider(vec![
+            account_1.clone(),
+            account_2.clone(),
+            account_3.clone(),
+        ]);
+        let mut attempted_accounts = HashSet::from([account_1.clone(), account_2]);
+
+        assert_eq!(
+            next_account_from_pool(
+                provider_id,
+                &logical_provider,
+                Some(&account_1),
+                &mut attempted_accounts
+            ),
+            Some(account_3)
         );
     }
 }

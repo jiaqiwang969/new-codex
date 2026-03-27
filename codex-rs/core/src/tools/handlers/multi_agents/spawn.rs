@@ -132,6 +132,10 @@ impl ToolHandler for Handler {
             .as_ref()
             .map(|snapshot| snapshot.model.clone())
             .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        let effective_reasoning_effort = agent_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.reasoning_effort)
+            .unwrap_or(args.reasoning_effort.unwrap_or_default());
         let model_provider_id = agent_snapshot
             .as_ref()
             .map(|snapshot| snapshot.model_provider_id.clone());
@@ -150,6 +154,7 @@ impl ToolHandler for Handler {
                     new_agent_nickname,
                     new_agent_role,
                     prompt,
+                    reasoning_effort: effective_reasoning_effort,
                     status,
                 }
                 .into(),

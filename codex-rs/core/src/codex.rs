@@ -35,7 +35,6 @@ use crate::parse_turn_item;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::provider_pool_failover::ProviderPoolFailoverAction;
 use crate::provider_pool_failover::decide_provider_pool_failover;
-use crate::provider_pool_failover::should_switch_provider_account;
 use crate::provider_pool_runtime::next_account_from_pool;
 use crate::provider_routing::account_index_label;
 use crate::provider_routing::normalize_account_pool_in_config_order;
@@ -2404,26 +2403,6 @@ impl Session {
         BaseInstructions {
             text: state.session_configuration.base_instructions.clone(),
         }
-    }
-
-    pub(crate) async fn merge_mcp_tool_selection(&self, tool_names: Vec<String>) -> Vec<String> {
-        let mut state = self.state.lock().await;
-        state.merge_mcp_tool_selection(tool_names)
-    }
-
-    pub(crate) async fn set_mcp_tool_selection(&self, tool_names: Vec<String>) {
-        let mut state = self.state.lock().await;
-        state.set_mcp_tool_selection(tool_names);
-    }
-
-    pub(crate) async fn get_mcp_tool_selection(&self) -> Option<Vec<String>> {
-        let state = self.state.lock().await;
-        state.get_mcp_tool_selection()
-    }
-
-    pub(crate) async fn clear_mcp_tool_selection(&self) {
-        let mut state = self.state.lock().await;
-        state.clear_mcp_tool_selection();
     }
 
     // Merges connector IDs into the session-level explicit connector selection.
@@ -7096,7 +7075,7 @@ async fn run_auto_compact(
     Ok(())
 }
 
-const PROVIDER_POOL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+const PROVIDER_POOL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Wrapper around `maybe_switch_provider_account` that supports cycling through
 /// the account pool multiple rounds. When all accounts in the pool have been
@@ -7131,8 +7110,6 @@ async fn try_switch_pool_account(
         attempted_accounts,
         /*restart_from_first*/ false,
         err,
-        retries,
-        max_retries,
     )
     .await
     {
@@ -7164,8 +7141,6 @@ async fn try_switch_pool_account(
         attempted_accounts,
         /*restart_from_first*/ true,
         err,
-        retries,
-        max_retries,
     )
     .await?;
     *pool_switch_count += 1;
@@ -7178,13 +7153,7 @@ async fn maybe_switch_provider_account(
     attempted_accounts: &mut HashSet<ModelProviderAccount>,
     restart_from_first: bool,
     err: &CodexErr,
-    retries: u64,
-    max_retries: u64,
 ) -> Option<Arc<TurnContext>> {
-    if !should_switch_provider_account(err, retries, max_retries) {
-        return None;
-    }
-
     let current_account = turn_context.provider.current_account()?;
     let provider_id = turn_context.config.model_provider_id.clone();
     let now = std::time::Instant::now();

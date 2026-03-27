@@ -2501,6 +2501,103 @@ fn format_provider_switch_label_previews_first_normalized_pool_account() {
     );
 }
 
+#[tokio::test]
+async fn maybe_switch_provider_account_cools_failed_account_for_ten_minutes() {
+    let (sess, mut turn_context, rx) = make_session_and_context_with_rx().await;
+    let provider_id = "anthropic".to_string();
+    let account_1 = ModelProviderAccount {
+        base_url: Some("https://code.ppchat.vip".to_string()),
+        env_key: Some("ANTHROPIC_API_KEY_PRIMARY".to_string()),
+    };
+    let account_2 = ModelProviderAccount {
+        base_url: Some("https://backup.ppchat.vip".to_string()),
+        env_key: Some("ANTHROPIC_API_KEY_SECONDARY".to_string()),
+    };
+
+    let mut logical_provider = turn_context
+        .config
+        .model_providers
+        .get(&provider_id)
+        .expect("anthropic provider should exist")
+        .clone();
+    logical_provider.base_url = None;
+    logical_provider.env_key = None;
+    logical_provider.account_pool = vec![account_1.clone(), account_2.clone()];
+
+    let mut config = (*turn_context.config).clone();
+    config.model = Some("claude-opus-4-1".to_string());
+    config.model_provider_id = provider_id.clone();
+    config.model_provider = logical_provider.clone();
+    config
+        .model_providers
+        .insert(provider_id.clone(), logical_provider.clone());
+
+    let turn_context_mut = Arc::get_mut(&mut turn_context).expect("single turn context ref");
+    turn_context_mut.config = Arc::new(config);
+    turn_context_mut.provider = logical_provider.with_account(&account_1);
+    turn_context_mut.collaboration_mode = CollaborationMode {
+        mode: ModeKind::Default,
+        settings: Settings {
+            model: "claude-opus-4-1".to_string(),
+            reasoning_effort: turn_context_mut.collaboration_mode.reasoning_effort(),
+            developer_instructions: None,
+        },
+    };
+
+    let mut attempted_accounts = HashSet::from([account_1.clone()]);
+    let updated_context = maybe_switch_provider_account(
+        &sess,
+        &turn_context,
+        &mut attempted_accounts,
+        /*restart_from_first*/ false,
+        &CodexErr::UsageLimitReached(crate::error::UsageLimitReachedError {
+            plan_type: Some(codex_login::token_data::PlanType::Unknown(
+                "custom".to_string(),
+            )),
+            resets_at: None,
+            rate_limits: None,
+            promo_message: None,
+        }),
+    )
+    .await
+    .expect("provider switch should succeed");
+
+    assert_eq!(
+        updated_context.provider.current_account(),
+        Some(account_2.clone())
+    );
+
+    let evt = tokio::time::timeout(StdDuration::from_secs(2), rx.recv())
+        .await
+        .expect("timeout waiting for background event")
+        .expect("background event");
+    match evt.msg {
+        EventMsg::BackgroundEvent(event) => {
+            assert!(
+                event.message.contains("cooling for 10m"),
+                "{}",
+                event.message
+            );
+            assert!(
+                event.message.ends_with("switching to key 2/2"),
+                "{}",
+                event.message
+            );
+        }
+        other => panic!("expected background event, got {other:?}"),
+    }
+
+    let resolved = {
+        let mut state = sess.state.lock().await;
+        state.resolve_turn_provider(
+            provider_id.as_str(),
+            &logical_provider,
+            std::time::Instant::now() + Duration::from_secs(5 * 60),
+        )
+    };
+    assert_eq!(resolved.provider.current_account(), Some(account_2));
+}
+
 #[cfg_attr(windows, ignore)]
 #[tokio::test]
 async fn new_default_turn_uses_config_aware_skills_for_role_overrides() {

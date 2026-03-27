@@ -112,6 +112,7 @@ use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::BackgroundEventEvent;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CreditsSnapshot;
@@ -2275,6 +2276,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
             prompt: "Explore the repo".to_string(),
+            reasoning_effort: ReasoningEffortConfig::High,
             status: AgentStatus::PendingInit,
         }),
     });
@@ -2289,6 +2291,73 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
     assert!(
         rendered.contains("Spawned Robie [explorer] (gpt-5 high)"),
         "expected spawn line to include agent metadata and requested model, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn collab_interaction_end_reuses_spawned_agent_metadata() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let sender_thread_id = ThreadId::new();
+    let spawned_thread_id = ThreadId::new();
+
+    chat.handle_codex_event(Event {
+        id: "spawn-begin".into(),
+        msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+            call_id: "call-spawn".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            prompt: "Explore the repo".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: ReasoningEffortConfig::High,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "spawn-end".into(),
+        msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+            call_id: "call-spawn".to_string(),
+            sender_thread_id,
+            memory: None,
+            agent_type: Some("explorer".to_string()),
+            model: Some("gpt-5-mini".to_string()),
+            model_provider_id: Some("anthropic".to_string()),
+            new_thread_id: Some(spawned_thread_id),
+            new_agent_nickname: Some("Robie".to_string()),
+            new_agent_role: Some("explorer".to_string()),
+            prompt: "Explore the repo".to_string(),
+            reasoning_effort: ReasoningEffortConfig::High,
+            status: AgentStatus::PendingInit,
+        }),
+    });
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "send-end".into(),
+        msg: EventMsg::CollabAgentInteractionEnd(CollabAgentInteractionEndEvent {
+            call_id: "call-send".to_string(),
+            sender_thread_id,
+            memory: None,
+            receiver_thread_id: spawned_thread_id,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            prompt: "Please continue".to_string(),
+            status: AgentStatus::Running,
+        }),
+    });
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        rendered.contains("gpt-5-mini"),
+        "expected interaction history to reuse spawned model metadata, got {rendered:?}"
+    );
+    assert!(
+        rendered.contains("anthropic"),
+        "expected interaction history to reuse spawned provider metadata, got {rendered:?}"
     );
 }
 
@@ -4958,6 +5027,54 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
     assert_snapshot!(
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
         combined
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_completed_only_spawn_uses_completed_item_effort_fallback() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let sender_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b90000000002").expect("valid thread id");
+    let spawned_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b91781b41a8e").expect("valid thread id");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "spawn-1".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![spawned_thread_id.to_string()],
+                prompt: Some("Explore the repo".to_string()),
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::from([(
+                    spawned_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::PendingInit,
+                        message: None,
+                        agent_type: Some("explorer".to_string()),
+                        model: Some("gpt-5-mini".to_string()),
+                        model_provider_id: Some("anthropic".to_string()),
+                    },
+                )]),
+                memory: None,
+            },
+        }),
+        None,
+    );
+
+    let combined = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined.contains("(gpt-5 high)"),
+        "expected completed-only spawn item to retain requested effort, got {combined:?}"
     );
 }
 

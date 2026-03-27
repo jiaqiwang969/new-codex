@@ -114,6 +114,7 @@ use crate::model_compat::model_supports_reasoning_effort;
 use crate::model_compat::normalized_grok_model_slug;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::provider_auth::resolve_gemini_api_key;
 use crate::provider_auth::resolve_provider_api_key;
 use crate::response_debug_context::extract_response_debug_context;
 use crate::response_debug_context::extract_response_debug_context_from_api_error;
@@ -1557,21 +1558,7 @@ impl ModelClientSession {
             None => None,
         };
 
-        let gemini_api_key = resolve_provider_api_key(provider, auth.as_ref()).or_else(|| {
-            if provider.env_key.is_some() {
-                return None;
-            }
-            crate::auth::auth::read_gemini_api_key_from_env().or_else(|| {
-                if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
-                    crate::auth::auth::read_gemini_api_key_from_auth_json(
-                        &codex_home,
-                        crate::auth::AuthCredentialsStoreMode::File,
-                    )
-                } else {
-                    None
-                }
-            })
-        });
+        let gemini_api_key = resolve_gemini_api_key(provider, auth.as_ref());
 
         let make_request_builder = || {
             let mut req_builder = client.post(&url);

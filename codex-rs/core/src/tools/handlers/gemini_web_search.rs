@@ -9,6 +9,7 @@ use tracing::debug;
 use crate::function_tool::FunctionCallError;
 use crate::gemini_content::normalize_gemini_base_url;
 use crate::gemini_types::*;
+use crate::provider_auth::resolve_gemini_api_key;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -59,33 +60,11 @@ impl ToolHandler for GeminiWebSearchHandler {
             search_model,
         );
 
-        // Resolve API key: provider env_key → GEMINI_API_KEY env → auth.json
         let auth = match invocation.turn.auth_manager.as_ref() {
             Some(manager) => manager.auth().await,
             None => None,
         };
-        let api_key = if let Some(env_key) = provider.env_key.as_deref() {
-            std::env::var(env_key)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .or_else(|| {
-                    auth.as_ref()
-                        .and_then(|a| a.api_key_for_env_key(env_key))
-                        .map(str::to_string)
-                })
-        } else {
-            crate::auth::auth::read_gemini_api_key_from_env().or_else(|| {
-                if let Ok(codex_home) = codex_utils_home_dir::find_codex_home() {
-                    crate::auth::auth::read_gemini_api_key_from_auth_json(
-                        &codex_home,
-                        crate::auth::AuthCredentialsStoreMode::File,
-                    )
-                } else {
-                    None
-                }
-            })
-        };
+        let api_key = resolve_gemini_api_key(provider, auth.as_ref());
 
         // Build a minimal request with only google_search tool.
         let request = GeminiRequest {

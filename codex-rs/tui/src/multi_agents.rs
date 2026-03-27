@@ -688,6 +688,7 @@ mod tests {
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: "Compute 11! and reply with just the integer result.".to_string(),
+                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {
@@ -845,6 +846,7 @@ mod tests {
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: String::new(),
+                reasoning_effort: ReasoningEffortConfig::High,
                 status: AgentStatus::PendingInit,
             },
             Some(&SpawnRequestSummary {

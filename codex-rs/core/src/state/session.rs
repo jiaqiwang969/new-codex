@@ -38,7 +38,6 @@ pub(crate) struct SessionState {
     previous_turn_settings: Option<PreviousTurnSettings>,
     /// Startup prewarmed session prepared during session initialization.
     pub(crate) startup_prewarm: Option<SessionStartupPrewarmHandle>,
-    pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
     provider_pool_runtime: ProviderPoolState,
     active_reference_images: Vec<String>,
     image_size: Option<GeminiImageSize>,
@@ -61,7 +60,6 @@ impl SessionState {
             mcp_dependency_prompted: HashSet::new(),
             previous_turn_settings: None,
             startup_prewarm: None,
-            active_mcp_tool_selection: None,
             provider_pool_runtime: ProviderPoolState::default(),
             active_reference_images: Vec::new(),
             image_size: None,
@@ -239,52 +237,6 @@ impl SessionState {
 
     pub(crate) fn aspect_ratio(&self) -> Option<GeminiAspectRatio> {
         self.aspect_ratio
-    }
-
-    pub(crate) fn merge_mcp_tool_selection(&mut self, tool_names: Vec<String>) -> Vec<String> {
-        if tool_names.is_empty() {
-            return self.active_mcp_tool_selection.clone().unwrap_or_default();
-        }
-
-        let mut merged = self.active_mcp_tool_selection.take().unwrap_or_default();
-        let mut seen: HashSet<String> = merged.iter().cloned().collect();
-        for tool_name in tool_names {
-            if seen.insert(tool_name.clone()) {
-                merged.push(tool_name);
-            }
-        }
-
-        self.active_mcp_tool_selection = Some(merged.clone());
-        merged
-    }
-
-    pub(crate) fn set_mcp_tool_selection(&mut self, tool_names: Vec<String>) {
-        if tool_names.is_empty() {
-            self.active_mcp_tool_selection = None;
-            return;
-        }
-
-        let mut selected = Vec::new();
-        let mut seen = HashSet::new();
-        for tool_name in tool_names {
-            if seen.insert(tool_name.clone()) {
-                selected.push(tool_name);
-            }
-        }
-
-        self.active_mcp_tool_selection = if selected.is_empty() {
-            None
-        } else {
-            Some(selected)
-        };
-    }
-
-    pub(crate) fn get_mcp_tool_selection(&self) -> Option<Vec<String>> {
-        self.active_mcp_tool_selection.clone()
-    }
-
-    pub(crate) fn clear_mcp_tool_selection(&mut self) {
-        self.active_mcp_tool_selection = None;
     }
 
     // Adds connector IDs to the active set and returns the merged selection.

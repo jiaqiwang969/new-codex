@@ -310,7 +310,9 @@ async fn conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth() -> 
 
     let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+    // This path runs in a subprocess so the initial websocket preconnect can
+    // be noticeably slower when the full codex-core suite is already busy.
+    assert!(server.wait_for_handshakes(1, Duration::from_secs(10)).await);
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {

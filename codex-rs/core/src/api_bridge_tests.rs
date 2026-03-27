@@ -192,6 +192,42 @@ fn auth_provider_prefers_env_key_specific_auth_json_key_when_provider_env_key_is
 }
 
 #[test]
+fn auth_provider_uses_selected_account_env_key_after_provider_switch() {
+    const PRIMARY_ENV_KEY: &str = "CODEX_TEST_POOL_PRIMARY_KEY_DO_NOT_SET";
+    const SECONDARY_ENV_KEY: &str = "CODEX_TEST_POOL_SECONDARY_KEY_DO_NOT_SET";
+    // SAFETY: tests in this module run in-process and these keys are unique to this test.
+    unsafe {
+        std::env::remove_var(PRIMARY_ENV_KEY);
+        std::env::remove_var(SECONDARY_ENV_KEY);
+    }
+
+    let mut provider = ModelProviderInfo::create_anthropic_provider();
+    provider.account_pool = vec![
+        crate::model_provider_info::ModelProviderAccount {
+            base_url: Some("https://pool-primary.example".to_string()),
+            env_key: Some(PRIMARY_ENV_KEY.to_string()),
+        },
+        crate::model_provider_info::ModelProviderAccount {
+            base_url: Some("https://pool-secondary.example".to_string()),
+            env_key: Some(SECONDARY_ENV_KEY.to_string()),
+        },
+    ];
+    let selected_provider = provider.with_account(&provider.account_pool[1]);
+
+    let auth = Some(CodexAuth::from_api_key_and_env_keys_for_testing(
+        "openai-fallback-key",
+        HashMap::from([
+            (PRIMARY_ENV_KEY.to_string(), "primary-key".to_string()),
+            (SECONDARY_ENV_KEY.to_string(), "secondary-key".to_string()),
+        ]),
+    ));
+    let auth_provider = auth_provider_from_auth(auth, &selected_provider)
+        .expect("selected account env key should resolve through auth fallback");
+
+    assert_eq!(auth_provider.token.as_deref(), Some("secondary-key"));
+}
+
+#[test]
 fn auth_provider_keeps_env_key_error_without_auth_fallback() {
     const TEST_ENV_KEY: &str = "CODEX_TEST_PROVIDER_KEY_DO_NOT_SET";
     // SAFETY: tests in this module run in-process and this key is unique to this test.

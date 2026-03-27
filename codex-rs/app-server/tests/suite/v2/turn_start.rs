@@ -1841,7 +1841,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
-    assert_eq!(reasoning_effort, None);
+    assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
     assert_eq!(memory, None);
     let agent_state = agents_states
         .get(&receiver_thread_id)
@@ -2032,7 +2032,7 @@ config_file = "./custom-role.toml"
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(ROLE_MODEL.to_string()));
-    assert_eq!(reasoning_effort, None);
+    assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
     assert_eq!(memory, None);
     let agent_state = agents_states
         .get(&receiver_thread_id)

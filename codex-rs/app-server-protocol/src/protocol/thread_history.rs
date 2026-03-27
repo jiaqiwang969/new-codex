@@ -710,7 +710,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
             model: payload.model.clone(),
-            reasoning_effort: None,
+            reasoning_effort: Some(payload.reasoning_effort),
             agents_states,
             memory,
         });
@@ -2828,6 +2828,7 @@ mod tests {
                         .expect("valid receiver thread id"),
                 ),
                 prompt: "analyze repository".into(),
+                reasoning_effort: ReasoningEffort::High,
                 status: AgentStatus::Running,
                 new_agent_nickname: None,
                 new_agent_role: None,
@@ -2851,7 +2852,7 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 prompt: Some("analyze repository".into()),
                 model: Some("claude-opus-4-6".into()),
-                reasoning_effort: None,
+                reasoning_effort: Some(ReasoningEffort::High),
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -2891,6 +2892,7 @@ mod tests {
                 model_provider_id: Some("anthropic".into()),
                 new_thread_id: Some(receiver_thread_id),
                 prompt: "inspect code".into(),
+                reasoning_effort: ReasoningEffort::High,
                 status: AgentStatus::Running,
                 new_agent_nickname: None,
                 new_agent_role: None,
@@ -2969,6 +2971,7 @@ mod tests {
                 model_provider_id: Some("anthropic".into()),
                 new_thread_id: Some(receiver_thread_id),
                 prompt: "inspect code".into(),
+                reasoning_effort: ReasoningEffort::High,
                 status: AgentStatus::Running,
                 new_agent_nickname: None,
                 new_agent_role: None,
@@ -3066,6 +3069,7 @@ mod tests {
                 prompt: "inspect the repo".into(),
                 model: Some("gpt-5.4-mini".into()),
                 model_provider_id: Some("openai".into()),
+                reasoning_effort: ReasoningEffort::High,
                 status: AgentStatus::Running,
             }),
         ];
@@ -3087,7 +3091,7 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
-                reasoning_effort: None,
+                reasoning_effort: Some(ReasoningEffort::High),
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
