@@ -3,9 +3,12 @@ use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
@@ -19,6 +22,7 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::sync::Arc;
@@ -321,6 +325,97 @@ async fn web_search_pollution_moves_selected_thread_into_removed_phase2_inputs()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_thread_active_memory_link_uses_global_memory_summary() -> Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    write_global_memory_summary(&home, "global memory summary").await?;
+
+    let test = build_test_codex(&server, home).await?;
+
+    let memory = test
+        .codex
+        .active_memory_link(/*cwd_override*/ None)
+        .await
+        .expect("active memory link");
+
+    assert!(
+        memory
+            .scope_version
+            .as_deref()
+            .is_some_and(|value| value.starts_with("global:"))
+    );
+    assert!(memory.binding_key.as_deref().is_some_and(|value| {
+        memory
+            .scope_version
+            .as_deref()
+            .is_some_and(|scope| value.starts_with(scope))
+    }));
+
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_complete_event_includes_active_memory_link() -> Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    write_global_memory_summary(&home, "global memory summary").await?;
+
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "memory complete"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let test = build_test_codex(&server, home).await?;
+    let expected_memory = test
+        .codex
+        .active_memory_link(/*cwd_override*/ None)
+        .await
+        .expect("active memory link");
+
+    test.codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "hello memory".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    let completed = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(event.clone()),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(completed.memory, Some(expected_memory));
+
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
 async fn build_test_codex(server: &wiremock::MockServer, home: Arc<TempDir>) -> Result<TestCodex> {
     #[allow(clippy::expect_used)]
     let mut builder = test_codex().with_home(home).with_config(|config| {
@@ -335,6 +430,13 @@ async fn build_test_codex(server: &wiremock::MockServer, home: Arc<TempDir>) -> 
         config.memories.max_raw_memories_for_consolidation = 1;
     });
     builder.build(server).await
+}
+
+async fn write_global_memory_summary(home: &Arc<TempDir>, summary: &str) -> Result<()> {
+    let memory_root = home.path().join("memories");
+    tokio::fs::create_dir_all(&memory_root).await?;
+    tokio::fs::write(memory_root.join("memory_summary.md"), summary).await?;
+    Ok(())
 }
 
 async fn init_state_db(home: &Arc<TempDir>) -> Result<Arc<codex_state::StateRuntime>> {
