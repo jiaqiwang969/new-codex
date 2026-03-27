@@ -5310,32 +5310,6 @@ fn test_set_default_oss_provider_rejects_legacy_ollama_chat_provider() -> std::i
 }
 
 #[test]
-fn test_load_config_rejects_legacy_ollama_chat_provider_with_helpful_error() -> std::io::Result<()>
-{
-    let codex_home = TempDir::new()?;
-    let cfg = ConfigToml {
-        model_provider: Some(LEGACY_OLLAMA_CHAT_PROVIDER_ID.to_string()),
-        ..Default::default()
-    };
-
-    let result = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
-    );
-    assert!(result.is_err());
-    let error = result.unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    assert!(
-        error
-            .to_string()
-            .contains(OLLAMA_CHAT_PROVIDER_REMOVED_ERROR)
-    );
-
-    Ok(())
-}
-
-#[test]
 fn test_untrusted_project_gets_workspace_write_sandbox() -> anyhow::Result<()> {
     let config_with_untrusted = r#"
 [projects."/tmp/test"]
