@@ -153,10 +153,18 @@ Current checkpoint:
 - verified against the local `~/.codex/config-pool.toml` shape: active Anthropic
   `https://code.ppchat.vip` routing comes from `account_pool`, not the removed
   legacy top-level path
+- committed follow-up checkpoint `c3134a01c` now locks three runtime seams:
+  - startup prewarm uses the resolved account-pool provider, not the logical
+    provider shell
+  - provider-switch background text no longer previews a stale first pool
+    account before the resolved turn context appends the actual selected key
+  - single-account pools no longer restart into the same key as a fake
+    failover target
 - targeted verification is green for:
   - provider-pool overlay tests
   - provider-pool runtime cooldown / retry-order tests
   - selected-account `env_key` resolution test
+  - startup prewarm / provider-switch / single-account failover regressions
 
 Remaining risk inside Block A:
 
@@ -165,6 +173,11 @@ Remaining risk inside Block A:
   reconstruction
 - next work should stay focused on preserving pool semantics while trimming
   unnecessary divergence from upstream in those files
+- `config/mod.rs` still mixes true account-pool requirements with separate
+  local provider expansion work (`Gemini`, `Grok`, `Gemma`, Anthropic-native
+  additions), so the next review pass should split "pool semantics" from
+  "extra provider inventory" instead of treating that whole file as one merge
+  block
 
 ### Block B: Memory / Context Packet / Entire Core
 
