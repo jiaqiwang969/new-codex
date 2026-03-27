@@ -40,7 +40,6 @@ use crate::config_loader::ResidencyRequirement;
 use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
 use crate::memories::memory_root;
-use crate::model_compat::is_openai_model_slug;
 use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
@@ -53,8 +52,6 @@ use crate::project_doc::LOCAL_PROJECT_DOC_FILENAME;
 use crate::protocol::AskForApproval;
 use crate::protocol::ReadOnlyAccess;
 use crate::protocol::SandboxPolicy;
-use crate::provider_routing::provider_id_for_model_slug as provider_id_for_model_family;
-use crate::provider_routing::provider_matches_builtin_family;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::utility_model::UtilityModelOverrides;
@@ -115,6 +112,7 @@ mod network_proxy_spec;
 mod permissions;
 pub mod profile;
 mod provider_registry;
+mod provider_selection;
 pub mod schema;
 pub mod service;
 pub mod types;
@@ -2310,27 +2308,24 @@ impl Config {
         }
         let effective_openai_base_url = openai_base_url.or(openai_base_url_from_env);
 
+        let model = model.or(config_profile.model).or(cfg.model);
         let model_providers = provider_registry::build_model_providers(
             &codex_home,
             effective_openai_base_url,
             cfg.model_providers,
         );
 
-        let mut model_provider_id = model_provider
-            .or(config_profile.model_provider)
-            .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
-        let mut model_provider = model_providers
-            .get(&model_provider_id)
-            .ok_or_else(|| {
-                let message = if model_provider_id == LEGACY_OLLAMA_CHAT_PROVIDER_ID {
-                    OLLAMA_CHAT_PROVIDER_REMOVED_ERROR.to_string()
-                } else {
-                    format!("Model provider `{model_provider_id}` not found")
-                };
-                std::io::Error::new(std::io::ErrorKind::NotFound, message)
-            })?
-            .clone();
+        let selected_provider = provider_selection::select_model_provider(
+            model_provider
+                .or(config_profile.model_provider)
+                .or(cfg.model_provider)
+                .unwrap_or_else(|| "openai".to_string()),
+            model.as_deref(),
+            &model_providers,
+        )?;
+        let model_provider_id = selected_provider.model_provider_id;
+        let model_provider = selected_provider.model_provider;
+        let user_configured_provider = selected_provider.user_configured_provider;
 
         let shell_environment_policy = cfg.shell_environment_policy.into();
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
@@ -2423,7 +2418,6 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
-        let model = model.or(config_profile.model).or(cfg.model);
         let UtilityModelOverrides {
             model_sub,
             model_sub_responses,
@@ -2436,34 +2430,6 @@ impl Config {
         );
         if let Some(warning) = model_sub_responses_warning {
             startup_warnings.push(warning);
-        }
-
-        // Save the user's explicitly configured provider before any auto-switching.
-        let user_configured_provider = model_provider.clone();
-
-        // Auto-switch to a built-in provider when the selected model belongs
-        // to a known provider family but the current provider is not already
-        // set to that provider.
-        if let Some(ref m) = model
-            && let Some(target_provider_id) = provider_id_for_model_family(m)
-            && !provider_matches_builtin_family(&model_provider, target_provider_id)
-            && let Some(target_provider) = model_providers.get(target_provider_id)
-        {
-            model_provider_id = target_provider_id.to_string();
-            model_provider = target_provider.clone();
-        }
-
-        // If the selected model is an OpenAI slug but the configured provider is not
-        // OpenAI-compatible (Responses wire protocol), auto-switch to the built-in
-        // OpenAI provider. This supports cross-provider role configs (e.g. a Claude
-        // leader spawning a GPT-based explorer agent).
-        if let Some(ref m) = model
-            && is_openai_model_slug(m)
-            && model_provider.wire_api != crate::model_provider_info::WireApi::Responses
-            && let Some(target_provider) = model_providers.get("openai")
-        {
-            model_provider_id = "openai".to_string();
-            model_provider = target_provider.clone();
         }
 
         let service_tier = service_tier_override
