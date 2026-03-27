@@ -228,6 +228,83 @@ The important idea is that Block 3 is successful even if the first merged
 revision ships with core `model_sub` intact but some local preset/vouch UX
 temporarily absent.
 
+## Prune Blast Radius
+
+If the next cleanup round chooses to remove the optional TUI preset/vouch layer,
+the safe boundary is now clear.
+
+### Removing `team_profile` and `team_profile_vouch`
+
+Primary files to touch:
+
+- `codex-rs/tui/src/team_profile.rs`
+- `codex-rs/tui/src/team_profile_vouch.rs`
+- `codex-rs/tui/src/slash_command.rs`
+- `codex-rs/tui/src/app_event.rs`
+- `codex-rs/tui/src/app.rs`
+- `codex-rs/tui/src/chatwidget.rs`
+- `codex-rs/tui/src/status/card.rs`
+- `codex-rs/tui/src/bottom_pane/feedback_view.rs`
+- `codex-rs/tui/src/lib.rs`
+- `codex-rs/tui/src/status/tests.rs`
+- `codex-rs/tui/src/chatwidget/snapshots/*team_profile*`
+
+What disappears:
+
+- `/team-profile`
+- preset popup and preset matching in `/status`
+- team-profile win/loss ledger in `~/.codex/memories/team_profile_vouch.json`
+- automatic feedback-to-team-profile vouch recording
+
+What should keep working:
+
+- manual `/model`
+- manual `/model-sub`
+- manual `/model-sub-responses`
+- manual memory phase model selection
+- core utility routing and child-agent defaults
+
+### Removing `model_sub_vouch`
+
+Primary files to touch:
+
+- `codex-rs/tui/src/model_sub_vouch.rs`
+- `codex-rs/tui/src/slash_command.rs`
+- `codex-rs/tui/src/app_event.rs`
+- `codex-rs/tui/src/app.rs`
+- `codex-rs/tui/src/chatwidget.rs`
+- `codex-rs/tui/src/status/card.rs`
+- `codex-rs/tui/src/lib.rs`
+- `codex-rs/tui/src/status/tests.rs`
+
+What disappears:
+
+- `/model-sub auto` and `/model-sub recommended`
+- `/team-vouch model ...` and `/team-vouch model-duel ...`
+- local utility-model scoreboard in `~/.codex/memories/model_sub_vouch.json`
+- status-card hint source `auto (model_sub_vouch)`
+
+What should keep working:
+
+- `PersistModelSubSelection`
+- direct model-sub popup selection
+- config persistence for `model_sub`
+- config persistence for `model_sub_responses`
+- provider-aware utility routing once config is written
+
+### Files that should not be part of the prune
+
+These are the wrong layer to touch when deleting the optional UX:
+
+- `codex-rs/core/src/utility_model.rs`
+- `codex-rs/core/src/agent/role.rs`
+- `codex-rs/core/src/config/mod.rs`
+- `codex-rs/core/src/codex.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2.rs`
+
+If a proposed removal needs changes in those files, it is no longer a pure TUI
+cleanup and should be treated as a separate design decision.
+
 ## Verification Notes
 
 Targeted tests already passed for this layer:

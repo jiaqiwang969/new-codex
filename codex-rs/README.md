@@ -20,8 +20,8 @@
   3. 多 Agent 协作
 
   - spawn_agent / send_input / resume_agent / wait / close_agent 完整生命周期
-  - Agent Worktrees：每个子 agent 在隔离的 git worktree 中工作
-  - Lease 持久化：.codex/leases/ 目录，支持 worktree 恢复
+  - Agent Worktrees：fork session 可使用隔离 git worktree，resume 时按 lease 自动恢复
+  - Lease 持久化：`.codex/leases/` 目录，支持 worktree 恢复
   - Context Packet 自动注入子 agent 启动 prompt
 
   4. 图像处理流水线
@@ -34,9 +34,8 @@
 
   5. TUI 增强
 
-  - Git Graph (Ctrl+G)：内嵌 git 提交历史可视化，Unicode 圆角风格
   - Session Bar (Ctrl+P)：tmux 风格底部面板，会话导航/新建/删除/重命名
-  - 后台预热：2s 空闲后自动加载 session 列表和 git graph，打开时即时显示
+  - 后台预热：2s 空闲后自动加载 session 列表，打开时即时显示
   - Ralph Loop (/ralph-loop)：迭代自纠正循环，支持 <promise> 完成检测
 
   6. 基础设施
@@ -94,7 +93,7 @@ entire resume <branch>       # 切换分支并恢复 AI 会话
 entire doctor                # 修复卡住的 session
 ```
 
-**在 git graph 中查看：** Entire 的 checkpoint 会以独立分支线出现在 `git log --all --graph` 和 TUI 的 Ctrl+G 中，例如：
+**在 git 历史中查看：** Entire 的 checkpoint 会以独立分支线出现在 `git log --all --graph` 中，例如：
 
 ```
 * 5ab4a56 (HEAD -> main) docs: add Entire mention
@@ -106,33 +105,34 @@ entire doctor                # 修复卡住的 session
 
 Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个账户遇到认证失败 (400/401/403) 或限流 (429) 时，自动切换到下一个账户。支持多轮循环（默认 2 轮），所有账户都失败后才报错退出。
 
-配置文件与主配置隔离，存放在 `~/.codex/` 目录下：
+逻辑 provider 仍然放在 `~/.codex/config.toml`。运行时账户池配置与主配置隔离，
+存放在 `~/.codex/` 目录下：
+
+- `config.toml`：保留逻辑 provider、wire API、模型选择等静态配置
+- `config-pool.toml`：只保留 `account_pool` 这样的运行时账户池信息
+- `auth-pool.json`：保存池内各个 `env_key` 对应的真实 API key
+
+`~/.codex/config-pool.toml` 可以直接给内建 provider 家族追加池配置，例如
+`anthropic` 保持内建逻辑 provider 身份，但每个池账户可以单独指向
+`https://code.ppchat.vip`。
 
 `~/.codex/config-pool.toml` — Pool 账户配置：
 
 ```toml
 # ── OpenAI-compatible provider pool ─────────────────────────────────
-[model_providers.codex]
-base_url = "https://your-openai-proxy.example.com/v1"
+[[model_providers.codex.account_pool]]
+base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_1"
 
 [[model_providers.codex.account_pool]]
-base_url = "https://your-openai-proxy.example.com/v1"
-env_key = "OPENAI_API_KEY_POOL_1"
-
-[[model_providers.codex.account_pool]]
-base_url = "https://your-openai-proxy.example.com/v1"
+base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_2"
 
 [[model_providers.codex.account_pool]]
-base_url = "https://your-openai-proxy.example.com/v1"
+base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_3"
 
 # ── Gemini provider pool ───────────────────────────────────────────
-[model_providers.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta"
-env_key = "GEMINI_API_KEY_POOL_1"
-
 [[model_providers.gemini.account_pool]]
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_1"
@@ -146,10 +146,6 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_3"
 
 # ── Grok provider pool ─────────────────────────────────────────────
-[model_providers.grok]
-base_url = "https://api.x.ai/v1"
-env_key = "XAI_API_KEY_POOL_1"
-
 [[model_providers.grok.account_pool]]
 base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_1"
@@ -163,20 +159,16 @@ base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_3"
 
 # ── Anthropic provider pool ───────────────────────────────────────
-[model_providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
+[[model_providers.anthropic.account_pool]]
+base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_1"
 
 [[model_providers.anthropic.account_pool]]
-base_url = "https://api.anthropic.com/v1"
-env_key = "ANTHROPIC_API_KEY_POOL_1"
-
-[[model_providers.anthropic.account_pool]]
-base_url = "https://api.anthropic.com/v1"
+base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_2"
 
 [[model_providers.anthropic.account_pool]]
-base_url = "https://api.anthropic.com/v1"
+base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_3"
 ```
 
@@ -205,7 +197,8 @@ env_key = "ANTHROPIC_API_KEY_POOL_3"
 - 限流 (429) 也立即切换
 - 可重试错误 (5xx) 先重试到上限，再切换账户
 - 默认循环 2 轮（3 账户 × 2 轮 = 最多 6 次切换），全部失败后报错退出
-- 成功的账户会持久化到 `config-pool.toml`，下次启动直接使用
+- 每个新建或恢复的 turn 都会从池首开始扫描；当前 session 中冷却中的账户会被跳过
+- 不会把成功账户写回 `config-pool.toml`；如果全部账户都在冷却，会强制从池首重新探测
 
 #### MCP client
 
@@ -355,7 +348,7 @@ responses_websockets_v2 = true
 | `responses_websockets` | `true` ⚠️ | UnderDevelopment | 默认通过 Responses WebSocket 传输。 |
 | `responses_websockets_v2` | `true` ⚠️ | UnderDevelopment | 启用 Responses WebSocket v2 模式。 |
 | `multi_agent` | `true` ⚠️ | Experimental | 启用多 agent 协作工具（如 `spawn_agent`）。 |
-| `agent_worktrees` | `true` ⚠️ | Experimental | 为 fork/子 agent 使用隔离 git worktree。 |
+| `agent_worktrees` | `true` ⚠️ | Experimental | 为 fork session 使用隔离 git worktree，并在 resume 时按 lease 恢复。 |
 | `apps` | `true` ⚠️ | Experimental | 启用 Apps/Connectors（`$` 提及）。 |
 | `use_linux_sandbox_bwrap` | `false` | Linux: Experimental；其他: UnderDevelopment | Linux 下启用 bubblewrap 沙箱链路。 |
 | `prevent_idle_sleep` | `true` ⚠️ | macOS: Experimental；其他: UnderDevelopment | 任务运行期间阻止系统闲置睡眠。 |
@@ -394,31 +387,16 @@ model_sub_responses = "gpt-5.1-codex-mini"
 ```
 
 在 TUI 中也可以通过 slash commands 交互设置：
-- `/team-profile`（同时设置 leader model + `model_sub` + `model_sub_responses` + memories phase models）
-- `/model-sub`
-- `/model-sub auto|recommended|auto:general|auto:debug|auto:review`（按 model vouch 自动选择 utility/sub-agent model）
-- `/model-sub-responses`
-- `/team-profile auto`（直接应用当前 vouch 评分最高的推荐 profile）
-- `/team-profile auto:general|auto:debug|auto:review`（按任务桶应用推荐 profile）
-- `/team-vouch <win|loss> [general|debug|review] [note]`（手动记录当前 team profile 的功/过）
-- `/team-vouch duel <winner> <loser> [general|debug|review] [note]`（记录同题对比的胜负）
-- `/team-vouch model <win|loss> <model> [general|debug|review] [note]`（记录某个 utility/sub-agent model 的功/过）
-- `/team-vouch model-duel <winner_model> <loser_model> [general|debug|review] [note]`（记录 utility/sub-agent model 的同题对比胜负）
+- `/model-sub <inherit|clear|model-slug>`（设置或清除通用 utility/sub-agent model override）
+- `/model-sub-responses <inherit|clear|model-slug>`（设置或清除 Responses fallback utility model override）
 
-`/team-profile` 会尝试读取 `~/.codex/memories/team_profile_vouch.json`，在弹窗中显示每个 profile 的
-`vouch`（功/过统计）与备注，便于后续沉淀为自动路由依据。
-若已有功过数据，`/team-profile` 会优先按 recent-weighted signal（最近样本加权）动态标记 `Recommended`，并回退到累计净胜负（`net = wins - losses`）。
-当你提交 `/feedback` 时，Codex 会把 `Good result` 记为该 profile 的一次 `win`，把
-`Bad result / Bug / Safety check` 记为一次 `loss`（仅在当前路由命中某个 `/team-profile` preset 时生效）。
-其中 `Bug` 会记入 `debug` 桶，`Safety check` 会记入 `review` 桶，其它反馈进入 `general` 桶。
-也可以用 `/team-vouch` 直接记录 leader 评价（例如 `/team-vouch win debug fixed flaky parser`）。
-或用 `/team-vouch duel ...` 记录同一任务在不同 profile/agent 路由下的胜负结果。
-对于 utility/sub-agent 模型本身，可用 `/team-vouch model ...` 与 `/team-vouch model-duel ...`
-记录功过，再用 `/model-sub auto[:bucket]` 让系统按功过自动选择。
-当前可用的自动选择入口主要是 TUI 侧的 `/model-sub auto[:bucket]`：
-它会读取 `~/.codex/memories/model_sub_vouch.json`，按已有功过数据给出推荐；
-若还没有任何 signal，需要先用 `/team-vouch model ...` 或 `/team-vouch model-duel ...` 积累样本。
-`/status` 会在有功过数据时展示 `Team profile auto`，给出 `general/debug/review` 的推荐 profile。
+当前这条配置线已经收敛到显式配置，不再提供本地 `team profile` / `vouch` / `/model-sub auto`
+这类 TUI 自动推荐层。`/status` 会展示当前生效的 `model_sub`、`model_sub_responses`
+以及它们的来源，便于确认最终路由结果。
+
+当前 merge 主线也不再把本地 Git Graph overlay 作为活跃功能继续维护。
+TUI 的 `Ctrl+G` 已恢复为官方 external editor 快捷键；若后续要重启 Git Graph，
+需要作为独立的可选能力重新接线，而不是继续依赖旧的 TUI 残留集成。
 
 ## Code Organization
 

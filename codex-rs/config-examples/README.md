@@ -35,7 +35,7 @@ This directory contains example configuration files for Codex with multi-agent e
 ```toml
 [features]
 multi_agent = true           # Enable multi-agent collaboration
-agent_worktrees = true       # Isolated git worktrees for sub-agents
+agent_worktrees = true       # Isolated git worktrees for forked sessions + resume restore
 ```
 
 ### Model Selection
@@ -105,7 +105,9 @@ wire_api = 'responses'
 
 `config.toml` keeps the logical provider definition. `config-pool.toml` keeps
 only `account_pool` entries. In pool mode, do not rely on a top-level
-`base_url` or `env_key` inside `config-pool.toml`.
+`base_url` or `env_key` inside `config-pool.toml`. Built-in families such as
+`anthropic` can be patched the same way: keep the built-in provider in
+`config.toml`, and put the operational account endpoints in `config-pool.toml`.
 
 ## Support
 

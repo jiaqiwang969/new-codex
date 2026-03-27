@@ -42,6 +42,10 @@ To prevent stale guidance from confusing future merge work:
 - `docs/reports/2026-03-15-upstream-gap-report.tex`
   - added an updated status note
   - re-labeled Endpoint Security and `/freeze` sections as historical
+- `docs/plans/2026-03-16-smart-approvals-core-trunk-design.md`
+  and `docs/plans/2026-03-16-smart-approvals-core-trunk-implementation.md`
+  - deleted obsolete implementation plans for the abandoned Smart Access +
+    `endpoint-sec` carry-forward approach
 
 ## Preserve: Local-Only Capabilities Still Alive
 
@@ -100,35 +104,69 @@ Why it matters:
 
 ### 4. Multi-Agent Extensions
 
+**Split this block before making keep/drop decisions.**
+
+#### Core routing semantics that should stay
+
+Representative files:
+
+- `codex-rs/core/src/utility_model.rs`
+- `codex-rs/core/src/agent/role.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_v2/*.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2.rs`
+
+These carry the real differentiated semantics:
+
+- `model_sub`
+- `model_sub_responses`
+- provider-aware utility routing
+- default child-agent inheritance of `model_sub`
+
+This is the part that must remain compatible with account-pool and custom
+provider endpoints.
+
+#### TUI-only preset and vouch UX that can be reevaluated separately
+
+Representative files:
+
+- `codex-rs/tui/src/team_profile.rs`
+- `codex-rs/tui/src/team_profile_vouch.rs`
+- `codex-rs/tui/src/model_sub_vouch.rs`
+- `codex-rs/tui/src/status/card.rs`
+- `codex-rs/tui/src/chatwidget.rs`
+- `codex-rs/tui/src/app.rs`
+
+Current audit result:
+
+- these features do not leak into `codex-rs/core/**`
+- they do not appear in app-server protocol state
+- they do not have a mirrored implementation in `codex-rs/tui_app_server`
+
+That means they are useful local UX, but they are not architecture anchors.
+If future upstream sync cost is too high, they can be dropped without removing
+core `model_sub` support.
+
+### 5. TUI Workbench Features
+
 **Keep selectively.**
 
 Representative local-only files:
 
-- `codex-rs/core/src/utility_model.rs`
-- `codex-rs/core/src/model_sub_vouch.rs`
-- `codex-rs/tui/src/team_profile.rs`
-- `codex-rs/tui/src/model_sub_vouch.rs`
-
-Why this needs caution:
-
-- these files are local-only, but they overlap with upstream collaboration work
-- keep the differentiated workflow value, but do not assume the local wire
-  contract should remain unchanged
-
-### 5. TUI Workbench Features
-
-**Keep.**
-
-Representative local-only files:
-
-- `codex-rs/git-graph/**`
-- `codex-rs/tui/src/git_graph_widget.rs`
 - `codex-rs/tui/src/session_bar.rs`
 - `codex-rs/tui/src/ralph_loop.rs`
 
-Why these are relatively safe:
+Current branch state:
 
-- `git-graph` is self-contained
+- `session_bar` is active and kept
+- `ralph-loop` is active and kept
+- `git-graph` is no longer wired into the TUI key path; `Ctrl+G` now follows the
+  upstream external-editor flow
+- the vendored `codex-rs/git-graph/**` tree is parked legacy code, not an active
+  merge driver
+
+Why the active pieces are relatively safe:
+
+- `session_bar` and `ralph-loop` are still intentional workflow features
 - the main risk is integration drift in `tui/src/app.rs` and `tui/src/chatwidget.rs`
 
 ## Reassess: Local-Only Features That Should Not Drive Architecture
@@ -174,10 +212,14 @@ Interpretation:
 2. Preserve account-pool / provider routing.
 3. Preserve memory / context packet / Entire only after provider plumbing is stable.
 4. Preserve agent worktrees as an isolated workflow feature.
-5. Reattach TUI workbench features (`git-graph`, `session bar`, `ralph-loop`)
-   on top of the newer upstream TUI surface.
-6. Re-evaluate guardian / model-sub / app-server wire customizations last,
-   because those have the highest upstream overlap and the most contract drift.
+5. Reattach active TUI workbench features (`session bar`, `ralph-loop`) on top
+   of the newer upstream TUI surface, while keeping `git-graph` parked unless it
+   is explicitly revived later.
+6. Keep core `model_sub` / `model_sub_responses` routing, then decide
+   separately whether to retain or prune `team_profile` / `team_profile_vouch`
+   / `model_sub_vouch`.
+7. Re-evaluate guardian / app-server wire customizations last, because those
+   have the highest upstream overlap and the most contract drift.
 
 ## Summary Judgment
 
@@ -186,7 +228,9 @@ problem. The real long-term merge burden is now concentrated in:
 
 - provider/account-pool plumbing
 - memory/context packet integration
-- multi-agent custom semantics
+- multi-agent core routing semantics
+- active TUI workbench features (`session_bar`, `ralph-loop`)
+- optional TUI preset/vouch UX layered onto multi-agent routing
 - large TUI integration files
 - app-server protocol drift
 
