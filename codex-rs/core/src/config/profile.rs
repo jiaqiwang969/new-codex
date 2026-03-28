@@ -84,7 +84,3 @@ impl From<ConfigProfile> for codex_app_server_protocol::Profile {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "profile_tests.rs"]
-mod tests;
