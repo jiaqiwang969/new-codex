@@ -2766,5 +2766,9 @@ mod mcp_requirements_tests;
 mod mcp_config_tests;
 
 #[cfg(test)]
+#[path = "mcp_stdio_edit_tests.rs"]
+mod mcp_stdio_edit_tests;
+
+#[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
