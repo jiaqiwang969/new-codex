@@ -2,8 +2,10 @@ use super::*;
 use crate::config::Config;
 use crate::config::ConfigOverrides;
 use crate::config::ConfigToml;
+use crate::config::types::SandboxWorkspaceWrite;
 use crate::protocol::ReadOnlyAccess;
 use crate::protocol::SandboxPolicy;
+use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -803,6 +805,120 @@ exclude_slash_tmp = true
             sandbox_policy.clone(),
             "case `{name}` should round-trip through split policies without drift"
         );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn add_dir_override_extends_workspace_writable_roots() -> std::io::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let frontend = temp_dir.path().join("frontend");
+    let backend = temp_dir.path().join("backend");
+    std::fs::create_dir_all(&frontend)?;
+    std::fs::create_dir_all(&backend)?;
+
+    let overrides = ConfigOverrides {
+        cwd: Some(frontend),
+        sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+        additional_writable_roots: vec![PathBuf::from("../backend"), backend.clone()],
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        overrides,
+        temp_dir.path().to_path_buf(),
+    )?;
+
+    let expected_backend = backend.abs();
+    if cfg!(target_os = "windows") {
+        match config.permissions.sandbox_policy.get() {
+            SandboxPolicy::ReadOnly { .. } => {}
+            other => panic!("expected read-only policy on Windows, got {other:?}"),
+        }
+    } else {
+        match config.permissions.sandbox_policy.get() {
+            SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
+                assert_eq!(
+                    writable_roots
+                        .iter()
+                        .filter(|root| **root == expected_backend)
+                        .count(),
+                    1,
+                    "expected single writable root entry for {}",
+                    expected_backend.display()
+                );
+            }
+            other => panic!("expected workspace-write policy, got {other:?}"),
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn sqlite_home_defaults_to_codex_home_for_workspace_write() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides {
+            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert_eq!(config.sqlite_home, codex_home.path().to_path_buf());
+
+    Ok(())
+}
+
+#[test]
+fn workspace_write_always_includes_memories_root_once() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let memories_root = codex_home.path().join("memories");
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            sandbox_workspace_write: Some(SandboxWorkspaceWrite {
+                writable_roots: vec![memories_root.abs()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    if cfg!(target_os = "windows") {
+        match config.permissions.sandbox_policy.get() {
+            SandboxPolicy::ReadOnly { .. } => {}
+            other => panic!("expected read-only policy on Windows, got {other:?}"),
+        }
+    } else {
+        assert!(
+            memories_root.is_dir(),
+            "expected memories root directory to exist at {}",
+            memories_root.display()
+        );
+        let expected_memories_root = memories_root.abs();
+        match config.permissions.sandbox_policy.get() {
+            SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
+                assert_eq!(
+                    writable_roots
+                        .iter()
+                        .filter(|root| **root == expected_memories_root)
+                        .count(),
+                    1,
+                    "expected single writable root entry for {}",
+                    expected_memories_root.display()
+                );
+            }
+            other => panic!("expected workspace-write policy, got {other:?}"),
+        }
     }
 
     Ok(())
