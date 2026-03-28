@@ -144,9 +144,6 @@ fn read_declared_role(
         let parsed_file = read_resolved_agent_role_file(config_file, Some(declared_role_name))?;
         role_name = parsed_file.role_name;
         role.description = parsed_file.description.or(role.description);
-        if role.tags.is_empty() {
-            role.tags = parsed_file.tags;
-        }
         role.nickname_candidates = parsed_file.nickname_candidates.or(role.nickname_candidates);
     }
 
@@ -156,9 +153,6 @@ fn read_declared_role(
 fn merge_missing_role_fields(role: &mut AgentRoleConfig, fallback: &AgentRoleConfig) {
     role.description = role.description.clone().or(fallback.description.clone());
     role.config_file = role.config_file.clone().or(fallback.config_file.clone());
-    if role.tags.is_empty() {
-        role.tags = fallback.tags.clone();
-    }
     role.nickname_candidates = role
         .nickname_candidates
         .clone()
@@ -187,10 +181,6 @@ fn agent_role_config_from_toml(
         &format!("agents.{role_name}.description"),
         role.description.as_deref(),
     )?;
-    let tags = normalize_agent_role_tags(
-        &format!("agents.{role_name}.tags"),
-        Some(role.tags.as_slice()),
-    )?;
     let nickname_candidates = normalize_agent_role_nickname_candidates(
         &format!("agents.{role_name}.nickname_candidates"),
         role.nickname_candidates.as_deref(),
@@ -199,7 +189,6 @@ fn agent_role_config_from_toml(
     Ok(AgentRoleConfig {
         description,
         config_file,
-        tags,
         nickname_candidates,
     })
 }
@@ -209,8 +198,6 @@ fn agent_role_config_from_toml(
 struct RawAgentRoleFileToml {
     name: Option<String>,
     description: Option<String>,
-    #[serde(default)]
-    tags: Vec<String>,
     nickname_candidates: Option<Vec<String>>,
     #[serde(flatten)]
     config: ConfigToml,
@@ -220,7 +207,6 @@ struct RawAgentRoleFileToml {
 pub(crate) struct ResolvedAgentRoleFile {
     pub(crate) role_name: String,
     pub(crate) description: Option<String>,
-    pub(crate) tags: Vec<String>,
     pub(crate) nickname_candidates: Option<Vec<String>>,
     pub(crate) config: TomlValue,
 }
@@ -253,10 +239,6 @@ pub(crate) fn parse_agent_role_file_contents(
     let description = normalize_agent_role_description(
         &format!("agent role file {}.description", role_file_label.display()),
         parsed.description.as_deref(),
-    )?;
-    let tags = normalize_agent_role_tags(
-        &format!("agent role file {}.tags", role_file_label.display()),
-        Some(parsed.tags.as_slice()),
     )?;
     validate_agent_role_file_developer_instructions(
         role_file_label,
@@ -301,13 +283,11 @@ pub(crate) fn parse_agent_role_file_contents(
     };
     config_table.remove("name");
     config_table.remove("description");
-    config_table.remove("tags");
     config_table.remove("nickname_candidates");
 
     Ok(ResolvedAgentRoleFile {
         role_name,
         description,
-        tags,
         nickname_candidates,
         config,
     })
@@ -461,51 +441,6 @@ fn normalize_agent_role_nickname_candidates(
     Ok(Some(normalized_candidates))
 }
 
-fn normalize_agent_role_tags(
-    field_label: &str,
-    tags: Option<&[String]>,
-) -> std::io::Result<Vec<String>> {
-    let Some(tags) = tags else {
-        return Ok(Vec::new());
-    };
-
-    let mut normalized_tags = Vec::with_capacity(tags.len());
-    let mut seen_tags = BTreeSet::new();
-
-    for tag in tags {
-        let normalized_tag = tag.trim();
-        if normalized_tag.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{field_label} cannot contain blank tags"),
-            ));
-        }
-
-        if !seen_tags.insert(normalized_tag.to_owned()) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{field_label} cannot contain duplicates"),
-            ));
-        }
-
-        if !normalized_tag
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "{field_label} may only contain ASCII letters, digits, hyphens, and underscores"
-                ),
-            ));
-        }
-
-        normalized_tags.push(normalized_tag.to_owned());
-    }
-
-    Ok(normalized_tags)
-}
-
 fn discover_agent_roles_in_dir(
     agents_dir: &Path,
     declared_role_files: &BTreeSet<PathBuf>,
@@ -544,7 +479,6 @@ fn discover_agent_roles_in_dir(
             AgentRoleConfig {
                 description: parsed_file.description,
                 config_file: Some(agent_file),
-                tags: parsed_file.tags,
                 nickname_candidates: parsed_file.nickname_candidates,
             },
         );

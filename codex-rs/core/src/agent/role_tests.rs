@@ -92,7 +92,6 @@ async fn apply_role_returns_unavailable_for_missing_user_role_file() {
         AgentRoleConfig {
             description: None,
             config_file: Some(PathBuf::from("/path/does/not/exist.toml")),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -113,7 +112,6 @@ async fn apply_role_returns_unavailable_for_invalid_user_role_toml() {
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -145,7 +143,6 @@ model = "role-model"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -177,7 +174,6 @@ async fn apply_role_preserves_unspecified_keys() {
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -237,7 +233,6 @@ model_provider = "test-provider"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -292,7 +287,6 @@ model_verbosity = "high"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -359,7 +353,6 @@ model_provider = "role-provider"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -418,7 +411,6 @@ model_provider = "base-provider"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -483,7 +475,6 @@ model_reasoning_effort = "high"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -541,7 +532,6 @@ wire_api = "responses"
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -585,7 +575,6 @@ writable_roots = ["./sandbox-root"]
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -645,7 +634,6 @@ async fn apply_role_takes_precedence_over_existing_session_flags_for_same_key() 
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -689,7 +677,6 @@ enabled = false
         AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     );
@@ -721,7 +708,6 @@ fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
             AgentRoleConfig {
                 description: Some("user override".to_string()),
                 config_file: None,
-                tags: Vec::new(),
                 nickname_candidates: None,
             },
         ),
@@ -741,11 +727,10 @@ fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
 }
 
 #[test]
-fn spawn_tool_spec_renders_role_tags() {
+fn spawn_tool_spec_does_not_render_role_tags() {
     let spec = spawn_tool_spec::build(&BTreeMap::new());
 
-    assert!(spec.contains("claude-opus: {\nTags: large_context, deep_reasoning"));
-    assert!(spec.contains("claude-sonnet: {\nTags: large_context, fast"));
+    assert!(!spec.contains("Tags: "));
 }
 
 #[test]
@@ -755,7 +740,6 @@ fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
         AgentRoleConfig {
             description: Some("first".to_string()),
             config_file: None,
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     )]);
@@ -783,7 +767,6 @@ fn spawn_tool_spec_marks_role_locked_model_and_reasoning_effort() {
         AgentRoleConfig {
             description: Some("Research carefully.".to_string()),
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     )]);
@@ -809,7 +792,6 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
         AgentRoleConfig {
             description: Some("Review carefully.".to_string()),
             config_file: Some(role_path),
-            tags: Vec::new(),
             nickname_candidates: None,
         },
     )]);

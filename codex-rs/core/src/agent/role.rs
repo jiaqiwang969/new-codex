@@ -338,14 +338,6 @@ pub(crate) mod spawn_tool_spec {
     }
 
     fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
-        let tags = declaration
-            .tags
-            .iter()
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|tag| !tag.is_empty())
-            .collect::<Vec<_>>();
-        let tags_line = (!tags.is_empty()).then(|| format!("Tags: {}", tags.join(", ")));
         let locked_settings_note = declaration
             .config_file
             .as_ref()
@@ -379,13 +371,8 @@ pub(crate) mod spawn_tool_spec {
             .filter(|note| !note.is_empty());
 
         let mut lines = Vec::new();
-        if let Some(tags_line) = tags_line {
-            lines.push(tags_line);
-        }
         if let Some(description) = &declaration.description {
             lines.push(description.clone());
-        } else if !lines.is_empty() {
-            lines.push("no description".to_string());
         }
         if let Some(locked_settings_note) = locked_settings_note {
             lines.push(locked_settings_note);
@@ -414,7 +401,6 @@ mod built_in {
                                 .to_string(),
                         ),
                         config_file: None,
-                        tags: Vec::new(),
                         nickname_candidates: None,
                     }
                 ),
@@ -431,7 +417,6 @@ Rules:
 - Inherits `model_sub` when configured unless this spawn sets an explicit `model` override."#
                             .to_string()),
                         config_file: Some("explorer.toml".to_string().parse().unwrap_or_default()),
-                        tags: vec!["fast".to_string(), "tool_intensive".to_string()],
                         nickname_candidates: None,
                     }
                 ),
@@ -447,7 +432,6 @@ Rules:
 - Prefer this role when reasoning depth matters more than latency.
 - Provide concrete file/module scope so the agent can focus quickly."#.to_string()),
                         config_file: Some("claude-opus.toml".to_string().parse().unwrap_or_default()),
-                        tags: vec!["large_context".to_string(), "deep_reasoning".to_string()],
                         nickname_candidates: None,
                     }
                 ),
@@ -463,7 +447,6 @@ Rules:
 - Prefer this role for speed-sensitive tasks with clear scope.
 - Split larger work into parallel sub-tasks when possible."#.to_string()),
                         config_file: Some("claude-sonnet.toml".to_string().parse().unwrap_or_default()),
-                        tags: vec!["large_context".to_string(), "fast".to_string()],
                         nickname_candidates: None,
                     }
                 ),
@@ -479,7 +462,6 @@ Rules:
 - Prefer this role for speed-critical tasks with limited scope.
 - Best for tasks that don't require deep reasoning or large context."#.to_string()),
                         config_file: Some("claude-haiku.toml".to_string().parse().unwrap_or_default()),
-                        tags: vec!["fast".to_string(), "lightweight".to_string()],
                         nickname_candidates: None,
                     }
                 ),
@@ -495,7 +477,6 @@ Rules:
 - Explicitly assign **ownership** of the task (files / responsibility). When the subtask involves code changes, you should clearly specify which files or modules the worker is responsible for. This helps avoid merge conflicts and ensures accountability. For example, you can say "Worker 1 is responsible for updating the authentication module, while Worker 2 will handle the database layer." By defining clear ownership, you can delegate more effectively and reduce coordination overhead.
 - Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of each other's work to avoid conflicts and ensure a cohesive final product."#.to_string()),
                         config_file: None,
-                        tags: vec!["execution".to_string(), "ownership".to_string()],
                         nickname_candidates: None,
                     }
                 ),
@@ -512,7 +493,6 @@ When YOU wait for the `awaiter` agent to be done, use the largest possible timeo
 Be patient with the `awaiter`.
 Close the awaiter when you're done with it."#.to_string()),
                         config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
-                        tags: vec!["async".to_string(), "long_running".to_string()],
                         nickname_candidates: None,
                     }
                 ),

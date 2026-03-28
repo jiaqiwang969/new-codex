@@ -2765,7 +2765,6 @@ fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result<()> {
                 AgentRoleToml {
                     description: Some("Research role".to_string()),
                     config_file: Some(missing_path.abs()),
-                    tags: vec![],
                     nickname_candidates: None,
                 },
             )]),
@@ -3631,7 +3630,6 @@ fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Result<()
                 AgentRoleToml {
                     description: Some("Research role".to_string()),
                     config_file: None,
-                    tags: vec![],
                     nickname_candidates: Some(vec![
                         "  Hypatia  ".to_string(),
                         "Noether".to_string(),
@@ -3673,7 +3671,6 @@ fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::Result
                 AgentRoleToml {
                     description: Some("Research role".to_string()),
                     config_file: None,
-                    tags: vec![],
                     nickname_candidates: Some(Vec::new()),
                 },
             )]),
@@ -3709,7 +3706,6 @@ fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::io::Re
                 AgentRoleToml {
                     description: Some("Research role".to_string()),
                     config_file: None,
-                    tags: vec![],
                     nickname_candidates: Some(vec!["Hypatia".to_string(), " Hypatia ".to_string()]),
                 },
             )]),
@@ -3745,7 +3741,6 @@ fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io::Resul
                 AgentRoleToml {
                     description: Some("Research role".to_string()),
                     config_file: None,
-                    tags: vec![],
                     nickname_candidates: Some(vec!["Agent <One>".to_string()]),
                 },
             )]),

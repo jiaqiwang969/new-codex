@@ -2855,7 +2855,6 @@ enabled = false
         crate::config::AgentRoleConfig {
             description: None,
             config_file: Some(role_path),
-            tags: vec![],
             nickname_candidates: None,
         },
     );

@@ -1566,8 +1566,6 @@ pub struct AgentRoleConfig {
     pub description: Option<String>,
     /// Path to a role-specific config layer.
     pub config_file: Option<PathBuf>,
-    /// Optional tags surfaced to the leader model to help route work (e.g. "large_context").
-    pub tags: Vec<String>,
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
 }
@@ -1583,9 +1581,6 @@ pub struct AgentRoleToml {
     /// Relative paths are resolved relative to the `config.toml` that defines them.
     pub config_file: Option<AbsolutePathBuf>,
 
-    /// Optional tags surfaced to the leader model to help route work (e.g. "large_context").
-    #[serde(default)]
-    pub tags: Vec<String>,
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
 }

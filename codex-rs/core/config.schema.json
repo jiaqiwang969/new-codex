@@ -27,14 +27,6 @@
             "type": "string"
           },
           "type": "array"
-        },
-        "tags": {
-          "default": [],
-          "description": "Optional tags surfaced to the leader model to help route work (e.g. \"large_context\").",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
         }
       },
       "type": "object"
