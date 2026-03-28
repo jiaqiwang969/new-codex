@@ -272,9 +272,7 @@ pub fn prepend_path_entry_for_codex_aliases() -> std::io::Result<Arg0PathEntryGu
 
     // Best-effort cleanup of stale per-session dirs. Ignore failures so startup proceeds.
     if let Err(err) = janitor_cleanup(&temp_root) {
-        if err.kind() != std::io::ErrorKind::PermissionDenied {
-            eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
-        }
+        eprintln!("WARNING: failed to clean up stale arg0 temp dirs: {err}");
     }
 
     let temp_dir = tempfile::Builder::new()
@@ -422,10 +420,12 @@ mod tests {
     use super::LOCK_FILENAME;
     use super::janitor_cleanup;
     use super::linux_sandbox_exe_path;
+    use super::prepend_path_entry_for_codex_aliases;
     use std::fs;
     use std::fs::File;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn create_lock(dir: &Path) -> std::io::Result<File> {
@@ -496,6 +496,49 @@ mod tests {
         janitor_cleanup(root.path())?;
 
         assert!(!dir.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepend_path_entry_warns_on_permission_denied_cleanup() -> std::io::Result<()> {
+        const HELPER_ENV: &str = "CODEX_ARG0_PERMISSION_DENIED_HELPER";
+
+        if std::env::var_os(HELPER_ENV).is_some() {
+            let _guard = prepend_path_entry_for_codex_aliases()?;
+            return Ok(());
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+
+        let codex_home = tempfile::tempdir()?;
+        let temp_root = codex_home.path().join("tmp").join("arg0");
+        let stale = temp_root.join("stale");
+        fs::create_dir_all(&stale)?;
+        create_lock(&stale)?;
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o500))?;
+
+        let output = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("tests::prepend_path_entry_warns_on_permission_denied_cleanup")
+            .arg("--nocapture")
+            .env("CODEX_HOME", codex_home.path())
+            .env(HELPER_ENV, "1")
+            .output()?;
+
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o700))?;
+
+        assert!(
+            output.status.success(),
+            "expected helper to succeed, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("WARNING: failed to clean up stale arg0 temp dirs"),
+            "expected permission denied cleanup warning, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Ok(())
     }
 }
