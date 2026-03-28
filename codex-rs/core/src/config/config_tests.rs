@@ -1,8 +1,13 @@
+use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
+use crate::config::edit::apply_blocking;
+use crate::config::types::AppToolApproval;
 use crate::config::types::ApprovalsReviewer;
 use crate::config::types::BundledSkillsConfig;
 use crate::config::types::FeedbackConfigToml;
 use crate::config::types::HistoryPersistence;
+use crate::config::types::McpServerToolConfig;
+use crate::config::types::McpServerTransportConfig;
 use crate::config::types::MemoriesConfig;
 use crate::config::types::MemoriesToml;
 use crate::config::types::ModelAvailabilityNuxConfig;
@@ -14,7 +19,11 @@ use crate::model_provider_info::built_in_model_providers;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use serde::Deserialize;
 use tempfile::tempdir;
@@ -28,7 +37,30 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 use tempfile::TempDir;
+
+fn stdio_mcp(command: &str) -> McpServerConfig {
+    McpServerConfig {
+        transport: McpServerTransportConfig::Stdio {
+            command: command.to_string(),
+            args: Vec::new(),
+            env: None,
+            env_vars: Vec::new(),
+            cwd: None,
+        },
+        enabled: true,
+        required: false,
+        disabled_reason: None,
+        startup_timeout_sec: None,
+        tool_timeout_sec: None,
+        enabled_tools: None,
+        disabled_tools: None,
+        scopes: None,
+        oauth_resource: None,
+        tools: HashMap::new(),
+    }
+}
 
 #[test]
 fn load_config_normalizes_relative_cwd_override() -> std::io::Result<()> {
@@ -241,6 +273,632 @@ fn runtime_config_defaults_model_availability_nux() {
         cfg.model_availability_nux,
         ModelAvailabilityNuxConfig::default()
     );
+}
+
+#[test]
+fn config_toml_deserializes_permission_profiles() {
+    let toml = r#"
+default_permissions = "workspace"
+
+[permissions.workspace.filesystem]
+":minimal" = "read"
+
+[permissions.workspace.filesystem.":project_roots"]
+"." = "write"
+"docs" = "read"
+
+[permissions.workspace.network]
+enabled = true
+proxy_url = "http://127.0.0.1:43128"
+enable_socks5 = false
+allow_upstream_proxy = false
+
+[permissions.workspace.network.domains]
+"openai.com" = "allow"
+"#;
+    let cfg: ConfigToml =
+        toml::from_str(toml).expect("TOML deserialization should succeed for permissions profiles");
+
+    assert_eq!(cfg.default_permissions.as_deref(), Some("workspace"));
+    assert_eq!(
+        cfg.permissions.expect("[permissions] should deserialize"),
+        PermissionsToml {
+            entries: BTreeMap::from([(
+                "workspace".to_string(),
+                PermissionProfileToml {
+                    filesystem: Some(FilesystemPermissionsToml {
+                        entries: BTreeMap::from([
+                            (
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            ),
+                            (
+                                ":project_roots".to_string(),
+                                FilesystemPermissionToml::Scoped(BTreeMap::from([
+                                    (".".to_string(), FileSystemAccessMode::Write),
+                                    ("docs".to_string(), FileSystemAccessMode::Read),
+                                ])),
+                            ),
+                        ]),
+                    }),
+                    network: Some(NetworkToml {
+                        enabled: Some(true),
+                        proxy_url: Some("http://127.0.0.1:43128".to_string()),
+                        enable_socks5: Some(false),
+                        socks_url: None,
+                        enable_socks5_udp: None,
+                        allow_upstream_proxy: Some(false),
+                        dangerously_allow_non_loopback_proxy: None,
+                        dangerously_allow_all_unix_sockets: None,
+                        mode: None,
+                        domains: Some(NetworkDomainPermissionsToml {
+                            entries: BTreeMap::from([(
+                                "openai.com".to_string(),
+                                NetworkDomainPermissionToml::Allow,
+                            )]),
+                        }),
+                        unix_sockets: None,
+                        allow_local_binding: None,
+                    }),
+                },
+            )]),
+        }
+    );
+}
+
+#[test]
+fn permissions_profiles_network_populates_runtime_network_proxy_spec() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            )]),
+                        }),
+                        network: Some(NetworkToml {
+                            enabled: Some(true),
+                            proxy_url: Some("http://127.0.0.1:43128".to_string()),
+                            enable_socks5: Some(false),
+                            ..Default::default()
+                        }),
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+    let network = config
+        .permissions
+        .network
+        .as_ref()
+        .expect("enabled profile network should produce a NetworkProxySpec");
+
+    assert_eq!(network.proxy_host_and_port(), "127.0.0.1:43128");
+    assert!(!network.socks_enabled());
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_network_disabled_by_default_does_not_start_proxy() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            )]),
+                        }),
+                        network: Some(NetworkToml {
+                            domains: Some(NetworkDomainPermissionsToml {
+                                entries: BTreeMap::from([(
+                                    "openai.com".to_string(),
+                                    NetworkDomainPermissionToml::Allow,
+                                )]),
+                            }),
+                            ..Default::default()
+                        }),
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(config.permissions.network.is_none());
+    Ok(())
+}
+
+#[test]
+fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::create_dir_all(cwd.path().join("docs"))?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let cfg = ConfigToml {
+        default_permissions: Some("workspace".to_string()),
+        permissions: Some(PermissionsToml {
+            entries: BTreeMap::from([(
+                "workspace".to_string(),
+                PermissionProfileToml {
+                    filesystem: Some(FilesystemPermissionsToml {
+                        entries: BTreeMap::from([
+                            (
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            ),
+                            (
+                                ":project_roots".to_string(),
+                                FilesystemPermissionToml::Scoped(BTreeMap::from([
+                                    (".".to_string(), FileSystemAccessMode::Write),
+                                    ("docs".to_string(), FileSystemAccessMode::Read),
+                                ])),
+                            ),
+                        ]),
+                    }),
+                    network: None,
+                },
+            )]),
+        }),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    let memories_root = codex_home.path().join("memories").abs();
+    assert_eq!(
+        config.permissions.file_system_sandbox_policy,
+        FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Minimal,
+                },
+                access: FileSystemAccessMode::Read,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::project_roots(None),
+                },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::project_roots(Some("docs".into())),
+                },
+                access: FileSystemAccessMode::Read,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path {
+                    path: memories_root.clone(),
+                },
+                access: FileSystemAccessMode::Write,
+            },
+        ]),
+    );
+    assert_eq!(
+        config.permissions.sandbox_policy.get(),
+        &SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![memories_root],
+            read_only_access: ReadOnlyAccess::Restricted {
+                include_platform_defaults: true,
+                readable_roots: vec![cwd.path().join("docs").abs(),],
+            },
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        }
+    );
+    assert_eq!(
+        config.permissions.network_sandbox_policy,
+        NetworkSandboxPolicy::Restricted
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_require_default_permissions() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let err = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            )]),
+                        }),
+                        network: None,
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )
+    .expect_err("missing default_permissions should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        err.to_string(),
+        "config defines `[permissions]` profiles but does not set `default_permissions`"
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_reject_writes_outside_workspace_root() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+    let external_write_path = if cfg!(windows) { r"C:\temp" } else { "/tmp" };
+
+    let err = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                external_write_path.to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Write),
+                            )]),
+                        }),
+                        network: None,
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )
+    .expect_err("writes outside the workspace root should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string()
+            .contains("filesystem writes outside the workspace root"),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_reject_nested_entries_for_non_project_roots() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let err = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Scoped(BTreeMap::from([(
+                                    "docs".to_string(),
+                                    FileSystemAccessMode::Read,
+                                )])),
+                            )]),
+                        }),
+                        network: None,
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )
+    .expect_err("nested entries outside :project_roots should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        err.to_string(),
+        "filesystem path `:minimal` does not support nested entries"
+    );
+    Ok(())
+}
+
+fn load_workspace_permission_profile(profile: PermissionProfileToml) -> std::io::Result<Config> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([("workspace".to_string(), profile)]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )
+}
+
+#[test]
+fn permissions_profiles_allow_unknown_special_paths() -> std::io::Result<()> {
+    let config = load_workspace_permission_profile(PermissionProfileToml {
+        filesystem: Some(FilesystemPermissionsToml {
+            entries: BTreeMap::from([(
+                ":future_special_path".to_string(),
+                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+            )]),
+        }),
+        network: None,
+    })?;
+
+    assert_eq!(
+        config.permissions.file_system_sandbox_policy,
+        FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::unknown(":future_special_path", None),
+            },
+            access: FileSystemAccessMode::Read,
+        }]),
+    );
+    assert_eq!(
+        config.permissions.sandbox_policy.get(),
+        &SandboxPolicy::ReadOnly {
+            access: ReadOnlyAccess::Restricted {
+                include_platform_defaults: false,
+                readable_roots: Vec::new(),
+            },
+            network_access: false,
+        }
+    );
+    assert!(
+        config.startup_warnings.iter().any(|warning| warning.contains(
+            "Configured filesystem path `:future_special_path` is not recognized by this version of Codex and will be ignored."
+        )),
+        "{:?}",
+        config.startup_warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_allow_unknown_special_paths_with_nested_entries() -> std::io::Result<()> {
+    let config = load_workspace_permission_profile(PermissionProfileToml {
+        filesystem: Some(FilesystemPermissionsToml {
+            entries: BTreeMap::from([(
+                ":future_special_path".to_string(),
+                FilesystemPermissionToml::Scoped(BTreeMap::from([(
+                    "docs".to_string(),
+                    FileSystemAccessMode::Read,
+                )])),
+            )]),
+        }),
+        network: None,
+    })?;
+
+    assert_eq!(
+        config.permissions.file_system_sandbox_policy,
+        FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::unknown(":future_special_path", Some("docs".into())),
+            },
+            access: FileSystemAccessMode::Read,
+        }]),
+    );
+    assert!(
+        config.startup_warnings.iter().any(|warning| warning.contains(
+            "Configured filesystem path `:future_special_path` with nested entry `docs` is not recognized by this version of Codex and will be ignored."
+        )),
+        "{:?}",
+        config.startup_warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_allow_missing_filesystem_with_warning() -> std::io::Result<()> {
+    let config = load_workspace_permission_profile(PermissionProfileToml {
+        filesystem: None,
+        network: None,
+    })?;
+
+    assert_eq!(
+        config.permissions.file_system_sandbox_policy,
+        FileSystemSandboxPolicy::restricted(Vec::new())
+    );
+    assert_eq!(
+        config.permissions.sandbox_policy.get(),
+        &SandboxPolicy::ReadOnly {
+            access: ReadOnlyAccess::Restricted {
+                include_platform_defaults: false,
+                readable_roots: Vec::new(),
+            },
+            network_access: false,
+        }
+    );
+    assert!(
+        config.startup_warnings.iter().any(|warning| warning.contains(
+            "Permissions profile `workspace` does not define any recognized filesystem entries for this version of Codex."
+        )),
+        "{:?}",
+        config.startup_warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_allow_empty_filesystem_with_warning() -> std::io::Result<()> {
+    let config = load_workspace_permission_profile(PermissionProfileToml {
+        filesystem: Some(FilesystemPermissionsToml {
+            entries: BTreeMap::new(),
+        }),
+        network: None,
+    })?;
+
+    assert_eq!(
+        config.permissions.file_system_sandbox_policy,
+        FileSystemSandboxPolicy::restricted(Vec::new())
+    );
+    assert!(
+        config.startup_warnings.iter().any(|warning| warning.contains(
+            "Permissions profile `workspace` does not define any recognized filesystem entries for this version of Codex."
+        )),
+        "{:?}",
+        config.startup_warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_reject_project_root_parent_traversal() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let err = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":project_roots".to_string(),
+                                FilesystemPermissionToml::Scoped(BTreeMap::from([(
+                                    "../sibling".to_string(),
+                                    FileSystemAccessMode::Read,
+                                )])),
+                            )]),
+                        }),
+                        network: None,
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )
+    .expect_err("parent traversal should be rejected for project root subpaths");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        err.to_string(),
+        "filesystem subpath `../sibling` must be a descendant path without `.` or `..` components"
+    );
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_allow_network_enablement() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            )]),
+                        }),
+                        network: Some(NetworkToml {
+                            enabled: Some(true),
+                            ..Default::default()
+                        }),
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(
+        config.permissions.network_sandbox_policy.is_enabled(),
+        "expected network sandbox policy to be enabled",
+    );
+    assert!(
+        config
+            .permissions
+            .sandbox_policy
+            .get()
+            .has_full_network_access()
+    );
+    Ok(())
 }
 
 #[test]
@@ -523,6 +1181,847 @@ async fn managed_config_wins_over_cli_overrides() -> anyhow::Result<()> {
             })?;
 
     assert_eq!(cfg.model.as_deref(), Some("managed_config"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_global_mcp_servers_accepts_legacy_ms_field() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+
+    std::fs::write(
+        &config_path,
+        r#"
+[mcp_servers]
+[mcp_servers.docs]
+command = "echo"
+startup_timeout_ms = 2500
+"#,
+    )?;
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = servers.get("docs").expect("docs entry");
+    assert_eq!(docs.startup_timeout_sec, Some(Duration::from_millis(2500)));
+
+    Ok(())
+}
+
+#[test]
+fn mcp_servers_toml_parses_per_tool_approval_overrides() {
+    let config = toml::from_str::<ConfigToml>(
+        r#"
+[mcp_servers.docs]
+command = "docs-server"
+name = "Docs"
+
+[mcp_servers.docs.tools.search]
+approval_mode = "approve"
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+    let tool = config
+        .mcp_servers
+        .get("docs")
+        .and_then(|server| server.tools.get("search"))
+        .expect("docs/search tool config exists");
+
+    assert_eq!(
+        tool,
+        &McpServerToolConfig {
+            approval_mode: Some(AppToolApproval::Approve),
+        }
+    );
+}
+
+#[test]
+fn mcp_servers_toml_ignores_unknown_server_fields() {
+    let config = toml::from_str::<ConfigToml>(
+        r#"
+[mcp_servers.docs]
+command = "docs-server"
+trust_level = "trusted"
+"#,
+    )
+    .expect("unknown MCP server fields should be ignored");
+
+    assert_eq!(
+        config.mcp_servers.get("docs"),
+        Some(&stdio_mcp("docs-server"))
+    );
+}
+
+#[test]
+fn mcp_servers_toml_parses_tool_approval_override_for_reserved_name() {
+    let config = toml::from_str::<ConfigToml>(
+        r#"
+[mcp_servers.docs]
+command = "docs-server"
+
+[mcp_servers.docs.tools.command]
+approval_mode = "approve"
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+    let tool = config
+        .mcp_servers
+        .get("docs")
+        .and_then(|server| server.tools.get("command"))
+        .expect("docs/command tool config exists");
+
+    assert_eq!(
+        tool,
+        &McpServerToolConfig {
+            approval_mode: Some(AppToolApproval::Approve),
+        }
+    );
+}
+
+#[tokio::test]
+async fn load_global_mcp_servers_rejects_inline_bearer_token() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+
+    std::fs::write(
+        &config_path,
+        r#"
+[mcp_servers.docs]
+url = "https://example.com/mcp"
+bearer_token = "secret"
+"#,
+    )?;
+
+    let err = load_global_mcp_servers(codex_home.path())
+        .await
+        .expect_err("bearer_token entries should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("bearer_token"));
+    assert!(err.to_string().contains("bearer_token_env_var"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: vec!["--verbose".to_string()],
+                env: Some(HashMap::from([
+                    ("ZIG_VAR".to_string(), "3".to_string()),
+                    ("ALPHA_VAR".to_string(), "1".to_string()),
+                ])),
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert_eq!(
+        serialized,
+        r#"[mcp_servers.docs]
+command = "docs-server"
+args = ["--verbose"]
+
+[mcp_servers.docs.env]
+ALPHA_VAR = "1"
+ZIG_VAR = "3"
+"#
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            env_vars,
+            cwd,
+        } => {
+            assert_eq!(command, "docs-server");
+            assert_eq!(args, &vec!["--verbose".to_string()]);
+            let env = env
+                .as_ref()
+                .expect("env should be preserved for stdio transport");
+            assert_eq!(env.get("ALPHA_VAR"), Some(&"1".to_string()));
+            assert_eq!(env.get("ZIG_VAR"), Some(&"3".to_string()));
+            assert!(env_vars.is_empty());
+            assert!(cwd.is_none());
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: vec!["ALPHA".to_string(), "BETA".to_string()],
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(
+        serialized.contains(r#"env_vars = ["ALPHA", "BETA"]"#),
+        "serialized config missing env_vars field:\n{serialized}"
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::Stdio { env_vars, .. } => {
+            assert_eq!(env_vars, &vec!["ALPHA".to_string(), "BETA".to_string()]);
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let cwd_path = PathBuf::from("/tmp/codex-mcp");
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: Some(cwd_path.clone()),
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(
+        serialized.contains(r#"cwd = "/tmp/codex-mcp""#),
+        "serialized config missing cwd field:\n{serialized}"
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::Stdio { cwd, .. } => {
+            assert_eq!(cwd.as_deref(), Some(Path::new("/tmp/codex-mcp")));
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                http_headers: None,
+                env_http_headers: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: Some(Duration::from_secs(2)),
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert_eq!(
+        serialized,
+        r#"[mcp_servers.docs]
+url = "https://example.com/mcp"
+bearer_token_env_var = "MCP_TOKEN"
+startup_timeout_sec = 2.0
+"#
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+        } => {
+            assert_eq!(url, "https://example.com/mcp");
+            assert_eq!(bearer_token_env_var.as_deref(), Some("MCP_TOKEN"));
+            assert!(http_headers.is_none());
+            assert!(env_http_headers.is_none());
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+    assert_eq!(docs.startup_timeout_sec, Some(Duration::from_secs(2)));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                http_headers: Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                env_http_headers: Some(HashMap::from([(
+                    "X-Auth".to_string(),
+                    "DOCS_AUTH".to_string(),
+                )])),
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: Some(Duration::from_secs(2)),
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert_eq!(
+        serialized,
+        r#"[mcp_servers.docs]
+url = "https://example.com/mcp"
+bearer_token_env_var = "MCP_TOKEN"
+startup_timeout_sec = 2.0
+
+[mcp_servers.docs.http_headers]
+X-Doc = "42"
+
+[mcp_servers.docs.env_http_headers]
+X-Auth = "DOCS_AUTH"
+"#
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::StreamableHttp {
+            http_headers,
+            env_http_headers,
+            ..
+        } => {
+            assert_eq!(
+                http_headers,
+                &Some(HashMap::from([("X-Doc".to_string(), "42".to_string())]))
+            );
+            assert_eq!(
+                env_http_headers,
+                &Some(HashMap::from([(
+                    "X-Auth".to_string(),
+                    "DOCS_AUTH".to_string()
+                )]))
+            );
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+
+    let mut servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                http_headers: Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                env_http_headers: Some(HashMap::from([(
+                    "X-Auth".to_string(),
+                    "DOCS_AUTH".to_string(),
+                )])),
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: Some(Duration::from_secs(2)),
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+    let serialized_with_optional = std::fs::read_to_string(&config_path)?;
+    assert!(serialized_with_optional.contains("bearer_token_env_var = \"MCP_TOKEN\""));
+    assert!(serialized_with_optional.contains("[mcp_servers.docs.http_headers]"));
+    assert!(serialized_with_optional.contains("[mcp_servers.docs.env_http_headers]"));
+
+    servers.insert(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    );
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert_eq!(
+        serialized,
+        r#"[mcp_servers.docs]
+url = "https://example.com/mcp"
+"#
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            bearer_token_env_var,
+            http_headers,
+            env_http_headers,
+        } => {
+            assert_eq!(url, "https://example.com/mcp");
+            assert!(bearer_token_env_var.is_none());
+            assert!(http_headers.is_none());
+            assert!(env_http_headers.is_none());
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+
+    assert!(docs.startup_timeout_sec.is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() -> anyhow::Result<()>
+{
+    let codex_home = TempDir::new()?;
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+
+    let servers = BTreeMap::from([
+        (
+            "docs".to_string(),
+            McpServerConfig {
+                transport: McpServerTransportConfig::StreamableHttp {
+                    url: "https://example.com/mcp".to_string(),
+                    bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                    http_headers: Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                    env_http_headers: Some(HashMap::from([(
+                        "X-Auth".to_string(),
+                        "DOCS_AUTH".to_string(),
+                    )])),
+                },
+                enabled: true,
+                required: false,
+                disabled_reason: None,
+                startup_timeout_sec: Some(Duration::from_secs(2)),
+                tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            },
+        ),
+        (
+            "logs".to_string(),
+            McpServerConfig {
+                transport: McpServerTransportConfig::Stdio {
+                    command: "logs-server".to_string(),
+                    args: vec!["--follow".to_string()],
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
+                },
+                enabled: true,
+                required: false,
+                disabled_reason: None,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+                enabled_tools: None,
+                disabled_tools: None,
+                scopes: None,
+                oauth_resource: None,
+                tools: HashMap::new(),
+            },
+        ),
+    ]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(
+        serialized.contains("[mcp_servers.docs.http_headers]"),
+        "serialized config missing docs headers section:\n{serialized}"
+    );
+    assert!(
+        !serialized.contains("[mcp_servers.logs.http_headers]"),
+        "serialized config should not add logs headers section:\n{serialized}"
+    );
+    assert!(
+        !serialized.contains("[mcp_servers.logs.env_http_headers]"),
+        "serialized config should not add logs env headers section:\n{serialized}"
+    );
+    assert!(
+        !serialized.contains("mcp_servers.logs.bearer_token_env_var"),
+        "serialized config should not add bearer token to logs:\n{serialized}"
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    match &docs.transport {
+        McpServerTransportConfig::StreamableHttp {
+            http_headers,
+            env_http_headers,
+            ..
+        } => {
+            assert_eq!(
+                http_headers,
+                &Some(HashMap::from([("X-Doc".to_string(), "42".to_string())]))
+            );
+            assert_eq!(
+                env_http_headers,
+                &Some(HashMap::from([(
+                    "X-Auth".to_string(),
+                    "DOCS_AUTH".to_string()
+                )]))
+            );
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+    let logs = loaded.get("logs").expect("logs entry");
+    match &logs.transport {
+        McpServerTransportConfig::Stdio { env, .. } => {
+            assert!(env.is_none());
+        }
+        other => panic!("unexpected transport {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: false,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(
+        serialized.contains("enabled = false"),
+        "serialized config missing disabled flag:\n{serialized}"
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    assert!(!docs.enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: true,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(
+        serialized.contains("required = true"),
+        "serialized config missing required flag:\n{serialized}"
+    );
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    assert!(docs.required);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: "docs-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: Some(vec!["allowed".to_string()]),
+            disabled_tools: Some(vec!["blocked".to_string()]),
+            scopes: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(serialized.contains(r#"enabled_tools = ["allowed"]"#));
+    assert!(serialized.contains(r#"disabled_tools = ["blocked"]"#));
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    assert_eq!(
+        docs.enabled_tools.as_ref(),
+        Some(&vec!["allowed".to_string()])
+    );
+    assert_eq!(
+        docs.disabled_tools.as_ref(),
+        Some(&vec!["blocked".to_string()])
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let servers = BTreeMap::from([(
+        "docs".to_string(),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://example.com/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            enabled: true,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth_resource: Some("https://resource.example.com".to_string()),
+            tools: HashMap::new(),
+        },
+    )]);
+
+    apply_blocking(
+        codex_home.path(),
+        None,
+        &[ConfigEdit::ReplaceMcpServers(servers.clone())],
+    )?;
+
+    let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+    let serialized = std::fs::read_to_string(&config_path)?;
+    assert!(serialized.contains(r#"oauth_resource = "https://resource.example.com""#));
+
+    let loaded = load_global_mcp_servers(codex_home.path()).await?;
+    let docs = loaded.get("docs").expect("docs entry");
+    assert_eq!(
+        docs.oauth_resource.as_deref(),
+        Some("https://resource.example.com")
+    );
+
     Ok(())
 }
 
@@ -2132,7 +3631,6 @@ fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
                 windows_sandbox_mode: None,
                 windows_sandbox_private_desktop: true,
-                macos_seatbelt_profile_extensions: None,
             },
             approvals_reviewer: ApprovalsReviewer::User,
             enforce_residency: Constrained::allow_any(None),
@@ -2278,7 +3776,6 @@ fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
             windows_sandbox_private_desktop: true,
-            macos_seatbelt_profile_extensions: None,
         },
         approvals_reviewer: ApprovalsReviewer::User,
         enforce_residency: Constrained::allow_any(None),
@@ -2422,7 +3919,6 @@ fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
             windows_sandbox_private_desktop: true,
-            macos_seatbelt_profile_extensions: None,
         },
         approvals_reviewer: ApprovalsReviewer::User,
         enforce_residency: Constrained::allow_any(None),
@@ -2552,7 +4048,6 @@ fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             windows_sandbox_mode: None,
             windows_sandbox_private_desktop: true,
-            macos_seatbelt_profile_extensions: None,
         },
         approvals_reviewer: ApprovalsReviewer::User,
         enforce_residency: Constrained::allow_any(None),
@@ -3294,63 +4789,6 @@ shell_tool = true
     );
 
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn system_bwrap_warning_reports_missing_system_bwrap() {
-    let warning = system_bwrap_warning_for_path(Path::new("/definitely/not/a/bwrap"))
-        .expect("missing system bwrap should emit a warning");
-
-    assert!(warning.contains("could not find system bubblewrap"));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn system_bwrap_warning_skips_too_old_system_bwrap() {
-    let fake_bwrap = write_fake_bwrap(
-        r#"#!/bin/sh
-if [ "$1" = "--help" ]; then
-  echo 'usage: bwrap [OPTION...] COMMAND'
-  exit 0
-fi
-exit 1
-"#,
-    );
-    let fake_bwrap_path: &Path = fake_bwrap.as_ref();
-
-    assert_eq!(
-        system_bwrap_warning_for_path(fake_bwrap_path),
-        None,
-        "Do not warn even if bwrap does not support `--argv0`",
-    );
-}
-
-#[cfg(not(target_os = "linux"))]
-#[test]
-fn system_bwrap_warning_is_disabled_off_linux() {
-    assert!(system_bwrap_warning().is_none());
-}
-
-#[cfg(target_os = "linux")]
-fn write_fake_bwrap(contents: &str) -> tempfile::TempPath {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use tempfile::NamedTempFile;
-
-    // Bazel can mount the OS temp directory `noexec`, so prefer the current
-    // working directory for fake executables and fall back to the default temp
-    // dir outside that environment.
-    let temp_file = std::env::current_dir()
-        .ok()
-        .and_then(|dir| NamedTempFile::new_in(dir).ok())
-        .unwrap_or_else(|| NamedTempFile::new().expect("temp file"));
-    // Linux rejects exec-ing a file that is still open for writing.
-    let path = temp_file.into_temp_path();
-    fs::write(&path, contents).expect("write fake bwrap");
-    let permissions = fs::Permissions::from_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("chmod fake bwrap");
-    path
 }
 
 #[tokio::test]

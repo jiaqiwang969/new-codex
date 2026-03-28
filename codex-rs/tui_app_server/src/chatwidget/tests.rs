@@ -35,6 +35,16 @@ use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::GuardianApprovalReview;
 use codex_app_server_protocol::GuardianApprovalReviewStatus;
 use codex_app_server_protocol::GuardianRiskLevel as AppServerGuardianRiskLevel;
+use codex_app_server_protocol::HookCompletedNotification as AppServerHookCompletedNotification;
+use codex_app_server_protocol::HookEventName as AppServerHookEventName;
+use codex_app_server_protocol::HookExecutionMode as AppServerHookExecutionMode;
+use codex_app_server_protocol::HookHandlerType as AppServerHookHandlerType;
+use codex_app_server_protocol::HookOutputEntry as AppServerHookOutputEntry;
+use codex_app_server_protocol::HookOutputEntryKind as AppServerHookOutputEntryKind;
+use codex_app_server_protocol::HookRunStatus as AppServerHookRunStatus;
+use codex_app_server_protocol::HookRunSummary as AppServerHookRunSummary;
+use codex_app_server_protocol::HookScope as AppServerHookScope;
+use codex_app_server_protocol::HookStartedNotification as AppServerHookStartedNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemGuardianApprovalReviewCompletedNotification;
 use codex_app_server_protocol::ItemGuardianApprovalReviewStartedNotification;
@@ -1079,8 +1089,6 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             interface: None,
             dependencies: None,
             policy: None,
-            permission_profile: None,
-            managed_network_override: None,
             path_to_skills_md: repo_skill_path,
             scope: SkillScope::Repo,
         },
@@ -1091,8 +1099,6 @@ async fn submission_prefers_selected_duplicate_skill_path() {
             interface: None,
             dependencies: None,
             policy: None,
-            permission_profile: None,
-            managed_network_override: None,
             path_to_skills_md: user_skill_path.clone(),
             scope: SkillScope::User,
         },
@@ -1951,6 +1957,7 @@ async fn helpers_are_available_and_do_not_panic() {
         model: Some(resolved_model),
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         session_telemetry,
     };
     let mut w = ChatWidget::new_with_app_event(init);
@@ -2053,7 +2060,9 @@ async fn make_chatwidget_manual(
         stream_controller: None,
         plan_stream_controller: None,
         pending_guardian_review_status: PendingGuardianReviewStatus::default(),
+        terminal_title_status_kind: TerminalTitleStatusKind::Working,
         last_copyable_output: None,
+        pending_turn_copyable_output: None,
         running_commands: HashMap::new(),
         collab_agent_metadata: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
@@ -2104,6 +2113,7 @@ async fn make_chatwidget_manual(
         had_work_activity: false,
         saw_plan_update_this_turn: false,
         saw_plan_item_this_turn: false,
+        last_plan_progress: None,
         plan_delta_buffer: String::new(),
         plan_item_active: false,
         last_separator_elapsed_secs: None,
@@ -2115,6 +2125,11 @@ async fn make_chatwidget_manual(
         current_cwd: None,
         session_network_proxy: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        last_terminal_title: None,
+        terminal_title_setup_original_items: None,
+        terminal_title_animation_origin: Instant::now(),
+        status_line_project_root_name_cache: None,
         status_line_branch: None,
         status_line_branch_cwd: None,
         status_line_branch_pending: false,
@@ -3556,7 +3571,6 @@ async fn exec_approval_emits_proposed_command_and_decision_history() {
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -3606,7 +3620,6 @@ fn app_server_exec_approval_request_splits_shell_wrapped_command() {
             cwd: Some(PathBuf::from("/tmp")),
             command_actions: None,
             additional_permissions: None,
-            skill_metadata: None,
             proposed_execpolicy_amendment: None,
             proposed_network_policy_amendments: None,
             available_decisions: None,
@@ -3641,7 +3654,6 @@ async fn exec_approval_uses_approval_id_when_present() {
             proposed_execpolicy_amendment: None,
             proposed_network_policy_amendments: None,
             additional_permissions: None,
-            skill_metadata: None,
             available_decisions: None,
             parsed_cmd: vec![],
         }),
@@ -3683,7 +3695,6 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -3739,7 +3750,6 @@ async fn exec_approval_decision_truncates_multiline_and_long_commands() {
         proposed_execpolicy_amendment: None,
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -7018,6 +7028,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         session_telemetry,
     };
 
@@ -7062,6 +7073,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         session_telemetry,
     };
 
@@ -7342,10 +7354,18 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
 }
 
 #[tokio::test]
-async fn slash_copy_is_unavailable_when_legacy_agent_message_item_is_not_repeated_on_turn_complete()
-{
+async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
 
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    });
     complete_assistant_message(&mut chat, "msg-1", "Legacy item final message", None);
     let _ = drain_insert_history(&mut rx);
     chat.handle_codex_event(Event {
@@ -7364,10 +7384,14 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_item_is_not_repeate
     assert_eq!(cells.len(), 1, "expected one info message");
     let rendered = lines_to_single_string(&cells[0]);
     assert!(
-        rendered.contains(
+        !rendered.contains(
             "`/copy` is unavailable before the first Codex output or right after a rollback."
         ),
-        "expected unavailable message, got {rendered:?}"
+        "expected copy state to be available, got {rendered:?}"
+    );
+    assert_eq!(
+        chat.last_copyable_output,
+        Some("Legacy item final message".to_string())
     );
 }
 
@@ -7377,9 +7401,20 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+            memory: None,
+        }),
+    });
+    complete_assistant_message(&mut chat, "msg-1", "Reply that will be rolled back", None);
+    let _ = drain_insert_history(&mut rx);
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
-            last_agent_message: Some("Reply that will be rolled back".to_string()),
+            last_agent_message: None,
             memory: None,
         }),
     });
@@ -7469,7 +7504,7 @@ async fn slash_memory_drop_reports_stubbed_feature() {
     match event {
         AppEvent::InsertHistoryCell(cell) => {
             let rendered = lines_to_single_string(&cell.display_lines(80));
-            assert!(rendered.contains("Memory maintenance: Not available in app-server TUI yet."));
+            assert!(rendered.contains("Memory maintenance: Not available in TUI yet."));
         }
         other => panic!("expected InsertHistoryCell error, got {other:?}"),
     }
@@ -7500,7 +7535,7 @@ async fn slash_memory_update_reports_stubbed_feature() {
     match event {
         AppEvent::InsertHistoryCell(cell) => {
             let rendered = lines_to_single_string(&cell.display_lines(80));
-            assert!(rendered.contains("Memory maintenance: Not available in app-server TUI yet."));
+            assert!(rendered.contains("Memory maintenance: Not available in TUI yet."));
         }
         other => panic!("expected InsertHistoryCell error, got {other:?}"),
     }
@@ -10853,7 +10888,6 @@ async fn approval_modal_exec_snapshot() -> anyhow::Result<()> {
         ])),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -10915,7 +10949,6 @@ async fn approval_modal_exec_without_reason_snapshot() -> anyhow::Result<()> {
         ])),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -10964,7 +10997,6 @@ async fn approval_modal_exec_multiline_prefix_hides_execpolicy_option_snapshot()
         proposed_execpolicy_amendment: Some(ExecPolicyAmendment::new(command)),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -11352,7 +11384,6 @@ async fn status_widget_and_approval_modal_snapshot() {
         ])),
         proposed_network_policy_amendments: None,
         additional_permissions: None,
-        skill_metadata: None,
         available_decisions: None,
         parsed_cmd: vec![],
     };
@@ -12909,6 +12940,75 @@ async fn deltas_then_same_final_message_are_rendered_snapshot() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
     assert_snapshot!(combined);
+}
+
+#[tokio::test]
+async fn user_prompt_submit_app_server_hook_notifications_render_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::HookStarted(AppServerHookStartedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: Some("turn-1".to_string()),
+            run: AppServerHookRunSummary {
+                id: "user-prompt-submit:0:/tmp/hooks.json".to_string(),
+                event_name: AppServerHookEventName::UserPromptSubmit,
+                handler_type: AppServerHookHandlerType::Command,
+                execution_mode: AppServerHookExecutionMode::Sync,
+                scope: AppServerHookScope::Turn,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+                display_order: 0,
+                status: AppServerHookRunStatus::Running,
+                status_message: Some("checking go-workflow input policy".to_string()),
+                started_at: 1,
+                completed_at: None,
+                duration_ms: None,
+                entries: Vec::new(),
+            },
+        }),
+        None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::HookCompleted(AppServerHookCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: Some("turn-1".to_string()),
+            run: AppServerHookRunSummary {
+                id: "user-prompt-submit:0:/tmp/hooks.json".to_string(),
+                event_name: AppServerHookEventName::UserPromptSubmit,
+                handler_type: AppServerHookHandlerType::Command,
+                execution_mode: AppServerHookExecutionMode::Sync,
+                scope: AppServerHookScope::Turn,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+                display_order: 0,
+                status: AppServerHookRunStatus::Stopped,
+                status_message: Some("checking go-workflow input policy".to_string()),
+                started_at: 1,
+                completed_at: Some(11),
+                duration_ms: Some(10),
+                entries: vec![
+                    AppServerHookOutputEntry {
+                        kind: AppServerHookOutputEntryKind::Warning,
+                        text: "go-workflow must start from PlanMode".to_string(),
+                    },
+                    AppServerHookOutputEntry {
+                        kind: AppServerHookOutputEntryKind::Stop,
+                        text: "prompt blocked".to_string(),
+                    },
+                ],
+            },
+        }),
+        None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let combined = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_snapshot!(
+        "user_prompt_submit_app_server_hook_notifications_render_snapshot",
+        combined
+    );
 }
 
 #[tokio::test]

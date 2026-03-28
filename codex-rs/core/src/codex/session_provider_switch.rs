@@ -94,9 +94,7 @@ pub(super) fn apply_runtime_provider_switch(
     next_configuration: &mut SessionConfiguration,
     updates: &SessionSettingsUpdate,
 ) -> Option<String> {
-    if updates.collaboration_mode.is_none() {
-        return None;
-    }
+    updates.collaboration_mode.as_ref()?;
 
     // Auto-switch provider when the model family changes between
     // known provider families and default OpenAI-compatible models.

@@ -518,7 +518,12 @@ struct ThreadEventStore {
 
 impl ThreadEventStore {
     fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
-        matches!(event, ThreadBufferedEvent::Request(_))
+        matches!(
+            event,
+            ThreadBufferedEvent::Request(_)
+                | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
+        )
     }
 
     fn new(capacity: usize) -> Self {
@@ -948,6 +953,8 @@ pub(crate) struct App {
     pub(crate) commit_anim_running: Arc<AtomicBool>,
     // Shared across ChatWidget instances so invalid status-line config warnings only emit once.
     status_line_invalid_items_warned: Arc<AtomicBool>,
+    // Shared across ChatWidget instances so invalid terminal-title config warnings only emit once.
+    terminal_title_invalid_items_warned: Arc<AtomicBool>,
 
     // Esc-backtracking state grouped
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
@@ -1053,6 +1060,7 @@ impl App {
             model: Some(self.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: self.terminal_title_invalid_items_warned.clone(),
             session_telemetry: self.session_telemetry.clone(),
         }
     }
@@ -1831,9 +1839,8 @@ impl App {
             return Ok(());
         }
 
-        self.chat_widget.add_error_message(format!(
-            "Not available in app-server TUI yet for thread {thread_id}."
-        ));
+        self.chat_widget
+            .add_error_message(format!("Not available in TUI yet for thread {thread_id}."));
         Ok(())
     }
 
@@ -2619,18 +2626,52 @@ impl App {
     /// refreshes from the backend. Refresh failures are treated as "thread is only inspectable by
     /// historical id now" and converted into closed picker entries instead of deleting them, so
     /// the stable traversal order remains intact for review and keyboard navigation.
-    async fn open_agent_picker(&mut self) {
+    async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
         for thread_id in thread_ids {
-            if self.thread_event_listener_tasks.contains_key(&thread_id) {
-                if self.agent_navigation.get(&thread_id).is_none() {
+            let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => {
                     self.upsert_agent_picker_thread(
-                        thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        /*is_closed*/ false,
+                        thread_id,
+                        thread.agent_nickname.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_nickname.clone())
+                        }),
+                        thread.agent_role.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_role.clone())
+                        }),
+                        matches!(
+                            thread.status,
+                            codex_app_server_protocol::ThreadStatus::NotLoaded
+                        ),
                     );
                 }
-            } else {
-                self.mark_agent_picker_thread_closed(thread_id);
+                Err(err) => {
+                    let is_closed = Self::closed_state_for_thread_read_error(
+                        &err,
+                        existing_entry.as_ref().map(|entry| entry.is_closed),
+                    );
+                    if let Some(entry) = existing_entry {
+                        self.upsert_agent_picker_thread(
+                            thread_id,
+                            entry.agent_nickname,
+                            entry.agent_role,
+                            is_closed,
+                        );
+                    } else {
+                        self.upsert_agent_picker_thread(
+                            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                            is_closed,
+                        );
+                    }
+                }
             }
         }
 
@@ -2691,6 +2732,18 @@ impl App {
         });
     }
 
+    fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
+        err.chain()
+            .any(|cause| cause.to_string().contains("thread not loaded:"))
+    }
+
+    fn closed_state_for_thread_read_error(
+        err: &color_eyre::Report,
+        existing_is_closed: Option<bool>,
+    ) -> bool {
+        Self::is_terminal_thread_read_error(err) || existing_is_closed.unwrap_or(false)
+    }
+
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
@@ -2728,6 +2781,14 @@ impl App {
     /// This helper copies every known nickname/role from `AgentNavigationState` into the
     /// replacement widget so that replayed collab items render agent names immediately.
     fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
+        // Transfer the last-written terminal title to the replacement widget
+        // so it knows what OSC title is currently displayed. Without this, the
+        // new widget would redundantly clear and rewrite the same title, causing
+        // a visible flicker in some terminals.
+        let previous_terminal_title = self.chat_widget.last_terminal_title.take();
+        if chat_widget.last_terminal_title.is_none() {
+            chat_widget.last_terminal_title = previous_terminal_title;
+        }
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             chat_widget.set_collab_agent_metadata(
                 thread_id,
@@ -3195,6 +3256,7 @@ impl App {
         }
 
         let status_line_invalid_items_warned = Arc::new(AtomicBool::new(false));
+        let terminal_title_invalid_items_warned = Arc::new(AtomicBool::new(false));
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
         let wait_for_initial_session_configured =
@@ -3226,6 +3288,8 @@ impl App {
                     model: Some(model.clone()),
                     startup_tooltip_override,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                        .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
                 (ChatWidget::new_with_app_event(init), Some(started))
@@ -3259,6 +3323,8 @@ impl App {
                     model: config.model.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                        .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
                 (ChatWidget::new_with_app_event(init), Some(resumed))
@@ -3297,6 +3363,8 @@ impl App {
                     model: config.model.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                        .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
                 (ChatWidget::new_with_app_event(init), Some(forked))
@@ -3332,6 +3400,7 @@ impl App {
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: terminal_title_invalid_items_warned.clone(),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: feedback.clone(),
@@ -3598,7 +3667,7 @@ impl App {
                     Ok(app_server) => app_server,
                     Err(err) => {
                         self.chat_widget.add_error_message(format!(
-                            "Failed to start app-server-backed session picker: {err}"
+                            "Failed to start TUI session picker: {err}"
                         ));
                         return Ok(AppRunControl::Continue);
                     }
@@ -3607,6 +3676,7 @@ impl App {
                     tui,
                     &self.config,
                     /*show_all*/ false,
+                    /*include_non_interactive*/ false,
                     picker_app_server,
                 )
                 .await?
@@ -4792,7 +4862,7 @@ impl App {
                 self.chat_widget.open_approvals_popup();
             }
             AppEvent::OpenAgentPicker => {
-                self.open_agent_picker().await;
+                self.open_agent_picker(app_server).await;
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread(tui, app_server, thread_id).await?;
@@ -5006,6 +5076,33 @@ impl App {
             }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
+            }
+            AppEvent::TerminalTitleSetup { items } => {
+                let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let edit = codex_core::config::edit::terminal_title_items_edit(&ids);
+                let apply_result = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_edits([edit])
+                    .apply()
+                    .await;
+                match apply_result {
+                    Ok(()) => {
+                        self.config.tui_terminal_title = Some(ids.clone());
+                        self.chat_widget.setup_terminal_title(items);
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to persist terminal title items; keeping previous selection");
+                        self.chat_widget.revert_terminal_title_setup_preview();
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save terminal title items: {err}"
+                        ));
+                    }
+                }
+            }
+            AppEvent::TerminalTitleSetupPreview { items } => {
+                self.chat_widget.preview_terminal_title(items);
+            }
+            AppEvent::TerminalTitleSetupCancelled => {
+                self.chat_widget.cancel_terminal_title_setup();
             }
             AppEvent::SyntaxThemeSelected { name } => {
                 let edit = codex_core::config::edit::syntax_theme_edit(&name);
@@ -5532,7 +5629,7 @@ async fn fetch_all_mcp_server_statuses(
                 },
             })
             .await
-            .wrap_err("mcpServerStatus/list failed in app-server TUI")?;
+            .wrap_err("mcpServerStatus/list failed in TUI")?;
         statuses.extend(response.data);
         if let Some(next_cursor) = response.next_cursor {
             cursor = Some(next_cursor);
@@ -5559,7 +5656,7 @@ async fn fetch_plugins_list(
             },
         })
         .await
-        .wrap_err("plugin/list failed in app-server TUI")
+        .wrap_err("plugin/list failed in TUI")
 }
 
 async fn fetch_plugin_detail(
@@ -5570,7 +5667,7 @@ async fn fetch_plugin_detail(
     request_handle
         .request_typed(ClientRequest::PluginRead { request_id, params })
         .await
-        .wrap_err("plugin/read failed in app-server TUI")
+        .wrap_err("plugin/read failed in TUI")
 }
 
 async fn fetch_plugin_install(
@@ -5589,7 +5686,7 @@ async fn fetch_plugin_install(
             },
         })
         .await
-        .wrap_err("plugin/install failed in app-server TUI")
+        .wrap_err("plugin/install failed in TUI")
 }
 
 async fn fetch_plugin_uninstall(
@@ -5606,12 +5703,12 @@ async fn fetch_plugin_uninstall(
             },
         })
         .await
-        .wrap_err("plugin/uninstall failed in app-server TUI")
+        .wrap_err("plugin/uninstall failed in TUI")
 }
 
 /// Convert flat `McpServerStatus` responses into the per-server maps used by the
 /// in-process MCP subsystem (tools keyed as `mcp__{server}__{tool}`, plus
-/// per-server resource/template/auth maps). Test-only because the app-server TUI
+/// per-server resource/template/auth maps). Test-only because the TUI
 /// renders directly from `McpServerStatus` rather than these maps.
 #[cfg(test)]
 type McpInventoryMaps = (
@@ -5649,6 +5746,14 @@ fn mcp_inventory_maps_from_statuses(statuses: Vec<McpServerStatus>) -> McpInvent
     (tools, resources, resource_templates, auth_statuses)
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Err(err) = self.chat_widget.clear_managed_terminal_title() {
+            tracing::debug!(error = %err, "failed to clear terminal title on app drop");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5673,6 +5778,16 @@ mod tests {
     use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
     use codex_app_server_protocol::ConfigWarningNotification;
+    use codex_app_server_protocol::HookCompletedNotification;
+    use codex_app_server_protocol::HookEventName as AppServerHookEventName;
+    use codex_app_server_protocol::HookExecutionMode as AppServerHookExecutionMode;
+    use codex_app_server_protocol::HookHandlerType as AppServerHookHandlerType;
+    use codex_app_server_protocol::HookOutputEntry as AppServerHookOutputEntry;
+    use codex_app_server_protocol::HookOutputEntryKind as AppServerHookOutputEntryKind;
+    use codex_app_server_protocol::HookRunStatus as AppServerHookRunStatus;
+    use codex_app_server_protocol::HookRunSummary as AppServerHookRunSummary;
+    use codex_app_server_protocol::HookScope as AppServerHookScope;
+    use codex_app_server_protocol::HookStartedNotification;
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::NetworkApprovalContext as AppServerNetworkApprovalContext;
     use codex_app_server_protocol::NetworkApprovalProtocol as AppServerNetworkApprovalProtocol;
@@ -5978,6 +6093,7 @@ mod tests {
             model: Some(model),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: app.status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: app.terminal_title_invalid_items_warned.clone(),
             session_telemetry: app.session_telemetry.clone(),
         });
 
@@ -6785,11 +6901,15 @@ mod tests {
     #[tokio::test]
     async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let thread_id = ThreadId::new();
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(1));
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
 
         assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
         assert_eq!(
@@ -6805,8 +6925,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_agent_picker_keeps_cached_closed_threads() -> Result<()> {
+    async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Result<()> {
         let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let thread_id = ThreadId::new();
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(1));
@@ -6814,10 +6938,10 @@ mod tests {
             thread_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
-            false,
+            true,
         );
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
 
         assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
         assert_eq!(
@@ -6832,11 +6956,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
+        let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(1));
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            false,
+        );
+
+        app.open_agent_picker(&mut app_server).await;
+
+        assert_eq!(
+            app.agent_navigation.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                is_closed: true,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_thread_read_error_detection_matches_not_loaded_errors() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: thr_123"
+        );
+
+        assert!(App::is_terminal_thread_read_error(&err));
+    }
+
+    #[test]
+    fn terminal_thread_read_error_detection_ignores_transient_failures() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
+        );
+
+        assert!(!App::is_terminal_thread_read_error(&err));
+    }
+
+    #[test]
+    fn closed_state_for_thread_read_error_preserves_live_state_without_cache_on_transient_error() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
+        );
+
+        assert!(!App::closed_state_for_thread_read_error(
+            &err, /*existing_is_closed*/ None
+        ));
+    }
+
+    #[test]
+    fn closed_state_for_thread_read_error_marks_terminal_uncached_threads_closed() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: thr_123"
+        );
+
+        assert!(App::closed_state_for_thread_read_error(
+            &err, /*existing_is_closed*/ None
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
+        let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let started = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let thread_id = started.session.thread_id;
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(1));
+
+        app.open_agent_picker(&mut app_server).await;
+
+        assert_eq!(
+            app.agent_navigation.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: None,
+                agent_role: None,
+                is_closed: false,
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Result<()> {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let _ = app.config.features.disable(Feature::Collab);
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -7391,11 +7616,15 @@ guardian_approval = true
     async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disabled() -> Result<()>
     {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let thread_id = ThreadId::new();
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(1));
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -7513,7 +7742,6 @@ guardian_approval = true
                 enabled: Some(true),
             }),
             file_system: None,
-            macos: None,
         });
         params.proposed_network_policy_amendments = Some(vec![AppServerNetworkPolicyAmendment {
             host: "example.com".to_string(),
@@ -7546,7 +7774,6 @@ guardian_approval = true
                     enabled: Some(true),
                 }),
                 file_system: None,
-                macos: None,
             })
         );
         assert_eq!(
@@ -8122,6 +8349,7 @@ guardian_approval = true
             enhanced_keys_supported: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+            terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: codex_feedback::CodexFeedback::new(),
@@ -8175,6 +8403,7 @@ guardian_approval = true
                 enhanced_keys_supported: false,
                 commit_anim_running: Arc::new(AtomicBool::new(false)),
                 status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+                terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
                 backtrack: BacktrackState::default(),
                 backtrack_render_pending: false,
                 feedback: codex_feedback::CodexFeedback::new(),
@@ -8282,6 +8511,59 @@ guardian_approval = true
         })
     }
 
+    fn hook_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
+        ServerNotification::HookStarted(HookStartedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: Some(turn_id.to_string()),
+            run: AppServerHookRunSummary {
+                id: "user-prompt-submit:0:/tmp/hooks.json".to_string(),
+                event_name: AppServerHookEventName::UserPromptSubmit,
+                handler_type: AppServerHookHandlerType::Command,
+                execution_mode: AppServerHookExecutionMode::Sync,
+                scope: AppServerHookScope::Turn,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+                display_order: 0,
+                status: AppServerHookRunStatus::Running,
+                status_message: Some("checking go-workflow input policy".to_string()),
+                started_at: 1,
+                completed_at: None,
+                duration_ms: None,
+                entries: Vec::new(),
+            },
+        })
+    }
+
+    fn hook_completed_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
+        ServerNotification::HookCompleted(HookCompletedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: Some(turn_id.to_string()),
+            run: AppServerHookRunSummary {
+                id: "user-prompt-submit:0:/tmp/hooks.json".to_string(),
+                event_name: AppServerHookEventName::UserPromptSubmit,
+                handler_type: AppServerHookHandlerType::Command,
+                execution_mode: AppServerHookExecutionMode::Sync,
+                scope: AppServerHookScope::Turn,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+                display_order: 0,
+                status: AppServerHookRunStatus::Stopped,
+                status_message: Some("checking go-workflow input policy".to_string()),
+                started_at: 1,
+                completed_at: Some(11),
+                duration_ms: Some(10),
+                entries: vec![
+                    AppServerHookOutputEntry {
+                        kind: AppServerHookOutputEntryKind::Warning,
+                        text: "go-workflow must start from PlanMode".to_string(),
+                    },
+                    AppServerHookOutputEntry {
+                        kind: AppServerHookOutputEntryKind::Stop,
+                        text: "prompt blocked".to_string(),
+                    },
+                ],
+            },
+        })
+    }
+
     fn agent_message_delta_notification(
         thread_id: ThreadId,
         turn_id: &str,
@@ -8315,7 +8597,6 @@ guardian_approval = true
                 cwd: Some(PathBuf::from("/tmp/project")),
                 command_actions: None,
                 additional_permissions: None,
-                skill_metadata: None,
                 proposed_execpolicy_amendment: None,
                 proposed_network_policy_amendments: None,
                 available_decisions: None,
@@ -8397,6 +8678,37 @@ guardian_approval = true
         let snapshot = store.snapshot();
         assert!(snapshot.events.is_empty());
         assert_eq!(store.has_pending_thread_approvals(), false);
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_hook_notifications() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(8);
+        store.push_notification(hook_started_notification(thread_id, "turn-hook"));
+        store.push_notification(hook_completed_notification(thread_id, "turn-hook"));
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        let hook_notifications = snapshot
+            .events
+            .into_iter()
+            .map(|event| match event {
+                ThreadBufferedEvent::Notification(notification) => {
+                    serde_json::to_value(notification).expect("hook notification should serialize")
+                }
+                other => panic!("expected buffered hook notification, saw: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hook_notifications,
+            vec![
+                serde_json::to_value(hook_started_notification(thread_id, "turn-hook"))
+                    .expect("hook notification should serialize"),
+                serde_json::to_value(hook_completed_notification(thread_id, "turn-hook"))
+                    .expect("hook notification should serialize"),
+            ]
+        );
     }
 
     fn next_user_turn_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
@@ -9309,6 +9621,7 @@ guardian_approval = true
             model: Some(app.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,
             status_line_invalid_items_warned: app.status_line_invalid_items_warned.clone(),
+            terminal_title_invalid_items_warned: app.terminal_title_invalid_items_warned.clone(),
             session_telemetry: app.session_telemetry.clone(),
         });
         app.replace_chat_widget(replacement);

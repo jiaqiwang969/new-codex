@@ -66,32 +66,6 @@ approval_mode = "approve"
 }
 
 #[test]
-fn mcp_servers_toml_parses_legacy_flattened_per_tool_approval_overrides() {
-    let config = toml::from_str::<ConfigToml>(
-        r#"
-[mcp_servers.docs]
-command = "docs-server"
-
-[mcp_servers.docs.search]
-approval_mode = "approve"
-"#,
-    )
-    .expect("legacy TOML deserialization should succeed");
-    let tool = config
-        .mcp_servers
-        .get("docs")
-        .and_then(|server| server.tools.get("search"))
-        .expect("docs/search tool config exists");
-
-    assert_eq!(
-        tool,
-        &McpServerToolConfig {
-            approval_mode: Some(AppToolApproval::Approve),
-        }
-    );
-}
-
-#[test]
 fn mcp_servers_toml_parses_tool_approval_override_for_reserved_name() {
     let config = toml::from_str::<ConfigToml>(
         r#"

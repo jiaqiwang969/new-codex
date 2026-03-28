@@ -50,10 +50,10 @@ pub fn resolve_oss_provider(
     }
 
     let profile = config_toml.get_config_profile(config_profile).ok();
-    if let Some(profile) = &profile {
-        if let Some(profile_oss_provider) = &profile.oss_provider {
-            return Some(profile_oss_provider.clone());
-        }
+    if let Some(profile) = &profile
+        && let Some(profile_oss_provider) = &profile.oss_provider
+    {
+        return Some(profile_oss_provider.clone());
     }
 
     config_toml.oss_provider.clone()

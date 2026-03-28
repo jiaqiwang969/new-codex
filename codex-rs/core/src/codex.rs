@@ -85,7 +85,6 @@ use codex_otel::current_span_w3c_trace_context;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationRequestEvent;
-use codex_protocol::approvals::ExecApprovalRequestSkillMetadata;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
@@ -1094,8 +1093,16 @@ impl TurnContext {
             .network
             .as_ref()?;
         Some(TurnContextNetworkItem {
-            allowed_domains: network.allowed_domains.clone().unwrap_or_default(),
-            denied_domains: network.denied_domains.clone().unwrap_or_default(),
+            allowed_domains: network
+                .domains
+                .as_ref()
+                .and_then(codex_config::NetworkDomainPermissionsToml::allowed_domains)
+                .unwrap_or_default(),
+            denied_domains: network
+                .domains
+                .as_ref()
+                .and_then(codex_config::NetworkDomainPermissionsToml::denied_domains)
+                .unwrap_or_default(),
         })
     }
 
@@ -2955,7 +2962,6 @@ impl Session {
         network_approval_context: Option<NetworkApprovalContext>,
         proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
         additional_permissions: Option<PermissionProfile>,
-        skill_metadata: Option<ExecApprovalRequestSkillMetadata>,
         available_decisions: Option<Vec<ReviewDecision>>,
     ) -> ReviewDecision {
         //  command-level approvals use `call_id`.
@@ -3009,7 +3015,6 @@ impl Session {
             proposed_execpolicy_amendment,
             proposed_network_policy_amendments,
             additional_permissions,
-            skill_metadata,
             available_decisions: Some(available_decisions),
             parsed_cmd,
         });
@@ -4113,17 +4118,6 @@ impl Session {
         }
     }
 
-    pub(crate) async fn pending_input_snapshot(&self) -> Vec<ResponseInputItem> {
-        let active = self.active_turn.lock().await;
-        match active.as_ref() {
-            Some(at) => {
-                let ts = at.turn_state.lock().await;
-                ts.pending_input_snapshot()
-            }
-            None => Vec::with_capacity(0),
-        }
-    }
-
     /// Queue response items to be injected into the next active turn created for this session.
     pub(crate) async fn queue_response_items_for_next_turn(&self, items: Vec<ResponseInputItem>) {
         if items.is_empty() {
@@ -4136,12 +4130,6 @@ impl Session {
 
     pub(crate) async fn take_queued_response_items_for_next_turn(&self) -> Vec<ResponseInputItem> {
         std::mem::take(&mut *self.idle_pending_input.lock().await)
-    }
-
-    pub(crate) async fn queued_response_items_for_next_turn_snapshot(
-        &self,
-    ) -> Vec<ResponseInputItem> {
-        self.idle_pending_input.lock().await.clone()
     }
 
     pub(crate) async fn has_queued_response_items_for_next_turn(&self) -> bool {
