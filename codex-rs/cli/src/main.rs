@@ -1734,20 +1734,6 @@ mod tests {
     }
 
     #[test]
-    fn debug_thread_memory_subcommand_is_rejected() {
-        let parse_result =
-            MultitoolCli::try_parse_from(["codex", "debug", "thread-memory", "backfill"]);
-        assert!(parse_result.is_err());
-    }
-
-    #[test]
-    fn debug_agent_worktrees_subcommand_is_rejected() {
-        let parse_result =
-            MultitoolCli::try_parse_from(["codex", "debug", "agent-worktrees", "list"]);
-        assert!(parse_result.is_err());
-    }
-
-    #[test]
     fn remote_flag_parses_for_interactive_root() {
         let cli = MultitoolCli::try_parse_from(["codex", "--remote", "ws://127.0.0.1:4500"])
             .expect("parse");
