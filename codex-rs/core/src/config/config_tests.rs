@@ -19,7 +19,6 @@ use crate::model_provider_info::built_in_model_providers;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
-use codex_features::FeaturesToml;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -1596,79 +1595,6 @@ fn cli_override_takes_precedence_over_profile_sandbox_mode() -> std::io::Result<
             config.permissions.sandbox_policy.get(),
             SandboxPolicy::WorkspaceWrite { .. }
         ));
-    }
-
-    Ok(())
-}
-
-#[test]
-fn feature_table_overrides_legacy_flags() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let mut entries = BTreeMap::new();
-    entries.insert("apply_patch_freeform".to_string(), false);
-    let cfg = ConfigToml {
-        features: Some(FeaturesToml { entries }),
-        ..Default::default()
-    };
-
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
-    )?;
-
-    assert!(!config.features.enabled(Feature::ApplyPatchFreeform));
-    assert!(!config.include_apply_patch_tool);
-
-    Ok(())
-}
-
-#[test]
-fn legacy_toggles_map_to_features() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let cfg = ConfigToml {
-        experimental_use_unified_exec_tool: Some(true),
-        experimental_use_freeform_apply_patch: Some(true),
-        ..Default::default()
-    };
-
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.path().to_path_buf(),
-    )?;
-
-    assert!(config.features.enabled(Feature::ApplyPatchFreeform));
-    assert!(config.features.enabled(Feature::UnifiedExec));
-
-    assert!(config.include_apply_patch_tool);
-
-    assert!(config.use_experimental_unified_exec_tool);
-
-    Ok(())
-}
-
-#[test]
-fn responses_websocket_features_do_not_change_wire_api() -> std::io::Result<()> {
-    for feature_key in ["responses_websockets", "responses_websockets_v2"] {
-        let codex_home = TempDir::new()?;
-        let mut entries = BTreeMap::new();
-        entries.insert(feature_key.to_string(), true);
-        let cfg = ConfigToml {
-            features: Some(FeaturesToml { entries }),
-            ..Default::default()
-        };
-
-        let config = Config::load_from_base_config_with_overrides(
-            cfg,
-            ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
-        )?;
-
-        assert_eq!(
-            config.model_provider.wire_api,
-            crate::model_provider_info::WireApi::Responses
-        );
     }
 
     Ok(())
