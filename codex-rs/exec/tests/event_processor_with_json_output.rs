@@ -708,9 +708,6 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     ApiCollabAgentState {
                         status: ApiCollabAgentStatus::Running,
                         message: None,
-                        agent_type: None,
-                        model: None,
-                        model_provider_id: None,
                     },
                 )]),
                 memory: None,
@@ -755,9 +752,6 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                             CollabAgentState {
                                 status: CollabAgentStatus::Running,
                                 message: None,
-                                agent_type: None,
-                                model: None,
-                                model_provider_id: None,
                             },
                         )]),
                         status: CollabToolCallStatus::Completed,

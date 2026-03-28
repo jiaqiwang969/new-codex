@@ -3460,8 +3460,6 @@ pub struct CollabAgentSpawnBeginEvent {
     pub sender_thread_id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryLink>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_type: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3503,12 +3501,6 @@ pub struct CollabAgentSpawnEndEvent {
     pub sender_thread_id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryLink>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_provider_id: Option<String>,
     /// Thread ID of the newly spawned agent, if it was created.
     pub new_thread_id: Option<ThreadId>,
     /// Optional nickname assigned to the new agent.
@@ -3520,6 +3512,8 @@ pub struct CollabAgentSpawnEndEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
+    /// Effective model used by the spawned agent after inheritance and role overrides.
+    pub model: String,
     /// Effective reasoning effort used by the spawned agent after inheritance and role overrides.
     #[serde(default)]
     pub reasoning_effort: ReasoningEffortConfig,

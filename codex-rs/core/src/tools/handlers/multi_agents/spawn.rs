@@ -54,7 +54,6 @@ impl ToolHandler for Handler {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
                     memory: memory.clone(),
-                    agent_type: role_name.map(str::to_owned),
                     prompt: prompt.clone(),
                     model: args.model.clone().unwrap_or_default(),
                     reasoning_effort: args.reasoning_effort.unwrap_or_default(),
@@ -137,9 +136,6 @@ impl ToolHandler for Handler {
             .as_ref()
             .and_then(|snapshot| snapshot.reasoning_effort)
             .unwrap_or(args.reasoning_effort.unwrap_or_default());
-        let model_provider_id = agent_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.model_provider_id.clone());
         let nickname = new_agent_nickname.clone();
         session
             .send_event(
@@ -148,13 +144,11 @@ impl ToolHandler for Handler {
                     call_id,
                     sender_thread_id: session.conversation_id,
                     memory,
-                    agent_type: role_name.map(str::to_owned),
-                    model: Some(effective_model),
-                    model_provider_id,
                     new_thread_id,
                     new_agent_nickname,
                     new_agent_role,
                     prompt,
+                    model: effective_model,
                     reasoning_effort: effective_reasoning_effort,
                     status,
                 }

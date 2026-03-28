@@ -280,9 +280,6 @@ impl EventProcessorWithJsonOutput {
                                         }
                                     },
                                     message: state.message,
-                                    agent_type: state.agent_type,
-                                    model: state.model,
-                                    model_provider_id: state.model_provider_id,
                                 },
                             )
                         })

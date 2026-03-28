@@ -240,9 +240,6 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
-    pub agent_type: Option<String>,
-    pub model: Option<String>,
-    pub model_provider_id: Option<String>,
 }
 
 /// A call to a collab tool.

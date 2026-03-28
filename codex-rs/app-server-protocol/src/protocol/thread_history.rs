@@ -77,26 +77,14 @@ pub struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
     next_item_index: i64,
-    known_agents: HashMap<String, KnownAgentMetadata>,
     current_rollout_index: usize,
     next_rollout_index: usize,
-}
-
-#[derive(Clone, Debug)]
-struct KnownAgentMetadata {
-    agent_type: Option<String>,
-    model: Option<String>,
-    model_provider_id: Option<String>,
 }
 
 type JsonValue = serde_json::Value;
 
 const MEMORY_SCOPE_VERSION_KEYS: &[&str] = &["memoryScopeVersion", "memory_scope_version"];
 const MEMORY_BINDING_KEY_KEYS: &[&str] = &["memoryBindingKey", "memory_binding_key"];
-
-fn has_agent_metadata(state: &CollabAgentState) -> bool {
-    state.agent_type.is_some() || state.model.is_some() || state.model_provider_id.is_some()
-}
 
 fn get_json_string(
     arguments: &serde_json::Map<String, JsonValue>,
@@ -137,7 +125,6 @@ impl ThreadHistoryBuilder {
             turns: Vec::new(),
             current_turn: None,
             next_item_index: 1,
-            known_agents: HashMap::new(),
             current_rollout_index: 0,
             next_rollout_index: 0,
         }
@@ -690,11 +677,7 @@ impl ThreadHistoryBuilder {
         let (receiver_thread_ids, agents_states) = match &payload.new_thread_id {
             Some(id) => {
                 let receiver_id = id.to_string();
-                let mut received_status = CollabAgentState::from(payload.status.clone());
-                received_status.agent_type = payload.agent_type.clone();
-                received_status.model = payload.model.clone();
-                received_status.model_provider_id = payload.model_provider_id.clone();
-                self.remember_agent_metadata(&receiver_id, &received_status);
+                let received_status = CollabAgentState::from(payload.status.clone());
                 (
                     vec![receiver_id.clone()],
                     [(receiver_id, received_status)].into_iter().collect(),
@@ -709,7 +692,7 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
-            model: payload.model.clone(),
+            model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort),
             agents_states,
             memory,
@@ -746,8 +729,7 @@ impl ThreadHistoryBuilder {
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let mut received_status = CollabAgentState::from(payload.status.clone());
-        self.apply_known_agent_metadata(&receiver_id, &mut received_status);
+        let received_status = CollabAgentState::from(payload.status.clone());
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
@@ -806,12 +788,7 @@ impl ThreadHistoryBuilder {
         let agents_states = payload
             .statuses
             .iter()
-            .map(|(id, status)| {
-                let thread_id = id.to_string();
-                let mut state = CollabAgentState::from(status.clone());
-                self.apply_known_agent_metadata(&thread_id, &mut state);
-                (thread_id, state)
-            })
+            .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
             .collect();
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
@@ -854,8 +831,7 @@ impl ThreadHistoryBuilder {
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let mut state = CollabAgentState::from(payload.status.clone());
-        self.apply_known_agent_metadata(&receiver_id, &mut state);
+        let state = CollabAgentState::from(payload.status.clone());
         let agents_states = [(receiver_id.clone(), state)].into_iter().collect();
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
@@ -901,8 +877,7 @@ impl ThreadHistoryBuilder {
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let mut state = CollabAgentState::from(payload.status.clone());
-        self.apply_known_agent_metadata(&receiver_id, &mut state);
+        let state = CollabAgentState::from(payload.status.clone());
         let agents_states = [(receiver_id.clone(), state)].into_iter().collect();
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
@@ -916,52 +891,6 @@ impl ThreadHistoryBuilder {
             agents_states,
             memory,
         });
-    }
-
-    fn remember_agent_metadata(&mut self, thread_id: &str, state: &CollabAgentState) {
-        if !has_agent_metadata(state) {
-            return;
-        }
-        self.known_agents.insert(
-            thread_id.to_string(),
-            KnownAgentMetadata {
-                agent_type: state.agent_type.clone(),
-                model: state.model.clone(),
-                model_provider_id: state.model_provider_id.clone(),
-            },
-        );
-    }
-
-    fn apply_known_agent_metadata(&self, thread_id: &str, state: &mut CollabAgentState) {
-        if let Some(metadata) = self.known_agents.get(thread_id) {
-            state.agent_type = metadata.agent_type.clone();
-            state.model = metadata.model.clone();
-            state.model_provider_id = metadata.model_provider_id.clone();
-        }
-    }
-
-    fn rebuild_known_agents_from_turns(&mut self) {
-        let mut known_agents = HashMap::new();
-        for turn in &self.turns {
-            for item in &turn.items {
-                if let ThreadItem::CollabAgentToolCall { agents_states, .. } = item {
-                    for (thread_id, state) in agents_states {
-                        if !has_agent_metadata(state) {
-                            continue;
-                        }
-                        known_agents.insert(
-                            thread_id.clone(),
-                            KnownAgentMetadata {
-                                agent_type: state.agent_type.clone(),
-                                model: state.model.clone(),
-                                model_provider_id: state.model_provider_id.clone(),
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        self.known_agents = known_agents;
     }
 
     fn handle_context_compacted(&mut self, _payload: &ContextCompactedEvent) {
@@ -1111,7 +1040,6 @@ impl ThreadHistoryBuilder {
         } else {
             self.turns.truncate(self.turns.len().saturating_sub(n));
         }
-        self.rebuild_known_agents_from_turns();
 
         let item_count: usize = self.turns.iter().map(|t| t.items.len()).sum();
         self.next_item_index = i64::try_from(item_count.saturating_add(1)).unwrap_or(i64::MAX);
@@ -2794,9 +2722,6 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Completed,
                         message: None,
-                        agent_type: None,
-                        model: None,
-                        model_provider_id: None,
                     },
                 )]
                 .into_iter()
@@ -2820,9 +2745,7 @@ mod tests {
                 sender_thread_id: ThreadId::try_from("00000000-0000-0000-0000-000000000001")
                     .expect("valid sender thread id"),
                 memory: None,
-                agent_type: Some("explorer".into()),
-                model: Some("claude-opus-4-6".into()),
-                model_provider_id: Some("anthropic".into()),
+                model: "claude-opus-4-6".into(),
                 new_thread_id: Some(
                     ThreadId::try_from("00000000-0000-0000-0000-000000000002")
                         .expect("valid receiver thread id"),
@@ -2842,32 +2765,16 @@ mod tests {
         let turns = build_turns_from_rollout_items(&items);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].items.len(), 2);
-        assert_eq!(
-            turns[0].items[1],
-            ThreadItem::CollabAgentToolCall {
-                id: "spawn-1".into(),
-                tool: CollabAgentTool::SpawnAgent,
-                status: CollabAgentToolCallStatus::Completed,
-                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
-                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
-                prompt: Some("analyze repository".into()),
-                model: Some("claude-opus-4-6".into()),
-                reasoning_effort: Some(ReasoningEffort::High),
-                agents_states: [(
-                    "00000000-0000-0000-0000-000000000002".into(),
-                    CollabAgentState {
-                        status: crate::protocol::v2::CollabAgentStatus::Running,
-                        message: None,
-                        agent_type: Some("explorer".into()),
-                        model: Some("claude-opus-4-6".into()),
-                        model_provider_id: Some("anthropic".into()),
-                    },
-                )]
-                .into_iter()
-                .collect(),
-                memory: None,
-            }
-        );
+        let item_json = serde_json::to_value(&turns[0].items[1]).expect("serialize item");
+        let agent_state = item_json
+            .get("agentsStates")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|states| states.get("00000000-0000-0000-0000-000000000002"))
+            .and_then(serde_json::Value::as_object)
+            .expect("serialized item should include receiver state");
+        assert_eq!(agent_state.get("agentType"), None);
+        assert_eq!(agent_state.get("model"), None);
+        assert_eq!(agent_state.get("modelProviderId"), None);
     }
 
     #[test]
@@ -2887,9 +2794,7 @@ mod tests {
                 call_id: "spawn-1".into(),
                 sender_thread_id,
                 memory: None,
-                agent_type: Some("explorer".into()),
-                model: Some("claude-sonnet-4-6".into()),
-                model_provider_id: Some("anthropic".into()),
+                model: "claude-sonnet-4-6".into(),
                 new_thread_id: Some(receiver_thread_id),
                 prompt: "inspect code".into(),
                 reasoning_effort: ReasoningEffort::High,
@@ -2915,32 +2820,16 @@ mod tests {
         let turns = build_turns_from_rollout_items(&items);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].items.len(), 3);
-        assert_eq!(
-            turns[0].items[2],
-            ThreadItem::CollabAgentToolCall {
-                id: "close-1".into(),
-                tool: CollabAgentTool::CloseAgent,
-                status: CollabAgentToolCallStatus::Completed,
-                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
-                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
-                prompt: None,
-                model: None,
-                reasoning_effort: None,
-                agents_states: [(
-                    "00000000-0000-0000-0000-000000000002".into(),
-                    CollabAgentState {
-                        status: crate::protocol::v2::CollabAgentStatus::Shutdown,
-                        message: None,
-                        agent_type: Some("explorer".into()),
-                        model: Some("claude-sonnet-4-6".into()),
-                        model_provider_id: Some("anthropic".into()),
-                    },
-                )]
-                .into_iter()
-                .collect(),
-                memory: None,
-            }
-        );
+        let item_json = serde_json::to_value(&turns[0].items[2]).expect("serialize item");
+        let agent_state = item_json
+            .get("agentsStates")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|states| states.get("00000000-0000-0000-0000-000000000002"))
+            .and_then(serde_json::Value::as_object)
+            .expect("serialized item should include receiver state");
+        assert_eq!(agent_state.get("agentType"), None);
+        assert_eq!(agent_state.get("model"), None);
+        assert_eq!(agent_state.get("modelProviderId"), None);
     }
 
     #[test]
@@ -2966,9 +2855,7 @@ mod tests {
                 call_id: "spawn-1".into(),
                 sender_thread_id,
                 memory: None,
-                agent_type: Some("explorer".into()),
-                model: Some("claude-opus-4-6".into()),
-                model_provider_id: Some("anthropic".into()),
+                model: "claude-opus-4-6".into(),
                 new_thread_id: Some(receiver_thread_id),
                 prompt: "inspect code".into(),
                 reasoning_effort: ReasoningEffort::High,
@@ -3033,9 +2920,6 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Shutdown,
                         message: None,
-                        agent_type: None,
-                        model: None,
-                        model_provider_id: None,
                     },
                 )]
                 .into_iter()
@@ -3062,13 +2946,11 @@ mod tests {
                 call_id: "spawn-1".into(),
                 sender_thread_id,
                 memory: None,
-                agent_type: Some("explorer".into()),
                 new_thread_id: Some(spawned_thread_id),
                 new_agent_nickname: Some("Scout".into()),
                 new_agent_role: Some("explorer".into()),
                 prompt: "inspect the repo".into(),
-                model: Some("gpt-5.4-mini".into()),
-                model_provider_id: Some("openai".into()),
+                model: "gpt-5.4-mini".into(),
                 reasoning_effort: ReasoningEffort::High,
                 status: AgentStatus::Running,
             }),
@@ -3081,32 +2963,16 @@ mod tests {
         let turns = build_turns_from_rollout_items(&items);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].items.len(), 2);
-        assert_eq!(
-            turns[0].items[1],
-            ThreadItem::CollabAgentToolCall {
-                id: "spawn-1".into(),
-                tool: CollabAgentTool::SpawnAgent,
-                status: CollabAgentToolCallStatus::Completed,
-                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
-                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
-                prompt: Some("inspect the repo".into()),
-                model: Some("gpt-5.4-mini".into()),
-                reasoning_effort: Some(ReasoningEffort::High),
-                agents_states: [(
-                    "00000000-0000-0000-0000-000000000002".into(),
-                    CollabAgentState {
-                        status: crate::protocol::v2::CollabAgentStatus::Running,
-                        message: None,
-                        agent_type: Some("explorer".into()),
-                        model: Some("gpt-5.4-mini".into()),
-                        model_provider_id: Some("openai".into()),
-                    },
-                )]
-                .into_iter()
-                .collect(),
-                memory: None,
-            }
-        );
+        let item_json = serde_json::to_value(&turns[0].items[1]).expect("serialize item");
+        let agent_state = item_json
+            .get("agentsStates")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|states| states.get("00000000-0000-0000-0000-000000000002"))
+            .and_then(serde_json::Value::as_object)
+            .expect("serialized item should include receiver state");
+        assert_eq!(agent_state.get("agentType"), None);
+        assert_eq!(agent_state.get("model"), None);
+        assert_eq!(agent_state.get("modelProviderId"), None);
     }
 
     #[test]
@@ -3127,7 +2993,6 @@ mod tests {
                     scope_version: Some("cwd:aaaaaaaaaaaa".into()),
                     binding_key: Some(format!("cwd:aaaaaaaaaaaa:{}", "a".repeat(64))),
                 }),
-                agent_type: None,
                 prompt: "inspect the repo".into(),
                 model: "gpt-5.4-mini".into(),
                 reasoning_effort: ReasoningEffort::default(),
@@ -3226,9 +3091,6 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Interrupted,
                         message: None,
-                        agent_type: None,
-                        model: None,
-                        model_provider_id: None,
                     },
                 )]
                 .into_iter()

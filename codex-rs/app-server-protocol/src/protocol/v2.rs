@@ -4722,9 +4722,6 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
-    pub agent_type: Option<String>,
-    pub model: Option<String>,
-    pub model_provider_id: Option<String>,
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
@@ -4733,51 +4730,30 @@ impl From<CoreAgentStatus> for CollabAgentState {
             CoreAgentStatus::PendingInit => Self {
                 status: CollabAgentStatus::PendingInit,
                 message: None,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
             CoreAgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
                 message: None,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
             CoreAgentStatus::Interrupted => Self {
                 status: CollabAgentStatus::Interrupted,
                 message: None,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
             CoreAgentStatus::Completed(message) => Self {
                 status: CollabAgentStatus::Completed,
                 message,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
             CoreAgentStatus::Errored(message) => Self {
                 status: CollabAgentStatus::Errored,
                 message: Some(message),
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
             CoreAgentStatus::Shutdown => Self {
                 status: CollabAgentStatus::Shutdown,
                 message: None,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
             CoreAgentStatus::NotFound => Self {
                 status: CollabAgentStatus::NotFound,
                 message: None,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             },
         }
     }
@@ -6095,9 +6071,6 @@ mod tests {
             CollabAgentState {
                 status: CollabAgentStatus::Interrupted,
                 message: None,
-                agent_type: None,
-                model: None,
-                model_provider_id: None,
             }
         );
     }

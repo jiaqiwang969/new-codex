@@ -2272,7 +2272,6 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             call_id: "call-spawn".to_string(),
             sender_thread_id,
             memory: None,
-            agent_type: Some("explorer".to_string()),
             prompt: "Explore the repo".to_string(),
             model: "gpt-5".to_string(),
             reasoning_effort: ReasoningEffortConfig::High,
@@ -2284,9 +2283,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             call_id: "call-spawn".to_string(),
             sender_thread_id,
             memory: None,
-            agent_type: Some("explorer".to_string()),
-            model: Some("gpt-5".to_string()),
-            model_provider_id: None,
+            model: "gpt-5".to_string(),
             new_thread_id: Some(spawned_thread_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
@@ -2310,7 +2307,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 }
 
 #[tokio::test]
-async fn collab_interaction_end_reuses_spawned_agent_metadata() {
+async fn collab_interaction_end_renders_explicit_agent_metadata_only() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
     let sender_thread_id = ThreadId::new();
     let spawned_thread_id = ThreadId::new();
@@ -2321,7 +2318,6 @@ async fn collab_interaction_end_reuses_spawned_agent_metadata() {
             call_id: "call-spawn".to_string(),
             sender_thread_id,
             memory: None,
-            agent_type: Some("explorer".to_string()),
             prompt: "Explore the repo".to_string(),
             model: "gpt-5".to_string(),
             reasoning_effort: ReasoningEffortConfig::High,
@@ -2333,9 +2329,7 @@ async fn collab_interaction_end_reuses_spawned_agent_metadata() {
             call_id: "call-spawn".to_string(),
             sender_thread_id,
             memory: None,
-            agent_type: Some("explorer".to_string()),
-            model: Some("gpt-5-mini".to_string()),
-            model_provider_id: Some("anthropic".to_string()),
+            model: "gpt-5-mini".to_string(),
             new_thread_id: Some(spawned_thread_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
@@ -2367,12 +2361,16 @@ async fn collab_interaction_end_reuses_spawned_agent_metadata() {
         .join("\n");
 
     assert!(
-        rendered.contains("gpt-5-mini"),
-        "expected interaction history to reuse spawned model metadata, got {rendered:?}"
+        rendered.contains("Sent input to Robie [explorer]"),
+        "expected interaction history to render explicit nickname and role, got {rendered:?}"
     );
     assert!(
-        rendered.contains("anthropic"),
-        "expected interaction history to reuse spawned provider metadata, got {rendered:?}"
+        !rendered.contains("gpt-5-mini"),
+        "expected interaction history to drop spawned model metadata, got {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("anthropic"),
+        "expected interaction history to drop spawned provider metadata, got {rendered:?}"
     );
 }
 
@@ -4930,9 +4928,6 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Completed,
                             message: Some("Done".to_string()),
-                            agent_type: None,
-                            model: None,
-                            model_provider_id: None,
                         },
                     ),
                     (
@@ -4940,9 +4935,6 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Running,
                             message: None,
-                            agent_type: None,
-                            model: None,
-                            model_provider_id: None,
                         },
                     ),
                 ]),
@@ -4967,6 +4959,11 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         ThreadId::from_string("019cff70-2599-75e2-af72-b90000000002").expect("valid thread id");
     let spawned_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b91781b41a8e").expect("valid thread id");
+    chat.set_collab_agent_metadata(
+        spawned_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -5006,9 +5003,6 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
-                        agent_type: Some("explorer".to_string()),
-                        model: Some("gpt-5-mini".to_string()),
-                        model_provider_id: Some("anthropic".to_string()),
                     },
                 )]),
                 memory: None,
@@ -5023,16 +5017,16 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        combined.contains("explorer"),
-        "expected live spawn history to preserve agent type, got {combined:?}"
+        combined.contains("Spawned Robie [explorer] (gpt-5 high)"),
+        "expected live spawn history to preserve requested model and cached metadata, got {combined:?}"
     );
     assert!(
-        combined.contains("gpt-5-mini"),
-        "expected live spawn history to preserve completed agent model, got {combined:?}"
+        !combined.contains("gpt-5-mini"),
+        "expected live spawn history to drop completed agent model metadata, got {combined:?}"
     );
     assert!(
-        combined.contains("anthropic"),
-        "expected live spawn history to preserve completed agent provider, got {combined:?}"
+        !combined.contains("anthropic"),
+        "expected live spawn history to drop completed agent provider metadata, got {combined:?}"
     );
     assert_snapshot!(
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
@@ -5047,6 +5041,11 @@ async fn live_app_server_completed_only_spawn_uses_completed_item_effort_fallbac
         ThreadId::from_string("019cff70-2599-75e2-af72-b90000000002").expect("valid thread id");
     let spawned_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b91781b41a8e").expect("valid thread id");
+    chat.set_collab_agent_metadata(
+        spawned_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -5066,9 +5065,6 @@ async fn live_app_server_completed_only_spawn_uses_completed_item_effort_fallbac
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
-                        agent_type: Some("explorer".to_string()),
-                        model: Some("gpt-5-mini".to_string()),
-                        model_provider_id: Some("anthropic".to_string()),
                     },
                 )]),
                 memory: None,

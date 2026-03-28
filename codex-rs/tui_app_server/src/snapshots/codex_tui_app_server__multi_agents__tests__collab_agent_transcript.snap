@@ -3,9 +3,7 @@ source: tui_app_server/src/multi_agents.rs
 expression: snapshot
 ---
 • Spawned Robie [explorer] (gpt-5 high)
-  └ role: explorer
-    model: gpt-5
-    Compute 11! and reply with just the integer result.
+  └ Compute 11! and reply with just the integer result.
 
 • Sent input to Robie [explorer]
   └ Please continue and return the answer only.

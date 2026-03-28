@@ -296,7 +296,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 }
 
 #[tokio::test]
-async fn spawn_agent_emits_model_provider_id_in_spawn_end_event() {
+async fn spawn_agent_emits_effective_model_in_spawn_end_event() {
     let (mut session, mut turn, rx) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
     Arc::get_mut(&mut session)
@@ -338,7 +338,13 @@ async fn spawn_agent_emits_model_provider_id_in_spawn_end_event() {
     .await
     .expect("spawn end event should be emitted");
 
-    assert_eq!(event.model_provider_id.as_deref(), Some("ollama"));
+    let snapshot = manager
+        .get_thread(event.new_thread_id.expect("spawned agent thread id"))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(event.model, snapshot.model);
 }
 
 #[tokio::test]
@@ -1211,7 +1217,7 @@ async fn multi_agent_v2_spawn_includes_agent_id_key_when_named() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_emits_model_provider_id_in_spawn_end_event() {
+async fn multi_agent_v2_spawn_emits_effective_model_in_spawn_end_event() {
     let (mut session, mut turn, rx) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
     let config = {
@@ -1264,7 +1270,13 @@ async fn multi_agent_v2_spawn_emits_model_provider_id_in_spawn_end_event() {
     .await
     .expect("spawn end event should be emitted");
 
-    assert_eq!(event.model_provider_id.as_deref(), Some("ollama"));
+    let snapshot = manager
+        .get_thread(event.new_thread_id.expect("spawned agent thread id"))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(event.model, snapshot.model);
 }
 
 #[tokio::test]

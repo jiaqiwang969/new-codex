@@ -148,7 +148,6 @@ use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::CollabAgentRef;
 #[cfg(test)]
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
-use codex_protocol::protocol::CollabAgentSpawnEndEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::DeprecationNoticeEvent;
@@ -952,9 +951,6 @@ pub(crate) struct ChatWidget {
 struct CollabAgentMetadata {
     agent_nickname: Option<String>,
     agent_role: Option<String>,
-    agent_type: Option<String>,
-    model: Option<String>,
-    model_provider_id: Option<String>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1636,9 +1632,13 @@ impl ChatWidget {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) {
-        let entry = self.collab_agent_metadata.entry(thread_id).or_default();
-        entry.agent_nickname = agent_nickname;
-        entry.agent_role = agent_role;
+        self.collab_agent_metadata.insert(
+            thread_id,
+            CollabAgentMetadata {
+                agent_nickname,
+                agent_role,
+            },
+        );
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
@@ -1647,58 +1647,6 @@ impl ChatWidget {
             .get(&thread_id)
             .cloned()
             .unwrap_or_default()
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn remember_spawned_collab_agent(&mut self, ev: &CollabAgentSpawnEndEvent) {
-        let Some(thread_id) = ev.new_thread_id else {
-            return;
-        };
-        self.remember_collab_agent_details(
-            thread_id,
-            ev.agent_type.clone(),
-            ev.model.clone(),
-            ev.model_provider_id.clone(),
-        );
-    }
-
-    fn remember_collab_agent_details(
-        &mut self,
-        thread_id: ThreadId,
-        agent_type: Option<String>,
-        model: Option<String>,
-        model_provider_id: Option<String>,
-    ) {
-        if agent_type.is_none() && model.is_none() && model_provider_id.is_none() {
-            return;
-        }
-
-        let entry = self.collab_agent_metadata.entry(thread_id).or_default();
-        entry.agent_type = agent_type;
-        entry.model = model;
-        entry.model_provider_id = model_provider_id;
-    }
-
-    fn known_collab_agents(&self) -> HashMap<String, multi_agents::AgentMetadata> {
-        self.collab_agent_metadata
-            .iter()
-            .filter_map(|(thread_id, metadata)| {
-                if metadata.agent_type.is_none()
-                    && metadata.model.is_none()
-                    && metadata.model_provider_id.is_none()
-                {
-                    return None;
-                }
-                Some((
-                    thread_id.to_string(),
-                    multi_agents::AgentMetadata {
-                        agent_type: metadata.agent_type.clone(),
-                        model: metadata.model.clone(),
-                        model_provider_id: metadata.model_provider_id.clone(),
-                    },
-                ))
-            })
-            .collect()
     }
 
     fn realtime_conversation_enabled(&self) -> bool {
@@ -3689,17 +3637,6 @@ impl ChatWidget {
             .and_then(|thread_id| app_server_collab_thread_id_to_core(thread_id));
         let first_receiver_metadata =
             first_receiver.map(|thread_id| self.collab_agent_metadata(thread_id));
-        for (thread_id, state) in &agents_states {
-            let Some(thread_id) = app_server_collab_thread_id_to_core(thread_id) else {
-                continue;
-            };
-            self.remember_collab_agent_details(
-                thread_id,
-                state.agent_type.clone(),
-                state.model.clone(),
-                state.model_provider_id.clone(),
-            );
-        }
 
         match tool {
             CollabAgentTool::SpawnAgent => {
@@ -3728,26 +3665,11 @@ impl ChatWidget {
                     let first_receiver_state = first_receiver
                         .as_ref()
                         .and_then(|thread_id| agents_states.get(&thread_id.to_string()));
-                    if let (Some(thread_id), Some(state)) =
-                        (first_receiver.as_ref(), first_receiver_state)
-                    {
-                        self.remember_collab_agent_details(
-                            *thread_id,
-                            state.agent_type.clone(),
-                            state.model.clone(),
-                            state.model_provider_id.clone(),
-                        );
-                    }
                     self.on_collab_event(multi_agents::spawn_end(
                         codex_protocol::protocol::CollabAgentSpawnEndEvent {
                             call_id: id,
                             sender_thread_id,
                             memory: None,
-                            agent_type: first_receiver_state
-                                .and_then(|state| state.agent_type.clone()),
-                            model: first_receiver_state.and_then(|state| state.model.clone()),
-                            model_provider_id: first_receiver_state
-                                .and_then(|state| state.model_provider_id.clone()),
                             new_thread_id: first_receiver,
                             new_agent_nickname: first_receiver_metadata
                                 .as_ref()
@@ -3756,10 +3678,8 @@ impl ChatWidget {
                                 .as_ref()
                                 .and_then(|metadata| metadata.agent_role.clone()),
                             prompt: prompt.unwrap_or_default(),
-                            reasoning_effort: spawn_request
-                                .as_ref()
-                                .map(|request| request.reasoning_effort)
-                                .unwrap_or_default(),
+                            model: String::new(),
+                            reasoning_effort: ReasoningEffortConfig::Medium,
                             status: first_receiver_state
                                 .map(app_server_collab_state_to_core)
                                 .unwrap_or_else(|| {
@@ -3774,7 +3694,6 @@ impl ChatWidget {
                 if let Some(receiver_thread_id) = first_receiver
                     && !matches!(status, CollabAgentToolCallStatus::InProgress)
                 {
-                    let known_agents = self.known_collab_agents();
                     self.on_collab_event(multi_agents::interaction_end(
                         codex_protocol::protocol::CollabAgentInteractionEndEvent {
                             call_id: id,
@@ -3796,13 +3715,11 @@ impl ChatWidget {
                                     AgentStatus::Errored("Agent interaction failed".into())
                                 }),
                         },
-                        &known_agents,
                     ));
                 }
             }
             CollabAgentTool::ResumeAgent => {
                 if let Some(receiver_thread_id) = first_receiver {
-                    let known_agents = self.known_collab_agents();
                     if matches!(status, CollabAgentToolCallStatus::InProgress) {
                         self.on_collab_event(multi_agents::resume_begin(
                             codex_protocol::protocol::CollabResumeBeginEvent {
@@ -3817,7 +3734,6 @@ impl ChatWidget {
                                     .as_ref()
                                     .and_then(|metadata| metadata.agent_role.clone()),
                             },
-                            &known_agents,
                         ));
                     } else {
                         self.on_collab_event(multi_agents::resume_end(
@@ -3840,13 +3756,11 @@ impl ChatWidget {
                                         AgentStatus::Errored("Agent resume failed".into())
                                     }),
                             },
-                            &known_agents,
                         ));
                     }
                 }
             }
             CollabAgentTool::Wait => {
-                let known_agents = self.known_collab_agents();
                 if matches!(status, CollabAgentToolCallStatus::InProgress) {
                     self.on_collab_event(multi_agents::waiting_begin(
                         codex_protocol::protocol::CollabWaitingBeginEvent {
@@ -3864,7 +3778,6 @@ impl ChatWidget {
                             ),
                             call_id: id,
                         },
-                        &known_agents,
                     ));
                 } else {
                     let (agent_statuses, statuses) = app_server_collab_agent_statuses_to_core(
@@ -3880,7 +3793,6 @@ impl ChatWidget {
                             agent_statuses,
                             statuses,
                         },
-                        &known_agents,
                     ));
                 }
             }
@@ -3888,7 +3800,6 @@ impl ChatWidget {
                 if let Some(receiver_thread_id) = first_receiver
                     && !matches!(status, CollabAgentToolCallStatus::InProgress)
                 {
-                    let known_agents = self.known_collab_agents();
                     self.on_collab_event(multi_agents::close_end(
                         codex_protocol::protocol::CollabCloseEndEvent {
                             call_id: id,
@@ -3909,7 +3820,6 @@ impl ChatWidget {
                                     AgentStatus::Errored("Agent close failed".into())
                                 }),
                         },
-                        &known_agents,
                     ));
                 }
             }
@@ -6989,36 +6899,21 @@ impl ChatWidget {
                 );
             }
             EventMsg::CollabAgentSpawnEnd(ev) => {
-                self.remember_spawned_collab_agent(&ev);
                 let spawn_request = self.pending_collab_spawn_requests.remove(&ev.call_id);
                 self.on_collab_event(multi_agents::spawn_end(ev, spawn_request.as_ref()));
             }
             EventMsg::CollabAgentInteractionBegin(_) => {}
             EventMsg::CollabAgentInteractionEnd(ev) => {
-                let known_agents = self.known_collab_agents();
-                self.on_collab_event(multi_agents::interaction_end(ev, &known_agents))
+                self.on_collab_event(multi_agents::interaction_end(ev))
             }
             EventMsg::CollabWaitingBegin(ev) => {
-                let known_agents = self.known_collab_agents();
-                self.on_collab_event(multi_agents::waiting_begin(ev, &known_agents))
+                self.on_collab_event(multi_agents::waiting_begin(ev))
             }
-            EventMsg::CollabWaitingEnd(ev) => {
-                let known_agents = self.known_collab_agents();
-                self.on_collab_event(multi_agents::waiting_end(ev, &known_agents))
-            }
+            EventMsg::CollabWaitingEnd(ev) => self.on_collab_event(multi_agents::waiting_end(ev)),
             EventMsg::CollabCloseBegin(_) => {}
-            EventMsg::CollabCloseEnd(ev) => {
-                let known_agents = self.known_collab_agents();
-                self.on_collab_event(multi_agents::close_end(ev, &known_agents))
-            }
-            EventMsg::CollabResumeBegin(ev) => {
-                let known_agents = self.known_collab_agents();
-                self.on_collab_event(multi_agents::resume_begin(ev, &known_agents))
-            }
-            EventMsg::CollabResumeEnd(ev) => {
-                let known_agents = self.known_collab_agents();
-                self.on_collab_event(multi_agents::resume_end(ev, &known_agents))
-            }
+            EventMsg::CollabCloseEnd(ev) => self.on_collab_event(multi_agents::close_end(ev)),
+            EventMsg::CollabResumeBegin(ev) => self.on_collab_event(multi_agents::resume_begin(ev)),
+            EventMsg::CollabResumeEnd(ev) => self.on_collab_event(multi_agents::resume_end(ev)),
             EventMsg::ThreadRolledBack(rollback) => {
                 // Conservatively clear `/copy` state on rollback. The app layer trims visible
                 // transcript cells, but we do not maintain rollback-aware raw-markdown history yet,

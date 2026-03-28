@@ -35,13 +35,6 @@ const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct AgentMetadata {
-    pub(crate) agent_type: Option<String>,
-    pub(crate) model: Option<String>,
-    pub(crate) model_provider_id: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.
@@ -185,9 +178,6 @@ pub(crate) fn spawn_end(
     let CollabAgentSpawnEndEvent {
         call_id: _,
         sender_thread_id: _,
-        agent_type,
-        model,
-        model_provider_id,
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
@@ -210,25 +200,13 @@ pub(crate) fn spawn_end(
     };
 
     let mut details = Vec::new();
-    if let Some(agent_type) = agent_type {
-        details.push(detail_line("role", agent_type));
-    }
-    if let Some(model) = model {
-        details.push(detail_line("model", model));
-    }
-    if let Some(model_provider_id) = model_provider_id {
-        details.push(detail_line("provider", model_provider_id));
-    }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
     collab_event(title, details)
 }
 
-pub(crate) fn interaction_end(
-    ev: CollabAgentInteractionEndEvent,
-    known_agents: &HashMap<String, AgentMetadata>,
-) -> PlainHistoryCell {
+pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistoryCell {
     let CollabAgentInteractionEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -251,17 +229,13 @@ pub(crate) fn interaction_end(
     );
 
     let mut details = Vec::new();
-    append_agent_metadata_details(&receiver_thread_id.to_string(), known_agents, &mut details);
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
     collab_event(title, details)
 }
 
-pub(crate) fn waiting_begin(
-    ev: CollabWaitingBeginEvent,
-    _known_agents: &HashMap<String, AgentMetadata>,
-) -> PlainHistoryCell {
+pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
     let CollabWaitingBeginEvent {
         sender_thread_id: _,
         memory: _,
@@ -293,10 +267,7 @@ pub(crate) fn waiting_begin(
     collab_event(title, details)
 }
 
-pub(crate) fn waiting_end(
-    ev: CollabWaitingEndEvent,
-    known_agents: &HashMap<String, AgentMetadata>,
-) -> PlainHistoryCell {
+pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
     let CollabWaitingEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -304,17 +275,11 @@ pub(crate) fn waiting_end(
         agent_statuses,
         statuses,
     } = ev;
-    let mut details = wait_complete_lines(&statuses, &agent_statuses);
-    for entry in agent_statuses.iter() {
-        append_agent_metadata_details(&entry.thread_id.to_string(), known_agents, &mut details);
-    }
+    let details = wait_complete_lines(&statuses, &agent_statuses);
     collab_event(title_text("Finished waiting"), details)
 }
 
-pub(crate) fn close_end(
-    ev: CollabCloseEndEvent,
-    _known_agents: &HashMap<String, AgentMetadata>,
-) -> PlainHistoryCell {
+pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
     let CollabCloseEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -339,10 +304,7 @@ pub(crate) fn close_end(
     )
 }
 
-pub(crate) fn resume_begin(
-    ev: CollabResumeBeginEvent,
-    _known_agents: &HashMap<String, AgentMetadata>,
-) -> PlainHistoryCell {
+pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
     let CollabResumeBeginEvent {
         call_id: _,
         sender_thread_id: _,
@@ -366,10 +328,7 @@ pub(crate) fn resume_begin(
     )
 }
 
-pub(crate) fn resume_end(
-    ev: CollabResumeEndEvent,
-    _known_agents: &HashMap<String, AgentMetadata>,
-) -> PlainHistoryCell {
+pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
     let CollabResumeEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -477,30 +436,6 @@ fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<
     };
 
     vec![Span::from(" ").dim(), Span::from(details).magenta()]
-}
-
-fn detail_line(label: &str, value: impl Into<String>) -> Line<'static> {
-    let value: String = value.into();
-    vec![Span::from(format!("{label}: ")).dim(), Span::from(value)].into()
-}
-
-fn append_agent_metadata_details(
-    thread_id: &str,
-    known_agents: &HashMap<String, AgentMetadata>,
-    details: &mut Vec<Line<'static>>,
-) {
-    let Some(metadata) = known_agents.get(thread_id) else {
-        return;
-    };
-    if let Some(agent_type) = metadata.agent_type.as_deref() {
-        details.push(detail_line("role", agent_type.to_string()));
-    }
-    if let Some(model) = metadata.model.as_deref() {
-        details.push(detail_line("model", model.to_string()));
-    }
-    if let Some(model_provider_id) = metadata.model_provider_id.as_deref() {
-        details.push(detail_line("provider", model_provider_id.to_string()));
-    }
 }
 
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
@@ -677,9 +612,7 @@ mod tests {
                 call_id: "call-spawn".to_string(),
                 sender_thread_id,
                 memory: None,
-                agent_type: Some("explorer".to_string()),
-                model: Some("gpt-5".to_string()),
-                model_provider_id: None,
+                model: "gpt-5".to_string(),
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
@@ -693,35 +626,28 @@ mod tests {
             }),
         );
 
-        let known_agents = HashMap::new();
-        let send = interaction_end(
-            CollabAgentInteractionEndEvent {
-                call_id: "call-send".to_string(),
-                sender_thread_id,
-                memory: None,
-                receiver_thread_id: robie_id,
-                receiver_agent_nickname: Some("Robie".to_string()),
-                receiver_agent_role: Some("explorer".to_string()),
-                prompt: "Please continue and return the answer only.".to_string(),
-                status: AgentStatus::Running,
-            },
-            &known_agents,
-        );
+        let send = interaction_end(CollabAgentInteractionEndEvent {
+            call_id: "call-send".to_string(),
+            sender_thread_id,
+            memory: None,
+            receiver_thread_id: robie_id,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            prompt: "Please continue and return the answer only.".to_string(),
+            status: AgentStatus::Running,
+        });
 
-        let waiting = waiting_begin(
-            CollabWaitingBeginEvent {
-                sender_thread_id,
-                memory: None,
-                receiver_thread_ids: vec![robie_id],
-                receiver_agents: vec![CollabAgentRef {
-                    thread_id: robie_id,
-                    agent_nickname: Some("Robie".to_string()),
-                    agent_role: Some("explorer".to_string()),
-                }],
-                call_id: "call-wait".to_string(),
-            },
-            &known_agents,
-        );
+        let waiting = waiting_begin(CollabWaitingBeginEvent {
+            sender_thread_id,
+            memory: None,
+            receiver_thread_ids: vec![robie_id],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: robie_id,
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+            }],
+            call_id: "call-wait".to_string(),
+        });
 
         let mut statuses = HashMap::new();
         statuses.insert(
@@ -729,42 +655,36 @@ mod tests {
             AgentStatus::Completed(Some("39916800".to_string())),
         );
         statuses.insert(bob_id, AgentStatus::Errored("tool timeout".to_string()));
-        let finished = waiting_end(
-            CollabWaitingEndEvent {
-                sender_thread_id,
-                memory: None,
-                call_id: "call-wait".to_string(),
-                agent_statuses: vec![
-                    CollabAgentStatusEntry {
-                        thread_id: robie_id,
-                        agent_nickname: Some("Robie".to_string()),
-                        agent_role: Some("explorer".to_string()),
-                        status: AgentStatus::Completed(Some("39916800".to_string())),
-                    },
-                    CollabAgentStatusEntry {
-                        thread_id: bob_id,
-                        agent_nickname: Some("Bob".to_string()),
-                        agent_role: Some("worker".to_string()),
-                        status: AgentStatus::Errored("tool timeout".to_string()),
-                    },
-                ],
-                statuses,
-            },
-            &known_agents,
-        );
+        let finished = waiting_end(CollabWaitingEndEvent {
+            sender_thread_id,
+            memory: None,
+            call_id: "call-wait".to_string(),
+            agent_statuses: vec![
+                CollabAgentStatusEntry {
+                    thread_id: robie_id,
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    status: AgentStatus::Completed(Some("39916800".to_string())),
+                },
+                CollabAgentStatusEntry {
+                    thread_id: bob_id,
+                    agent_nickname: Some("Bob".to_string()),
+                    agent_role: Some("worker".to_string()),
+                    status: AgentStatus::Errored("tool timeout".to_string()),
+                },
+            ],
+            statuses,
+        });
 
-        let close = close_end(
-            CollabCloseEndEvent {
-                call_id: "call-close".to_string(),
-                sender_thread_id,
-                memory: None,
-                receiver_thread_id: robie_id,
-                receiver_agent_nickname: Some("Robie".to_string()),
-                receiver_agent_role: Some("explorer".to_string()),
-                status: AgentStatus::Completed(Some("39916800".to_string())),
-            },
-            &known_agents,
-        );
+        let close = close_end(CollabCloseEndEvent {
+            call_id: "call-close".to_string(),
+            sender_thread_id,
+            memory: None,
+            receiver_thread_id: robie_id,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            status: AgentStatus::Completed(Some("39916800".to_string())),
+        });
 
         let snapshot = [spawn, send, waiting, finished, close]
             .iter()
@@ -835,9 +755,7 @@ mod tests {
                 call_id: "call-spawn".to_string(),
                 sender_thread_id,
                 memory: None,
-                agent_type: Some("explorer".to_string()),
-                model: Some("gpt-5".to_string()),
-                model_provider_id: None,
+                model: "gpt-5".to_string(),
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
@@ -864,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_end_renders_agent_metadata_details() {
+    fn spawn_end_renders_role_and_requested_model_details() {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
             .expect("valid sender thread id");
         let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
@@ -874,9 +792,7 @@ mod tests {
                 call_id: "call-spawn".to_string(),
                 sender_thread_id,
                 memory: None,
-                agent_type: Some("explorer".to_string()),
-                model: Some("gpt-5-mini".to_string()),
-                model_provider_id: Some("anthropic".to_string()),
+                model: "gpt-5-mini".to_string(),
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
@@ -896,12 +812,8 @@ mod tests {
             "expected role metadata in spawn history, got {rendered:?}"
         );
         assert!(
-            rendered.contains("gpt-5-mini"),
-            "expected completed agent model in spawn history, got {rendered:?}"
-        );
-        assert!(
-            rendered.contains("anthropic"),
-            "expected provider metadata in spawn history, got {rendered:?}"
+            rendered.contains("gpt-5 high"),
+            "expected requested model details in spawn history, got {rendered:?}"
         );
     }
 
@@ -912,18 +824,15 @@ mod tests {
         let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
             .expect("valid robie thread id");
 
-        let cell = resume_end(
-            CollabResumeEndEvent {
-                call_id: "call-resume".to_string(),
-                sender_thread_id,
-                memory: None,
-                receiver_thread_id: robie_id,
-                receiver_agent_nickname: Some("Robie".to_string()),
-                receiver_agent_role: Some("explorer".to_string()),
-                status: AgentStatus::Interrupted,
-            },
-            &HashMap::new(),
-        );
+        let cell = resume_end(CollabResumeEndEvent {
+            call_id: "call-resume".to_string(),
+            sender_thread_id,
+            memory: None,
+            receiver_thread_id: robie_id,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            status: AgentStatus::Interrupted,
+        });
 
         assert_snapshot!("collab_resume_interrupted", cell_to_text(&cell));
     }

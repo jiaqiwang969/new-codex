@@ -2,8 +2,5 @@
 source: tui_app_server/src/chatwidget/tests.rs
 expression: combined
 ---
-• Spawned 019cff70-2599-75e2-af72-b91781b41a8e (gpt-5 high)
-  └ role: explorer
-    model: gpt-5-mini
-    provider: anthropic
-    Explore the repo
+• Spawned Robie [explorer] (gpt-5 high)
+  └ Explore the repo

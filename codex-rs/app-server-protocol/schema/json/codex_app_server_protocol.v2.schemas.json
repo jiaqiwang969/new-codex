@@ -2350,25 +2350,7 @@
     },
     "CollabAgentState": {
       "properties": {
-        "agentType": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "model": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "modelProviderId": {
           "type": [
             "string",
             "null"

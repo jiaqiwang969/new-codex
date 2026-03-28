@@ -1096,16 +1096,10 @@ pub(crate) async fn apply_bespoke_event_handling(
                 _ if has_receiver => V2CollabToolCallStatus::Completed,
                 _ => V2CollabToolCallStatus::Failed,
             };
-            let agent_type = end_event.agent_type.clone();
-            let model = end_event.model.clone();
-            let model_provider_id = end_event.model_provider_id.clone();
             let (receiver_thread_ids, agents_states) = match end_event.new_thread_id {
                 Some(id) => {
                     let receiver_id = id.to_string();
-                    let mut received_status = V2CollabAgentStatus::from(end_event.status.clone());
-                    received_status.agent_type = agent_type;
-                    received_status.model = model.clone();
-                    received_status.model_provider_id = model_provider_id;
+                    let received_status = V2CollabAgentStatus::from(end_event.status.clone());
                     (
                         vec![receiver_id.clone()],
                         [(receiver_id, received_status)].into_iter().collect(),
@@ -1120,7 +1114,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: Some(end_event.prompt),
-                model: end_event.model,
+                model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
                 agents_states,
                 memory,

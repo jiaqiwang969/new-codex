@@ -1855,11 +1855,27 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         agent_state.status
     );
     assert_eq!(agent_state.message, None);
-    assert_eq!(agent_state.agent_type, None);
-    assert_eq!(
-        agent_state.model_provider_id.as_deref(),
-        Some("mock_provider")
-    );
+    let spawn_completed_json = serde_json::to_value(&ThreadItem::CollabAgentToolCall {
+        id,
+        tool,
+        status,
+        sender_thread_id,
+        receiver_thread_ids,
+        prompt,
+        model,
+        reasoning_effort,
+        agents_states,
+        memory,
+    })?;
+    let agent_state_json = spawn_completed_json
+        .get("agentsStates")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|states| states.get(&receiver_thread_id))
+        .and_then(serde_json::Value::as_object)
+        .expect("serialized spawn completion should include child agent state");
+    assert_eq!(agent_state_json.get("agentType"), None);
+    assert_eq!(agent_state_json.get("model"), None);
+    assert_eq!(agent_state_json.get("modelProviderId"), None);
 
     let turn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
@@ -2046,11 +2062,27 @@ config_file = "./custom-role.toml"
         agent_state.status
     );
     assert_eq!(agent_state.message, None);
-    assert_eq!(agent_state.agent_type.as_deref(), Some("custom"));
-    assert_eq!(
-        agent_state.model_provider_id.as_deref(),
-        Some("mock_provider")
-    );
+    let spawn_completed_json = serde_json::to_value(&ThreadItem::CollabAgentToolCall {
+        id,
+        tool,
+        status,
+        sender_thread_id,
+        receiver_thread_ids,
+        prompt,
+        model,
+        reasoning_effort,
+        agents_states,
+        memory,
+    })?;
+    let agent_state_json = spawn_completed_json
+        .get("agentsStates")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|states| states.get(&receiver_thread_id))
+        .and_then(serde_json::Value::as_object)
+        .expect("serialized spawn completion should include child agent state");
+    assert_eq!(agent_state_json.get("agentType"), None);
+    assert_eq!(agent_state_json.get("model"), None);
+    assert_eq!(agent_state_json.get("modelProviderId"), None);
 
     let turn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
