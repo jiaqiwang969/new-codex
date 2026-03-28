@@ -639,21 +639,6 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            let cli_kv_overrides = exec_cli
-                .config_overrides
-                .parse_overrides()
-                .map_err(anyhow::Error::msg)?;
-            let overrides = codex_core::config::ConfigOverrides {
-                config_profile: exec_cli.config_profile.clone(),
-                ..Default::default()
-            };
-            let _config =
-                codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
-                    cli_kv_overrides,
-                    overrides,
-                )
-                .await?;
-
             codex_exec::run_main(exec_cli, arg0_paths.clone()).await?;
         }
         Some(Subcommand::Review(review_args)) => {
@@ -668,21 +653,6 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
             );
-            let cli_kv_overrides = exec_cli
-                .config_overrides
-                .parse_overrides()
-                .map_err(anyhow::Error::msg)?;
-            let overrides = codex_core::config::ConfigOverrides {
-                config_profile: exec_cli.config_profile.clone(),
-                ..Default::default()
-            };
-            let _config =
-                codex_core::config::Config::load_with_cli_overrides_and_harness_overrides(
-                    cli_kv_overrides,
-                    overrides,
-                )
-                .await?;
-
             codex_exec::run_main(exec_cli, arg0_paths.clone()).await?;
         }
         Some(Subcommand::McpServer) => {
