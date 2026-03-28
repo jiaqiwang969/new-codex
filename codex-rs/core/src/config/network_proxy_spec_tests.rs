@@ -1,5 +1,16 @@
 use super::*;
+use crate::config::Config;
+use crate::config::ConfigOverrides;
+use crate::config::ConfigToml;
+use crate::config::permissions::FilesystemPermissionToml;
+use crate::config::permissions::FilesystemPermissionsToml;
+use crate::config::permissions::NetworkToml;
+use crate::config::permissions::PermissionProfileToml;
+use crate::config::permissions::PermissionsToml;
+use codex_protocol::permissions::FileSystemAccessMode;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
+use tempfile::TempDir;
 
 #[test]
 fn build_state_with_audit_metadata_threads_metadata_to_state() {
@@ -199,4 +210,90 @@ fn requirements_denied_domains_are_a_baseline_for_default_mode() {
         ]
     );
     assert_eq!(spec.constraints.denylist_expansion_enabled, Some(true));
+}
+
+#[test]
+fn permissions_profiles_network_populates_runtime_network_proxy_spec() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            )]),
+                        }),
+                        network: Some(NetworkToml {
+                            enabled: Some(true),
+                            proxy_url: Some("http://127.0.0.1:43128".to_string()),
+                            enable_socks5: Some(false),
+                            ..Default::default()
+                        }),
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+    let network = config
+        .permissions
+        .network
+        .as_ref()
+        .expect("enabled profile network should produce a NetworkProxySpec");
+
+    assert_eq!(network.proxy_host_and_port(), "127.0.0.1:43128");
+    assert!(!network.socks_enabled());
+    Ok(())
+}
+
+#[test]
+fn permissions_profiles_network_disabled_by_default_does_not_start_proxy() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("workspace".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "workspace".to_string(),
+                    PermissionProfileToml {
+                        filesystem: Some(FilesystemPermissionsToml {
+                            entries: BTreeMap::from([(
+                                ":minimal".to_string(),
+                                FilesystemPermissionToml::Access(FileSystemAccessMode::Read),
+                            )]),
+                        }),
+                        network: Some(NetworkToml {
+                            allowed_domains: Some(vec!["openai.com".to_string()]),
+                            ..Default::default()
+                        }),
+                    },
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(config.permissions.network.is_none());
+    Ok(())
 }
