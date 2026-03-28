@@ -19,6 +19,7 @@ use crate::model_provider_info::built_in_model_providers;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
+use codex_features::FeaturesToml;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -32,6 +33,7 @@ use super::*;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
+use core_test_support::test_absolute_path;
 use pretty_assertions::assert_eq;
 
 use std::collections::BTreeMap;
@@ -950,6 +952,198 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
 }
 
 #[test]
+fn test_sandbox_config_parsing() {
+    let sandbox_full_access = r#"
+sandbox_mode = "danger-full-access"
+
+[sandbox_workspace_write]
+network_access = false  # This should be ignored.
+"#;
+    let sandbox_full_access_cfg = toml::from_str::<ConfigToml>(sandbox_full_access)
+        .expect("TOML deserialization should succeed");
+    let sandbox_mode_override = None;
+    let resolution = sandbox_full_access_cfg.derive_sandbox_policy(
+        sandbox_mode_override,
+        None,
+        WindowsSandboxLevel::Disabled,
+        &PathBuf::from("/tmp/test"),
+        None,
+    );
+    assert_eq!(resolution, SandboxPolicy::DangerFullAccess);
+
+    let sandbox_read_only = r#"
+sandbox_mode = "read-only"
+
+[sandbox_workspace_write]
+network_access = true  # This should be ignored.
+"#;
+
+    let sandbox_read_only_cfg = toml::from_str::<ConfigToml>(sandbox_read_only)
+        .expect("TOML deserialization should succeed");
+    let sandbox_mode_override = None;
+    let resolution = sandbox_read_only_cfg.derive_sandbox_policy(
+        sandbox_mode_override,
+        None,
+        WindowsSandboxLevel::Disabled,
+        &PathBuf::from("/tmp/test"),
+        None,
+    );
+    assert_eq!(resolution, SandboxPolicy::new_read_only_policy());
+
+    let writable_root = test_absolute_path("/my/workspace");
+    let sandbox_workspace_write = format!(
+        r#"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+writable_roots = [
+    {},
+]
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+"#,
+        serde_json::json!(writable_root)
+    );
+
+    let sandbox_workspace_write_cfg = toml::from_str::<ConfigToml>(&sandbox_workspace_write)
+        .expect("TOML deserialization should succeed");
+    let sandbox_mode_override = None;
+    let resolution = sandbox_workspace_write_cfg.derive_sandbox_policy(
+        sandbox_mode_override,
+        None,
+        WindowsSandboxLevel::Disabled,
+        &PathBuf::from("/tmp/test"),
+        None,
+    );
+    if cfg!(target_os = "windows") {
+        assert_eq!(resolution, SandboxPolicy::new_read_only_policy());
+    } else {
+        assert_eq!(
+            resolution,
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![writable_root.clone()],
+                read_only_access: ReadOnlyAccess::FullAccess,
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            }
+        );
+    }
+
+    let sandbox_workspace_write = format!(
+        r#"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+writable_roots = [
+    {},
+]
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+
+[projects."/tmp/test"]
+trust_level = "trusted"
+"#,
+        serde_json::json!(writable_root)
+    );
+
+    let sandbox_workspace_write_cfg = toml::from_str::<ConfigToml>(&sandbox_workspace_write)
+        .expect("TOML deserialization should succeed");
+    let sandbox_mode_override = None;
+    let resolution = sandbox_workspace_write_cfg.derive_sandbox_policy(
+        sandbox_mode_override,
+        None,
+        WindowsSandboxLevel::Disabled,
+        &PathBuf::from("/tmp/test"),
+        None,
+    );
+    if cfg!(target_os = "windows") {
+        assert_eq!(resolution, SandboxPolicy::new_read_only_policy());
+    } else {
+        assert_eq!(
+            resolution,
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![writable_root],
+                read_only_access: ReadOnlyAccess::FullAccess,
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            }
+        );
+    }
+}
+
+#[test]
+fn legacy_sandbox_mode_config_builds_split_policies_without_drift() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    let extra_root = test_absolute_path("/tmp/legacy-extra-root");
+    let cases = vec![
+        (
+            "danger-full-access".to_string(),
+            r#"sandbox_mode = "danger-full-access"
+"#
+            .to_string(),
+        ),
+        (
+            "read-only".to_string(),
+            r#"sandbox_mode = "read-only"
+"#
+            .to_string(),
+        ),
+        (
+            "workspace-write".to_string(),
+            format!(
+                r#"sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+writable_roots = [{}]
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+"#,
+                serde_json::json!(extra_root)
+            ),
+        ),
+    ];
+
+    for (name, config_toml) in cases {
+        let cfg = toml::from_str::<ConfigToml>(&config_toml)
+            .unwrap_or_else(|err| panic!("case `{name}` should parse: {err}"));
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(cwd.path().to_path_buf()),
+                ..Default::default()
+            },
+            codex_home.path().to_path_buf(),
+        )?;
+
+        let sandbox_policy = config.permissions.sandbox_policy.get();
+        assert_eq!(
+            config.permissions.file_system_sandbox_policy,
+            FileSystemSandboxPolicy::from_legacy_sandbox_policy(sandbox_policy, cwd.path()),
+            "case `{name}` should preserve filesystem semantics from legacy config"
+        );
+        assert_eq!(
+            config.permissions.network_sandbox_policy,
+            NetworkSandboxPolicy::from(sandbox_policy),
+            "case `{name}` should preserve network semantics from legacy config"
+        );
+        assert_eq!(
+            config
+                .permissions
+                .file_system_sandbox_policy
+                .to_legacy_sandbox_policy(config.permissions.network_sandbox_policy, cwd.path())
+                .unwrap_or_else(|err| panic!("case `{name}` should round-trip: {err}")),
+            sandbox_policy.clone(),
+            "case `{name}` should round-trip through split policies without drift"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn config_defaults_to_file_cli_auth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml::default();
@@ -1070,6 +1264,152 @@ profile = "project"
 
     assert_eq!(config.active_profile.as_deref(), Some("project"));
     assert_eq!(config.model.as_deref(), Some("gpt-project"));
+
+    Ok(())
+}
+
+#[test]
+fn profile_sandbox_mode_overrides_base() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "work".to_string(),
+        ConfigProfile {
+            sandbox_mode: Some(SandboxMode::DangerFullAccess),
+            ..Default::default()
+        },
+    );
+    let cfg = ConfigToml {
+        profiles,
+        profile: Some("work".to_string()),
+        sandbox_mode: Some(SandboxMode::ReadOnly),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(matches!(
+        config.permissions.sandbox_policy.get(),
+        &SandboxPolicy::DangerFullAccess
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn cli_override_takes_precedence_over_profile_sandbox_mode() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "work".to_string(),
+        ConfigProfile {
+            sandbox_mode: Some(SandboxMode::DangerFullAccess),
+            ..Default::default()
+        },
+    );
+    let cfg = ConfigToml {
+        profiles,
+        profile: Some("work".to_string()),
+        ..Default::default()
+    };
+
+    let overrides = ConfigOverrides {
+        sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        overrides,
+        codex_home.path().to_path_buf(),
+    )?;
+
+    if cfg!(target_os = "windows") {
+        assert!(matches!(
+            config.permissions.sandbox_policy.get(),
+            SandboxPolicy::ReadOnly { .. }
+        ));
+    } else {
+        assert!(matches!(
+            config.permissions.sandbox_policy.get(),
+            SandboxPolicy::WorkspaceWrite { .. }
+        ));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn feature_table_overrides_legacy_flags() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut entries = BTreeMap::new();
+    entries.insert("apply_patch_freeform".to_string(), false);
+    let cfg = ConfigToml {
+        features: Some(FeaturesToml { entries }),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(!config.features.enabled(Feature::ApplyPatchFreeform));
+    assert!(!config.include_apply_patch_tool);
+
+    Ok(())
+}
+
+#[test]
+fn legacy_toggles_map_to_features() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        experimental_use_unified_exec_tool: Some(true),
+        experimental_use_freeform_apply_patch: Some(true),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.path().to_path_buf(),
+    )?;
+
+    assert!(config.features.enabled(Feature::ApplyPatchFreeform));
+    assert!(config.features.enabled(Feature::UnifiedExec));
+    assert!(config.include_apply_patch_tool);
+    assert!(config.use_experimental_unified_exec_tool);
+
+    Ok(())
+}
+
+#[test]
+fn responses_websocket_features_do_not_change_wire_api() -> std::io::Result<()> {
+    for feature_key in ["responses_websockets", "responses_websockets_v2"] {
+        let codex_home = TempDir::new()?;
+        let mut entries = BTreeMap::new();
+        entries.insert(feature_key.to_string(), true);
+        let cfg = ConfigToml {
+            features: Some(FeaturesToml { entries }),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.model_provider.wire_api,
+            crate::model_provider_info::WireApi::Responses
+        );
+    }
 
     Ok(())
 }
