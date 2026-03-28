@@ -1,56 +1,60 @@
-  这个项目是基于 OpenAI Codex CLI 的深度定制 fork，在上游基础上扩展了 6 大核心能力：
+<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
+<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center">
+  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+</p>
+</br>
+If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
+</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
+</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
-  ---
-  1. 多模型 Provider 支持
+---
 
-  - OpenAI (GPT-5.3-codex-spark|[pro], GPT-5.3-codex, GPT-5.2-codex)
-  - Google Gemini (Gemini 3 Pro/Flash, Gemini 3 Pro Image, 1M context)
-  - Grok (Grok 4, Grok 4.1 Fast Reasoning)
-  - 本地模型 (Gemma-3n via Ollama/LM Studio)
-  - 运行时自动切换 + Account Pool 故障转移 (400/401/403/429 自动换号，支持多轮循环)
-  - 模型兼容矩阵：按模型自动启用/禁用 web search、reasoning effort、image 等能力
+## Quickstart
 
-  2. 跨会话记忆系统
+### Installing and running Codex CLI
 
-  - SQLite 持久化的 Thread Memory（对话摘要 + trace）
-  - Context Packet 注入：自动将记忆、用户指令、项目 memories 注入 MCP 调用和子 agent
-  - 会话压缩后自动更新记忆，最小 10 分钟间隔防抖
+Install globally with your preferred package manager:
 
-  3. 多 Agent 协作
+```shell
+# Install using npm
+npm install -g @openai/codex
+```
 
-  - spawn_agent / send_input / resume_agent / wait / close_agent 完整生命周期
-  - Agent Worktrees：fork session 可使用隔离 git worktree，resume 时按 lease 自动恢复
-  - Lease 持久化：`.codex/leases/` 目录，支持 worktree 恢复
-  - Context Packet 自动注入子 agent 启动 prompt
+```shell
+# Install using Homebrew
+brew install --cask codex
+```
 
-  4. 图像处理流水线
+Then simply run `codex` to get started.
 
-  - /ref-image：设置参考图片
-  - /ref-image-batch：批量处理文件夹中的图片
-  - /image-quality (1K/2K/4K) + /aspect-ratio (1:1/16:9/9:16/4:3/3:4)
-  - /pdf-update：PDF 转图片 + 批量图片处理
-  - Gemini Image 模型专用配置（response_modalities、image_config）
+<details>
+<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
 
-  5. TUI 增强
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
 
-  - Session Bar (Ctrl+P)：tmux 风格底部面板，会话导航/新建/删除/重命名
-  - 后台预热：2s 空闲后自动加载 session 列表，打开时即时显示
-  - Ralph Loop (/ralph-loop)：迭代自纠正循环，支持 <promise> 完成检测
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
 
-  6. 基础设施
+Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
 
-  - Gemma 系统 prompt 截断（29K→4K，防止本地小模型空输出）
-  - Thought Signature 跨模型泄漏防护（Gemini→GPT 切换时自动清理）
-  - WebSocket preconnect 跨 turn 复用
-  - MCP 后台初始化（不阻塞启动）
-  - Debug CLI：thread-memory backfill、agent-worktrees list/restore
+</details>
 
-  ---
-  简单来说：从单一 OpenAI 模型的 CLI 工具，扩展成了支持 4 家 Provider、跨会话记忆、多 Agent
-  协作、图像处理、TUI 工作台增强的多模型 AI 开发平台。
+### Using Codex with your ChatGPT plan
 
-  详细的技术文档、代码组织、配置说明和 MCP 用法请参阅 [codex-rs/README.md](./codex-rs/README.md)。
+Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Team, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
-  当前 merge 方向不再继续维护旧的 `/freeze`、`endpoint-sec`、本地 Smart Access 安全放行链路。
-  这几条线已降级为历史尝试；安全审批能力以官方 `approval_policy` +
-  `approvals_reviewer` / guardian 语义为准，账号池、多模型路由、记忆、Session Bar、Ralph Loop 等定制能力继续保留。
+You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+
+## Docs
+
+- [**Codex Documentation**](https://developers.openai.com/codex)
+- [**Contributing**](./docs/contributing.md)
+- [**Installing & building**](./docs/install.md)
+- [**Open source fund**](./docs/open-source-fund.md)
+
+This repository is licensed under the [Apache-2.0 License](LICENSE).

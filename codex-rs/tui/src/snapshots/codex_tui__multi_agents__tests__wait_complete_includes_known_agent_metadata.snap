@@ -1,9 +1,0 @@
----
-source: tui/src/multi_agents.rs
-assertion_line: 450
-expression: render_cell(cell)
----
-• Wait complete
-  └ call: call-1
-    agents: 1 total · 1 completed
-    67e55044-10b1-426f-9247-bb680e5fe0c8 completed [role=explorer, model=claude-opus-4-6, provider=anthropic]
