@@ -10,48 +10,6 @@ use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 #[test]
-fn prune_null_object_fields_strips_nested_object_fields_but_keeps_array_nulls() {
-    let mut value = serde_json::json!({
-        "top": null,
-        "nested": {
-            "keep": 1,
-            "drop": null,
-            "deep": {
-                "drop": null,
-                "keep": true,
-            },
-        },
-        "array": [
-            null,
-            {
-                "drop": null,
-                "keep": "x",
-            }
-        ],
-    });
-
-    prune_null_object_fields(&mut value);
-
-    assert_eq!(
-        value,
-        serde_json::json!({
-            "nested": {
-                "keep": 1,
-                "deep": {
-                    "keep": true,
-                },
-            },
-            "array": [
-                null,
-                {
-                    "keep": "x",
-                }
-            ],
-        })
-    );
-}
-
-#[test]
 fn toml_value_to_item_handles_nested_config_tables() {
     let config = r#"
 [mcp_servers.docs]

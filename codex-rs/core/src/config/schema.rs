@@ -94,10 +94,7 @@ pub fn config_schema_json() -> anyhow::Result<Vec<u8>> {
 
 /// Write the config schema fixture to disk.
 pub fn write_config_schema(out_path: &Path) -> anyhow::Result<()> {
-    let mut json = config_schema_json()?;
-    if !matches!(json.last(), Some(b'\n')) {
-        json.push(b'\n');
-    }
+    let json = config_schema_json()?;
     std::fs::write(out_path, json)?;
     Ok(())
 }

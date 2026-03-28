@@ -173,9 +173,8 @@ impl ConfigService {
             .try_into()
             .map_err(|err| ConfigServiceError::toml("invalid configuration", err))?;
 
-        let mut json_value = serde_json::to_value(&effective_config_toml)
+        let json_value = serde_json::to_value(&effective_config_toml)
             .map_err(|err| ConfigServiceError::json("failed to serialize configuration", err))?;
-        prune_null_object_fields(&mut json_value);
         let config: ApiConfig = serde_json::from_value(json_value)
             .map_err(|err| ConfigServiceError::json("failed to deserialize configuration", err))?;
 
@@ -628,23 +627,6 @@ fn paths_match(expected: impl AsRef<Path>, provided: impl AsRef<Path>) -> bool {
         expanded_expected == expanded_provided
     } else {
         expected.as_ref() == provided.as_ref()
-    }
-}
-
-fn prune_null_object_fields(value: &mut JsonValue) {
-    match value {
-        JsonValue::Object(map) => {
-            map.retain(|_, child| {
-                prune_null_object_fields(child);
-                !child.is_null()
-            });
-        }
-        JsonValue::Array(items) => {
-            for item in items {
-                prune_null_object_fields(item);
-            }
-        }
-        _ => {}
     }
 }
 
