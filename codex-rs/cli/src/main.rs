@@ -3,8 +3,6 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
 use clap_complete::generate;
-use codex_api::RawMemory;
-use codex_api::RawMemoryMetadata;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_chatgpt::apply_command::ApplyCommand;
@@ -23,8 +21,6 @@ use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
-use codex_otel::SessionTelemetry;
-use codex_otel::TelemetryAuthMode;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_state::StateRuntime;
 use codex_state::state_db_path;
@@ -34,11 +30,8 @@ use codex_tui_app_server::ExitReason;
 use codex_tui_app_server::update_action::UpdateAction;
 use codex_utils_cli::CliConfigOverrides;
 use owo_colors::OwoColorize;
-use std::collections::VecDeque;
 use std::io::IsTerminal;
-use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use supports_color::Stream;
 
 #[cfg(target_os = "macos")]
@@ -51,30 +44,14 @@ mod wsl_paths;
 
 use crate::mcp_cmd::McpCli;
 
-use codex_core::AuthManager;
-use codex_core::CodexAuth;
-use codex_core::ModelClient;
-use codex_core::RolloutRecorder;
-use codex_core::build_thread_memory_trace_items;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
-use codex_core::models_manager::manager::ModelsManager;
-use codex_core::models_manager::manager::RefreshStrategy;
-use codex_core::state_db;
 use codex_features::FEATURES;
-use codex_features::Feature;
 use codex_features::Stage;
 use codex_features::is_known_feature_key;
-use codex_protocol::ThreadId;
-use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InitialHistory;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_terminal_detection::TerminalName;
-use codex_terminal_detection::user_agent;
 
 /// Codex CLI
 ///
@@ -193,12 +170,6 @@ enum DebugSubcommand {
     /// Tooling: helps debug the app server.
     AppServer(DebugAppServerCommand),
 
-    /// [experimental] Tooling: rebuild/backfill thread memory summaries.
-    ThreadMemory(DebugThreadMemoryCommand),
-
-    /// [experimental] Tooling: inspect/restore agent worktree leases for the current repo.
-    AgentWorktrees(DebugAgentWorktreesCommand),
-
     /// Internal: reset local memory state for a fresh start.
     #[clap(hide = true)]
     ClearMemories,
@@ -220,78 +191,6 @@ enum DebugAppServerSubcommand {
 struct DebugAppServerSendMessageV2Command {
     #[arg(value_name = "USER_MESSAGE", required = true)]
     user_message: String,
-}
-
-#[derive(Debug, Parser)]
-struct DebugThreadMemoryCommand {
-    #[command(subcommand)]
-    subcommand: DebugThreadMemorySubcommand,
-}
-
-#[derive(Debug, clap::Subcommand)]
-enum DebugThreadMemorySubcommand {
-    /// Backfill SQLite thread memories from existing rollout files.
-    Backfill(ThreadMemoryBackfillCommand),
-}
-
-#[derive(Debug, Parser)]
-struct DebugAgentWorktreesCommand {
-    #[command(subcommand)]
-    subcommand: DebugAgentWorktreesSubcommand,
-}
-
-#[derive(Debug, clap::Subcommand)]
-enum DebugAgentWorktreesSubcommand {
-    /// List agent worktree leases stored under .codex/leases for the current git repo.
-    List(AgentWorktreesListCommand),
-
-    /// Restore missing agent worktrees recorded in leases (git worktree add).
-    Ensure(AgentWorktreesEnsureCommand),
-}
-
-#[derive(Debug, Parser)]
-struct AgentWorktreesListCommand {
-    /// Output machine-readable JSON.
-    #[arg(long, default_value_t = false)]
-    json: bool,
-}
-
-#[derive(Debug, Parser)]
-struct AgentWorktreesEnsureCommand {
-    /// Conversation/session id (UUID) to restore.
-    #[arg(long = "thread", value_name = "SESSION_ID", conflicts_with = "all")]
-    thread_id: Option<String>,
-
-    /// Restore every lease under .codex/leases for the current repo.
-    #[arg(long, default_value_t = false)]
-    all: bool,
-}
-
-#[derive(Debug, Parser)]
-struct ThreadMemoryBackfillCommand {
-    /// Conversation/session id (UUID) to backfill.
-    #[arg(long = "thread", value_name = "SESSION_ID", conflicts_with = "all")]
-    thread_id: Option<String>,
-
-    /// Backfill every rollout file under CODEX_HOME.
-    #[arg(long, default_value_t = false)]
-    all: bool,
-
-    /// Also scan archived sessions.
-    #[arg(long, default_value_t = false)]
-    archived: bool,
-
-    /// Overwrite existing thread memories.
-    #[arg(long, default_value_t = false)]
-    force: bool,
-
-    /// Skip remote trace summarization and only write fallback summaries.
-    #[arg(long, default_value_t = false)]
-    no_remote: bool,
-
-    /// Limit number of rollouts processed (only applies with --all).
-    #[arg(long)]
-    limit: Option<usize>,
 }
 
 #[derive(Debug, Parser)]
@@ -611,504 +510,6 @@ async fn run_debug_app_server_command(cmd: DebugAppServerCommand) -> anyhow::Res
                 .await
         }
     }
-}
-
-async fn run_debug_thread_memory_command(
-    cmd: DebugThreadMemoryCommand,
-    root_config_overrides: CliConfigOverrides,
-    interactive: &TuiCli,
-) -> anyhow::Result<()> {
-    match cmd.subcommand {
-        DebugThreadMemorySubcommand::Backfill(args) => {
-            run_thread_memory_backfill(args, root_config_overrides, interactive).await
-        }
-    }
-}
-
-async fn run_debug_agent_worktrees_command(cmd: DebugAgentWorktreesCommand) -> anyhow::Result<()> {
-    match cmd.subcommand {
-        DebugAgentWorktreesSubcommand::List(args) => run_agent_worktrees_list(args).await,
-        DebugAgentWorktreesSubcommand::Ensure(args) => run_agent_worktrees_ensure(args).await,
-    }
-}
-
-async fn run_agent_worktrees_list(args: AgentWorktreesListCommand) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let Some(repo_root) = codex_core::git_info::resolve_root_git_project_for_trust(&cwd) else {
-        anyhow::bail!(
-            "Not in a git repository. Agent worktrees require a git repo (run from inside one)."
-        );
-    };
-
-    let mut leases = codex_core::agent_worktree::list_leases(&repo_root)?;
-    leases.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then_with(|| b.thread_id.cmp(&a.thread_id))
-    });
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&leases)?);
-        return Ok(());
-    }
-
-    if leases.is_empty() {
-        let leases_dir = repo_root.join(".codex").join("leases");
-        println!("No agent worktree leases found in {}", leases_dir.display());
-        return Ok(());
-    }
-
-    for lease in &leases {
-        println!(
-            "thread={} purpose={} branch={} worktree={} parent={} updated_at={} pid={}",
-            lease.thread_id,
-            lease.purpose,
-            lease.branch,
-            lease.worktree_path.display(),
-            lease.parent_thread_id.as_deref().unwrap_or("-"),
-            lease.updated_at,
-            lease.pid
-        );
-    }
-    Ok(())
-}
-
-async fn run_agent_worktrees_ensure(args: AgentWorktreesEnsureCommand) -> anyhow::Result<()> {
-    if args.thread_id.is_none() && !args.all {
-        anyhow::bail!("Expected --thread SESSION_ID or --all");
-    }
-
-    let cwd = std::env::current_dir()?;
-    let Some(repo_root) = codex_core::git_info::resolve_root_git_project_for_trust(&cwd) else {
-        anyhow::bail!(
-            "Not in a git repository. Agent worktrees require a git repo (run from inside one)."
-        );
-    };
-
-    let thread_ids = if let Some(thread_id) = args.thread_id.as_deref() {
-        vec![thread_id.to_string()]
-    } else {
-        codex_core::agent_worktree::list_leases(&repo_root)?
-            .into_iter()
-            .map(|lease| lease.thread_id)
-            .collect()
-    };
-
-    if thread_ids.is_empty() {
-        println!("No leases found; nothing to restore.");
-        return Ok(());
-    }
-
-    let mut failures = Vec::new();
-    for thread_id in thread_ids {
-        let Some(lease) = codex_core::agent_worktree::read_lease(&repo_root, &thread_id)? else {
-            failures.push(format!("thread {thread_id}: lease not found"));
-            continue;
-        };
-
-        let existed = tokio::fs::try_exists(&lease.worktree_path)
-            .await
-            .unwrap_or(false);
-        match codex_core::agent_worktree::ensure_worktree_for_thread(&repo_root, &thread_id).await {
-            Ok(Some(_)) => {
-                let action = if existed { "ok" } else { "restored" };
-                println!(
-                    "{action}: thread={} branch={} worktree={}",
-                    lease.thread_id,
-                    lease.branch,
-                    lease.worktree_path.display()
-                );
-            }
-            Ok(None) => failures.push(format!(
-                "thread {}: no repo root detected (run from inside a git repo)",
-                lease.thread_id
-            )),
-            Err(err) => failures.push(format!("thread {}: {err:#}", lease.thread_id)),
-        }
-    }
-
-    if failures.is_empty() {
-        return Ok(());
-    }
-
-    for failure in &failures {
-        eprintln!("ERROR: {failure}");
-    }
-    anyhow::bail!("failed to restore {} worktree(s)", failures.len());
-}
-
-async fn run_thread_memory_backfill(
-    args: ThreadMemoryBackfillCommand,
-    root_config_overrides: CliConfigOverrides,
-    interactive: &TuiCli,
-) -> anyhow::Result<()> {
-    if args.thread_id.is_none() && !args.all {
-        anyhow::bail!("Expected --thread SESSION_ID or --all");
-    }
-
-    let cli_kv_overrides = root_config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-    let overrides = ConfigOverrides {
-        config_profile: interactive.config_profile.clone(),
-        ..Default::default()
-    };
-    let config =
-        Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
-
-    if !config.features.enabled(Feature::Sqlite) {
-        anyhow::bail!("SQLite state DB is disabled. Re-run with --enable sqlite.");
-    }
-    if !config.features.enabled(Feature::MemoryTool) {
-        anyhow::bail!("Thread memory tooling is disabled. Re-run with --enable memories.");
-    }
-
-    let Some(db) = state_db::init(&config).await else {
-        anyhow::bail!("Failed to initialize state DB runtime.");
-    };
-
-    let auth_manager = AuthManager::shared(
-        config.codex_home.clone(),
-        /*enable_codex_api_key_env*/ false,
-        config.cli_auth_credentials_store_mode,
-    );
-    let models_manager = ModelsManager::new(
-        config.codex_home.clone(),
-        Arc::clone(&auth_manager),
-        /*model_catalog*/ None,
-        codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig::default(),
-    );
-    let model_slug = models_manager
-        .get_default_model(&config.model, RefreshStrategy::Offline)
-        .await;
-    let model_info = models_manager
-        .get_model_info(model_slug.as_str(), &config)
-        .await;
-    let auth = auth_manager.auth_cached();
-    let auth_ref = auth.as_ref();
-    let auth_mode = auth_ref
-        .map(CodexAuth::auth_mode)
-        .map(TelemetryAuthMode::from);
-
-    let model_client = ModelClient::new(
-        Some(Arc::clone(&auth_manager)),
-        ThreadId::default(),
-        config.model_provider.clone(),
-        SessionSource::SubAgent(SubAgentSource::Other("thread_memory_backfill".to_string())),
-        config.model_verbosity,
-        config.features.enabled(Feature::EnableRequestCompression),
-        config.features.enabled(Feature::RuntimeMetrics),
-        /*beta_features_header*/ None,
-    );
-
-    let session_telemetry = SessionTelemetry::new(
-        ThreadId::default(),
-        model_slug.as_str(),
-        model_slug.as_str(),
-        auth_ref.and_then(CodexAuth::get_account_id),
-        auth_ref.and_then(CodexAuth::get_account_email),
-        auth_mode,
-        codex_core::default_client::originator().value,
-        config.otel.log_user_prompt,
-        user_agent(),
-        SessionSource::Cli,
-    );
-
-    let rollout_paths = if let Some(id_str) = args.thread_id.as_deref() {
-        resolve_rollout_path_for_thread(&config, id_str, args.archived).await?
-    } else {
-        collect_rollout_paths(&config, args.archived, args.limit).await?
-    };
-
-    if rollout_paths.is_empty() {
-        println!("No rollout files found.");
-        return Ok(());
-    }
-
-    let mut processed = 0usize;
-    let mut updated = 0usize;
-    let mut skipped = 0usize;
-    let mut failed = 0usize;
-
-    for path in rollout_paths {
-        processed = processed.saturating_add(1);
-
-        let archived_only = rollout_path_is_archived(&config, path.as_path());
-
-        let history = match RolloutRecorder::get_rollout_history(path.as_path()).await {
-            Ok(history) => history,
-            Err(err) => {
-                eprintln!("Failed to load rollout {}: {err}", path.display());
-                failed = failed.saturating_add(1);
-                continue;
-            }
-        };
-        let session_cwd = history.session_cwd();
-        let (thread_id, rollout_items) = match thread_id_and_items(history) {
-            Some(value) => value,
-            None => {
-                skipped = skipped.saturating_add(1);
-                continue;
-            }
-        };
-
-        state_db::reconcile_rollout(
-            Some(db.as_ref()),
-            path.as_path(),
-            config.model_provider_id.as_str(),
-            /*builder*/ None,
-            rollout_items.as_slice(),
-            Some(archived_only),
-            /*new_thread_memory_mode*/ None,
-        )
-        .await;
-
-        if !args.force {
-            match db.get_stage1_output(thread_id).await {
-                Ok(Some(_)) => {
-                    skipped = skipped.saturating_add(1);
-                    continue;
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    eprintln!("Failed to read thread memory for {thread_id}: {err}");
-                    failed = failed.saturating_add(1);
-                    continue;
-                }
-            }
-        }
-
-        let response_items = extract_response_items(rollout_items.as_slice());
-        let trace_items = build_thread_memory_trace_items(response_items.as_slice());
-        if trace_items.is_empty() {
-            skipped = skipped.saturating_add(1);
-            continue;
-        }
-
-        let mut trace_summary = String::new();
-        let mut memory_summary = String::new();
-
-        if !args.no_remote {
-            let source_path = session_cwd
-                .as_deref()
-                .unwrap_or(config.cwd.as_path())
-                .display()
-                .to_string();
-            let trace = RawMemory {
-                id: format!("trace_{thread_id}"),
-                metadata: RawMemoryMetadata { source_path },
-                items: trace_items.clone(),
-            };
-
-            match model_client
-                .summarize_memories(
-                    vec![trace],
-                    &model_info,
-                    config.model_reasoning_effort,
-                    &session_telemetry,
-                )
-                .await
-            {
-                Ok(mut outputs) => {
-                    if let Some(output) = outputs.pop() {
-                        trace_summary = output.raw_memory;
-                        memory_summary = output.memory_summary;
-                    }
-                }
-                Err(err) => {
-                    eprintln!(
-                        "Remote trace summarization failed for {thread_id}: {err}. Falling back."
-                    );
-                }
-            }
-        }
-
-        if trace_summary.trim().is_empty() && memory_summary.trim().is_empty() {
-            let Some(summary) = fallback_summary_from_history(response_items.as_slice()) else {
-                eprintln!(
-                    "No fallback summary found for {thread_id} ({}).",
-                    path.display()
-                );
-                failed = failed.saturating_add(1);
-                continue;
-            };
-            trace_summary = summary.clone();
-            memory_summary = summary;
-        }
-
-        match db
-            .upsert_stage1_output(
-                thread_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
-                trace_summary.trim(),
-                memory_summary.trim(),
-            )
-            .await
-        {
-            Ok(_) => {
-                updated = updated.saturating_add(1);
-                println!("Updated thread memory for {thread_id} ({})", path.display());
-            }
-            Err(err) => {
-                eprintln!("Failed to upsert thread memory for {thread_id}: {err}");
-                failed = failed.saturating_add(1);
-            }
-        }
-    }
-
-    println!(
-        "Backfill complete: processed={processed} updated={updated} skipped={skipped} failed={failed}"
-    );
-    Ok(())
-}
-
-async fn resolve_rollout_path_for_thread(
-    config: &Config,
-    id_str: &str,
-    archived: bool,
-) -> anyhow::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-
-    let primary = if archived {
-        codex_core::find_archived_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
-    } else {
-        codex_core::find_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
-    };
-    if let Some(path) = primary {
-        out.push(path);
-        return Ok(out);
-    }
-
-    let secondary = if archived {
-        codex_core::find_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
-    } else {
-        codex_core::find_archived_thread_path_by_id_str(config.codex_home.as_path(), id_str).await?
-    };
-    if let Some(path) = secondary {
-        out.push(path);
-    }
-    Ok(out)
-}
-
-async fn collect_rollout_paths(
-    config: &Config,
-    archived: bool,
-    limit: Option<usize>,
-) -> anyhow::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let sessions_root = config.codex_home.join(codex_core::SESSIONS_SUBDIR);
-    out.extend(collect_rollout_paths_in_root(sessions_root.as_path()).await?);
-
-    if archived {
-        let archived_root = config.codex_home.join(codex_core::ARCHIVED_SESSIONS_SUBDIR);
-        out.extend(collect_rollout_paths_in_root(archived_root.as_path()).await?);
-    }
-
-    out.sort_unstable();
-    if let Some(limit) = limit {
-        out.truncate(limit);
-    }
-    Ok(out)
-}
-
-async fn collect_rollout_paths_in_root(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    if !tokio::fs::try_exists(root).await.unwrap_or(false) {
-        return Ok(Vec::new());
-    }
-
-    let mut pending = VecDeque::new();
-    pending.push_back(root.to_path_buf());
-
-    let mut out = Vec::new();
-    while let Some(dir) = pending.pop_front() {
-        let mut entries = tokio::fs::read_dir(dir.as_path()).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let file_type = entry.file_type().await?;
-            let path = entry.path();
-            if file_type.is_dir() {
-                pending.push_back(path);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if name.starts_with("rollout-") && name.ends_with(".jsonl") {
-                out.push(path);
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn rollout_path_is_archived(config: &Config, path: &Path) -> bool {
-    path.starts_with(config.codex_home.join(codex_core::ARCHIVED_SESSIONS_SUBDIR))
-}
-
-fn thread_id_and_items(history: InitialHistory) -> Option<(ThreadId, Vec<RolloutItem>)> {
-    match history {
-        InitialHistory::Resumed(resumed) => Some((resumed.conversation_id, resumed.history)),
-        InitialHistory::New => None,
-        InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
-            RolloutItem::SessionMeta(meta_line) => Some((meta_line.meta.id, items.clone())),
-            _ => None,
-        }),
-    }
-}
-
-fn extract_response_items(items: &[RolloutItem]) -> Vec<ResponseItem> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            RolloutItem::ResponseItem(item) => Some(item.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn fallback_summary_from_history(items: &[ResponseItem]) -> Option<String> {
-    let summary_prefix = format!("{}\n", codex_core::compact::SUMMARY_PREFIX);
-
-    for item in items.iter().rev() {
-        let ResponseItem::Message { role, content, .. } = item else {
-            continue;
-        };
-        if role == "user" {
-            let Some(text) = codex_core::compact::content_items_to_text(content) else {
-                continue;
-            };
-            let Some(suffix) = text.trim().strip_prefix(summary_prefix.as_str()) else {
-                continue;
-            };
-            let suffix = suffix.trim();
-            if !suffix.is_empty() {
-                return Some(suffix.to_string());
-            }
-        }
-    }
-
-    for item in items.iter().rev() {
-        let ResponseItem::Message { role, content, .. } = item else {
-            continue;
-        };
-        if role != "assistant" {
-            continue;
-        }
-        let Some(text) = codex_core::compact::content_items_to_text(content) else {
-            continue;
-        };
-        let text = text.trim();
-        if !text.is_empty() {
-            return Some(text.to_string());
-        }
-    }
-
-    None
 }
 
 #[derive(Debug, Default, Parser, Clone)]
@@ -1549,13 +950,6 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     "debug clear-memories",
                 )?;
                 run_debug_clear_memories_command(&root_config_overrides, &interactive).await?;
-            }
-            DebugSubcommand::AgentWorktrees(cmd) => {
-                run_debug_agent_worktrees_command(cmd).await?;
-            }
-            DebugSubcommand::ThreadMemory(cmd) => {
-                run_debug_thread_memory_command(cmd, root_config_overrides.clone(), &interactive)
-                    .await?;
             }
         },
         Some(Subcommand::Execpolicy(ExecpolicyCommand { sub })) => match sub {
@@ -2367,6 +1761,20 @@ mod tests {
         let app_server =
             app_server_from_args(["codex", "app-server", "--analytics-default-enabled"].as_ref());
         assert!(app_server.analytics_default_enabled);
+    }
+
+    #[test]
+    fn debug_thread_memory_subcommand_is_rejected() {
+        let parse_result =
+            MultitoolCli::try_parse_from(["codex", "debug", "thread-memory", "backfill"]);
+        assert!(parse_result.is_err());
+    }
+
+    #[test]
+    fn debug_agent_worktrees_subcommand_is_rejected() {
+        let parse_result =
+            MultitoolCli::try_parse_from(["codex", "debug", "agent-worktrees", "list"]);
+        assert!(parse_result.is_err());
     }
 
     #[test]
