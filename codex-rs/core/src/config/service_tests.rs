@@ -634,6 +634,50 @@ async fn read_reports_managed_overrides_user_and_session_flags() {
 }
 
 #[tokio::test]
+async fn read_omits_null_unknown_profile_fields_from_additional() {
+    let tmp = tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join(CONFIG_TOML_FILE),
+        r#"
+[profiles.fast]
+model = "gpt-5.3-codex-mini"
+model_sub = "claude-sonnet-4-6"
+model_sub_responses = "gpt-5.1-codex-mini"
+"#,
+    )
+    .expect("write config");
+
+    let service = ConfigService::new_with_defaults(tmp.path().to_path_buf());
+    let response = service
+        .read(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await
+        .expect("response");
+
+    assert_eq!(
+        response.config.profiles.get("fast"),
+        Some(&codex_app_server_protocol::ProfileV2 {
+            model: Some("gpt-5.3-codex-mini".to_string()),
+            model_sub: Some("claude-sonnet-4-6".to_string()),
+            model_sub_responses: Some("gpt-5.1-codex-mini".to_string()),
+            model_provider: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            service_tier: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_verbosity: None,
+            web_search: None,
+            tools: None,
+            chatgpt_base_url: None,
+            additional: std::collections::HashMap::new(),
+        })
+    );
+}
+
+#[tokio::test]
 async fn write_value_reports_managed_override() {
     let tmp = tempdir().expect("tempdir");
     std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "").unwrap();

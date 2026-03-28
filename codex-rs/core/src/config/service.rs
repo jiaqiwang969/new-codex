@@ -173,8 +173,9 @@ impl ConfigService {
             .try_into()
             .map_err(|err| ConfigServiceError::toml("invalid configuration", err))?;
 
-        let json_value = serde_json::to_value(&effective_config_toml)
+        let mut json_value = serde_json::to_value(&effective_config_toml)
             .map_err(|err| ConfigServiceError::json("failed to serialize configuration", err))?;
+        remove_null_object_entries(&mut json_value);
         let config: ApiConfig = serde_json::from_value(json_value)
             .map_err(|err| ConfigServiceError::json("failed to deserialize configuration", err))?;
 
@@ -646,6 +647,19 @@ fn value_at_path<'a>(root: &'a TomlValue, segments: &[String]) -> Option<&'a Tom
         }
     }
     Some(current)
+}
+
+fn remove_null_object_entries(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(object) => {
+            object.values_mut().for_each(remove_null_object_entries);
+            object.retain(|_, value| !value.is_null());
+        }
+        JsonValue::Array(items) => {
+            items.iter_mut().for_each(remove_null_object_entries);
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
+    }
 }
 
 fn override_message(layer: &ConfigLayerSource) -> String {
