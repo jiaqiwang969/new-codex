@@ -1,4 +1,6 @@
 use crate::auth::AuthCredentialsStoreMode;
+use crate::config::edit::ConfigEdit;
+use crate::config::edit::ConfigEditsBuilder;
 use crate::config::types::AppsConfigToml;
 use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config::types::History;
@@ -38,8 +40,10 @@ use crate::config_loader::ResidencyRequirement;
 use crate::config_loader::Sourced;
 use crate::config_loader::load_config_layers_state;
 use crate::memories::memory_root;
+use crate::model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use crate::model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use crate::model_provider_info::ModelProviderInfo;
+use crate::model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use crate::model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use crate::model_provider_info::OPENAI_PROVIDER_ID;
 use crate::path_utils::normalize_for_native_workdir;
@@ -104,7 +108,6 @@ pub(crate) mod agent_roles;
 pub mod edit;
 mod managed_features;
 mod network_proxy_spec;
-mod oss_provider;
 mod permissions;
 pub mod profile;
 mod provider_registry;
@@ -123,8 +126,6 @@ pub use codex_sandboxing::system_bwrap_warning;
 pub use managed_features::ManagedFeatures;
 pub use network_proxy_spec::NetworkProxySpec;
 pub use network_proxy_spec::StartedNetworkProxy;
-pub use oss_provider::resolve_oss_provider;
-pub use oss_provider::set_default_oss_provider;
 pub use permissions::FilesystemPermissionToml;
 pub use permissions::FilesystemPermissionsToml;
 pub use permissions::NetworkDomainPermissionToml;
@@ -1060,6 +1061,41 @@ pub fn set_project_trust_level(
         .apply_blocking()
 }
 
+/// Save the default OSS provider preference to config.toml
+pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::Result<()> {
+    // Validate that the provider is one of the known OSS providers
+    match provider {
+        LMSTUDIO_OSS_PROVIDER_ID | OLLAMA_OSS_PROVIDER_ID => {
+            // Valid provider, continue
+        }
+        LEGACY_OLLAMA_CHAT_PROVIDER_ID => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                OLLAMA_CHAT_PROVIDER_REMOVED_ERROR,
+            ));
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid OSS provider '{provider}'. Must be one of: {LMSTUDIO_OSS_PROVIDER_ID}, {OLLAMA_OSS_PROVIDER_ID}"
+                ),
+            ));
+        }
+    }
+    use toml_edit::value;
+
+    let edits = [ConfigEdit::SetPath {
+        segments: vec!["oss_provider".to_string()],
+        value: value(provider),
+    }];
+
+    ConfigEditsBuilder::new(codex_home)
+        .with_edits(edits)
+        .apply_blocking()
+        .map_err(|err| std::io::Error::other(format!("failed to persist config.toml: {err}")))
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -1814,6 +1850,33 @@ pub struct ConfigOverrides {
     pub additional_writable_roots: Vec<PathBuf>,
 }
 
+/// Resolves the OSS provider from CLI override, profile config, or global config.
+/// Returns `None` if no provider is configured at any level.
+pub fn resolve_oss_provider(
+    explicit_provider: Option<&str>,
+    config_toml: &ConfigToml,
+    config_profile: Option<String>,
+) -> Option<String> {
+    if let Some(provider) = explicit_provider {
+        // Explicit provider specified (e.g., via --local-provider)
+        Some(provider.to_string())
+    } else {
+        // Check profile config first, then global config
+        let profile = config_toml.get_config_profile(config_profile).ok();
+        if let Some(profile) = &profile {
+            // Check if profile has an oss provider
+            if let Some(profile_oss_provider) = &profile.oss_provider {
+                Some(profile_oss_provider.clone())
+            }
+            // If not then check if the toml has an oss provider
+            else {
+                config_toml.oss_provider.clone()
+            }
+        } else {
+            config_toml.oss_provider.clone()
+        }
+    }
+}
 impl Config {
     #[cfg(test)]
     fn load_from_base_config_with_overrides(
