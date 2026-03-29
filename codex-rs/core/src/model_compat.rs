@@ -160,11 +160,6 @@ pub(crate) fn model_supports_memory_trace_summarize(slug: &str) -> bool {
 }
 
 pub(crate) fn model_supports_input_images(slug: &str) -> bool {
-    // Codex-Spark is text-only.
-    if slug.starts_with("gpt-5.3-codex-spark") {
-        return false;
-    }
-
     match normalized_grok_model_slug(slug) {
         Some(grok_slug) => {
             grok_slug.starts_with("grok-4") || grok_slug.starts_with("grok-2-vision")
@@ -265,15 +260,6 @@ mod tests {
         assert!(!model_supports_input_images("grok-3"));
         assert!(!model_supports_input_images("grok-3-mini"));
     }
-
-    #[test]
-    fn spark_model_is_text_only() {
-        assert!(!model_supports_input_images("gpt-5.3-codex-spark|[pro]"));
-        assert!(!model_supports_data_url_input_images(
-            "gpt-5.3-codex-spark|[pro]"
-        ));
-    }
-
     #[test]
     fn anthropic_slug_normalization_handles_namespaced_and_bare_slugs() {
         assert_eq!(

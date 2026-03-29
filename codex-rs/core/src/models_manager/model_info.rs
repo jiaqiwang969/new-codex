@@ -31,7 +31,6 @@ const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md
 const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
-const GPT_5_3_CODEX_SPARK_INSTRUCTIONS: &str = include_str!("../../gpt-5.3-codex-spark_prompt.md");
 
 const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
 const GROK_INSTRUCTIONS: &str = include_str!("../../grok_prompt.md");
@@ -40,14 +39,11 @@ const CLAUDE_INSTRUCTIONS: &str = include_str!("../../claude_prompt.md");
 pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_048_576;
 pub(crate) const CONTEXT_WINDOW_8K: i64 = 8_192;
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
-pub(crate) const CONTEXT_WINDOW_128K: i64 = 128_000;
 pub(crate) const CONTEXT_WINDOW_256K: i64 = 256_000;
 pub(crate) const CONTEXT_WINDOW_2M: i64 = 2_000_000;
 pub(crate) const CONTEXT_WINDOW_200K: i64 = 200_000;
 const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
     include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
-const GPT_5_3_CODEX_SPARK_INSTRUCTIONS_TEMPLATE: &str =
-    include_str!("../../templates/model_instructions/gpt-5.3-codex-spark_instructions_template.md");
 
 const GPT_5_2_CODEX_PERSONALITY_FRIENDLY: &str =
     include_str!("../../templates/personalities/gpt-5.2-codex_friendly.md");
@@ -353,29 +349,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             shell_type: ConfigShellToolType::UnifiedExec,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
-        )
-    } else if normalized_slug.starts_with("gpt-5.3-codex-spark") {
-        model_info!(
-            slug,
-            base_instructions: GPT_5_3_CODEX_SPARK_INSTRUCTIONS.to_string(),
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supported_in_api: true,
-            supports_parallel_tool_calls: true,
-            supports_reasoning_summaries: false,
-            support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
-            context_window: Some(CONTEXT_WINDOW_128K),
-            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
-            input_modalities: vec![InputModality::Text],
-            model_messages: Some(ModelMessages {
-                instructions_template: Some(GPT_5_3_CODEX_SPARK_INSTRUCTIONS_TEMPLATE.to_string()),
-                instructions_variables: Some(ModelInstructionsVariables {
-                    personality_default: Some(String::new()),
-                    personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
-                    personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
-                }),
-            }),
         )
     } else if normalized_slug.starts_with("gpt-5.3-codex")
         || normalized_slug.starts_with("gpt-5.2-codex")

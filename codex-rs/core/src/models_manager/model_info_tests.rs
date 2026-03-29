@@ -134,24 +134,6 @@ fn antigravity_anthropic_models_reuse_claude_metadata_without_fallback() {
 }
 
 #[test]
-fn spark_model_uses_low_latency_text_only_defaults() {
-    let model = find_model_info_for_slug("gpt-5.3-codex-spark|[pro]");
-
-    assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-    assert!(model.supports_parallel_tool_calls);
-    assert!(!model.supports_reasoning_summaries);
-    assert!(model.supported_in_api);
-    assert_eq!(model.context_window, Some(CONTEXT_WINDOW_128K));
-    assert_eq!(model.input_modalities, vec![InputModality::Text]);
-    assert!(
-        model
-            .base_instructions
-            .contains("fast, iterative coding assistance"),
-        "spark model should use the spark-specific prompt"
-    );
-}
-
-#[test]
 fn gpt_5_family_uses_272k_context_window_defaults() {
     let gpt_53_codex = find_model_info_for_slug("gpt-5.3-codex");
     let gpt_52_codex = find_model_info_for_slug("gpt-5.2-codex");

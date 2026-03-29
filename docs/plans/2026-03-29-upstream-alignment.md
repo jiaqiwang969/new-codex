@@ -13,7 +13,12 @@
 ## Current Status
 
 - `upstream/main` is already merged into `probe/upstream-merge-9dbe09834`.
-- The worktree is intentionally dirty with a small cleanup batch; there is no cherry-pick in progress.
+- Cleanup checkpoint `9e86f782f3` (`chore: align upstream cleanup batch`) is now committed.
+- There is no cherry-pick in progress.
+- The current uncommitted batch is a narrow Bucket D cleanup plus this plan doc update:
+  - remove the `gpt-5.3-codex-spark`-specific prompt/template files
+  - remove the dedicated `gpt-5.3-codex-spark` model-catalog branch from `model_info.rs`
+  - remove the spark-only text/image capability special-case and tests
 - `endpoint-sec` is no longer present in the remaining diff.
 - `freeze` is no longer a functional feature line in the remaining diff.
 - Residual code search confirms `endpoint-sec` and `smart access` now appear only in this plan doc; `freeze` only remains in unrelated generic wording and the non-feature test key `freeze_sandbox_debug`.
@@ -30,6 +35,71 @@
   - `2556abae3c`
   - `b897b028b3`
   - `c3d31b9043`
+- Fresh verification on the current working tree after the spark model-surface cleanup:
+  - `cargo test -p codex-core`: PASS (`929 passed`, `0 failed`, `14 ignored`) plus:
+    - `tests/entire_config_test.rs`: PASS (`3 passed`)
+    - `tests/responses_headers.rs`: PASS (`4 passed`)
+  - previously re-run focused checks still remain green:
+    - `cargo test -p codex-protocol`
+    - `cargo test -p codex-app-server-protocol`
+    - `cargo test -p codex-hooks`
+    - `cargo test -p codex-app-server collaboration_mode_list`
+    - `cargo test -p codex-tui collaboration_mode`
+- `just argument-comment-lint` is still blocked by missing repo artifact `./tools/argument-comment-lint/run-prebuilt-linter.sh`; treat this as a pre-existing environment/tooling issue until the script is restored.
+
+## Post-Checkpoint Inventory (2026-03-30)
+
+- Relative to `upstream/main`, the branch is now `0 behind / 281 ahead`.
+- The remaining branch-level divergence is still large in raw volume:
+  - `264 files changed`
+  - `27,261 insertions`
+  - `3,258 deletions`
+- Raw size alone is misleading because a large part of the diff is generated schema, test movement, or preserved local product lines that were intentionally frozen during the previous cleanup slices.
+
+### Remaining Divergence Buckets
+
+- Bucket A: preserved provider/account-pool/auth stack
+  - `core/src/config/{mod,provider_registry,provider_selection}.rs`
+  - `core/src/{provider_pool,provider_pool_runtime,provider_pool_failover,provider_routing,provider_inventory,provider_auth,model_provider_info,utility_model}.rs`
+  - `login/src/auth/{manager,storage}.rs`
+  - `config-examples/{config-pool.toml,auth-pool.json,README.md}`
+  - `docs/config.md`
+  - status: protected local product line; do not trim casually
+
+- Bucket B: preserved Entire/memory/context packet stack
+  - `core/src/{thread_memory,context_packet,context_packet_memory,entire_summary_generator,entire_integration,hook_memory}.rs`
+  - `hooks/src/entire_summary.rs`
+  - `state/src/runtime/memories.rs`
+  - `rollout/src/{state_db,list}.rs`
+  - status: protected local product line; already validated by `memories` and `entire_config_test`
+
+- Bucket C: memory wire contract and app-server replay surface
+  - `protocol/src/protocol.rs`
+  - `app-server-protocol/src/protocol/{v2,thread_history}.rs`
+  - `app-server/src/bespoke_event_handling.rs`
+  - generated app-server protocol schema/typescript files
+  - status: mostly fallout from Bucket B; not a good candidate for blind upstream rollback
+
+- Bucket D: native provider transport and model catalog surface
+  - `core/src/{anthropic_*,gemini_*,model_compat}.rs`
+  - `core/src/client/provider_support.rs`
+  - `core/src/models_manager/model_info.rs`
+  - prompt/model template files under `core/*.md` and `core/templates/model_instructions/`
+  - status: mixed but tightly coupled to Bucket A; likely the next highest-cost area to classify, not the next place for blind deletions
+
+- Bucket E: residual low-priority non-product tails
+  - `app-server/tests/common/mcp_process.rs`
+  - `network-proxy/src/{http_proxy,network_policy,runtime}.rs`
+  - selected test refactors and harness hardening
+  - status: low-risk to revisit later, but low leverage compared with Buckets A-D
+
+### Recommended Next Batch
+
+- Next analysis/execution target should be Bucket D on top of the already-frozen Bucket A baseline.
+- Reason:
+  - it is the largest remaining area that still mixes true local product intent with possible upstream drift
+  - it controls whether Anthropic/Gemini/native provider support, prompt expansions, and model catalog growth are all intentional keepers or still contain reducible local tail
+  - it can be reviewed without reopening the already-closed `smart access`, `freeze`, or `endpoint-sec` lines
 
 ## Latest Classification Notes
 
@@ -95,6 +165,55 @@
   - `core/templates/collaboration_mode/collaborative.md` was added by `c24a9a7801` but is not currently consumed by `collaboration_mode_presets.rs`
   - `app-server/tests/suite/v2/collaboration_mode_list.rs` had only comment drift; restoring the comment to match the real preset list is safe
   - `app-server/src/main.rs` debug-only gate on `MANAGED_CONFIG_PATH_ENV_VAR` should stay; it is a small correctness/cleanliness fix rather than a product fork
+
+### Bucket D Split (2026-03-30 follow-up)
+
+- D1: provider runtime and wire adapters
+  - `core/src/client/provider_support.rs`
+  - `core/src/model_compat.rs`
+  - `core/src/{anthropic_content,anthropic_streaming,anthropic_types}.rs`
+  - `core/src/{gemini_content,gemini_streaming,gemini_types}.rs`
+  - all of these files are absent from `upstream/main`
+  - they are not dead sidecars: current `core/src/client.rs` imports `provider_support` directly, while `provider_routing.rs`, `config/provider_selection.rs`, `models_manager/manager.rs`, and `utility_model.rs` import `model_compat`
+  - consequence: removing this slice would not be "aligning prompts"; it would actively shrink the preserved non-OpenAI provider product line
+
+- D2: model compatibility policy
+  - `model_compat.rs` is the policy layer for namespaced slug normalization and provider capability quirks:
+    - Grok slug normalization and capability gates
+    - Gemma slug normalization
+    - Anthropic slug normalization, including `antigravity/*`
+    - legacy Gemini alias rewriting
+  - this file is also where current capability exceptions live, for example:
+    - Grok restrictions for `web_search`, `external_web_access`, `reasoning.effort`, and memory trace summarize
+    - text-only handling for `gpt-5.3-codex-spark`
+  - status: protected as long as Bucket A keeps multi-provider routing
+
+- D3: model catalog and prompt binding
+  - `core/src/models_manager/model_info.rs` is mixed:
+    - part of it is hard dependency for Bucket A/D1 because it assigns shell/tool/reasoning/context defaults for Anthropic, Gemini, Grok, and Gemma
+    - another part is prompt/catalog expansion surface layered on top of that runtime support
+  - provider-specific prompt files are all absent from `upstream/main` and currently only enter the runtime through `model_info.rs`:
+    - `core/gemini_prompt.md`
+    - `core/grok_prompt.md`
+    - `core/claude_prompt.md`
+    - `core/gpt-5.3-codex-spark_prompt.md`
+    - `core/templates/model_instructions/gpt-5.3-codex-spark_instructions_template.md`
+  - implication: if we want to keep the runtime provider stack but still reduce local surface, the likely place to trim later is `model_info.rs` plus these prompt/template bindings, not D1 transport code
+
+- D4: Gemini `thought_signature` cross-cut
+  - the protocol addition in `protocol/src/models.rs` is small by itself, but it fans out widely:
+    - Gemini content/streaming code
+    - app-server thread-history schema
+    - generated protocol/app-server schema JSON
+    - many tests across `core`, `protocol`, `app-server`, `state`, and `rollout`
+  - the field is internal-only (`skip_serializing`, `ts(skip)`) and exists to preserve Gemini round-tripping state between turns
+  - status: high-cost target; only revisit if we intentionally shrink or remove the Gemini product line
+
+- D5: likely next reducible tail inside Bucket D
+  - the best remaining candidate is not provider transport, but optional model/prompt product surface:
+    - extra prompt families and prompt wording
+    - model-catalog-only entries like `gpt-5.3-codex-spark`
+  - before trimming any of that, decide explicitly whether those model variants are product requirements or just historical local additions
 
 ## Preserved Local Requirements
 
