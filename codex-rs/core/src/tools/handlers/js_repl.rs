@@ -136,17 +136,12 @@ impl ToolHandler for JsReplHandler {
         let started_at = Instant::now();
         emit_js_repl_exec_begin(session.as_ref(), turn.as_ref(), &call_id).await;
         let cwd = turn.cwd.clone();
-        let call_id_clone = call_id.clone();
         let session_clone = session.clone();
         let turn_clone = turn.clone();
         let manager_clone = manager.clone();
 
-        let result = crate::git_side_effects::track_tool_side_effects(
-            &cwd,
-            call_id_clone,
-            session_clone.as_ref(),
-            turn_clone.as_ref(),
-            || async {
+        let result =
+            crate::git_side_effects::track_tool_side_effects(&cwd, turn_clone.as_ref(), || async {
                 manager_clone
                     .execute(
                         Arc::clone(&session_clone),
@@ -155,9 +150,8 @@ impl ToolHandler for JsReplHandler {
                         args,
                     )
                     .await
-            },
-        )
-        .await;
+            })
+            .await;
         let result = match result {
             Ok(result) => result,
             Err(err) => {

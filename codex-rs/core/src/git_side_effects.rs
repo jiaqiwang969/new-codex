@@ -5,10 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::protocol::EventMsg;
-use crate::protocol::FileSystemMutatedEvent;
 use codex_git_utils::get_git_repo_root;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -20,13 +17,7 @@ pub struct GitState {
     pub uncommitted_files: BTreeMap<PathBuf, Option<SystemTime>>,
 }
 
-pub(crate) async fn track_tool_side_effects<T, F, Fut>(
-    cwd: &Path,
-    call_id: String,
-    session: &Session,
-    turn: &TurnContext,
-    f: F,
-) -> T
+pub(crate) async fn track_tool_side_effects<T, F, Fut>(cwd: &Path, turn: &TurnContext, f: F) -> T
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,
@@ -38,24 +29,10 @@ where
     if let (Some(b), Some(a)) = (before_state, after_state) {
         let changed_files = compute_git_side_effects(&b, &a).await;
         if !changed_files.is_empty() {
-            let mut string_files = Vec::new();
-            {
-                let mut guard = turn.side_effects_files.lock().await;
-                for file in &changed_files {
-                    let file_str = file.to_string_lossy().to_string();
-                    guard.insert(file_str.clone());
-                    string_files.push(file_str);
-                }
+            let mut guard = turn.side_effects_files.lock().await;
+            for file in &changed_files {
+                guard.insert(file.to_string_lossy().to_string());
             }
-            session
-                .send_event(
-                    turn,
-                    EventMsg::FileSystemMutated(FileSystemMutatedEvent {
-                        call_id,
-                        files: string_files,
-                    }),
-                )
-                .await;
         }
     }
     result
@@ -149,9 +126,10 @@ pub async fn compute_git_side_effects(before: &GitState, after: &GitState) -> Ve
                     }
                 }
             }
-        } else if before.head_hash.is_none() && after.head_hash.is_some() {
+        } else if before.head_hash.is_none()
+            && let Some(new_head) = after.head_hash.as_ref()
+        {
             // First commit
-            let new_head = after.head_hash.as_ref().unwrap();
             let diff_out = run_git_command_with_timeout(
                 &["show", "--name-only", "--format=", "-z", new_head],
                 &before.repo_root,

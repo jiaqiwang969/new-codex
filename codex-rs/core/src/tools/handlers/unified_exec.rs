@@ -307,13 +307,9 @@ impl ToolHandler for UnifiedExecHandler {
                     effective_additional_permissions.permissions_preapproved;
                 emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
                 let cwd_clone = cwd.clone();
-                let call_id_clone = context.call_id.clone();
-                let session_clone = context.session.clone();
                 let turn_clone = context.turn.clone();
                 crate::git_side_effects::track_tool_side_effects(
                     &cwd_clone,
-                    call_id_clone,
-                    session_clone.as_ref(),
                     turn_clone.as_ref(),
                     || async {
                         manager

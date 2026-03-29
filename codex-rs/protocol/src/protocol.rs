@@ -498,35 +498,6 @@ pub enum Op {
     /// Request to shut down codex instance.
     Shutdown,
 
-    /// Set reference images for image-capable models.
-    ///
-    /// Paths may be absolute or relative to the session `cwd`. The core
-    /// session will resolve them and convert each path into an image
-    /// data URL suitable for inlineData image models.
-    SetReferenceImages {
-        /// Image paths to treat as reference images, in user-specified order.
-        paths: Vec<PathBuf>,
-    },
-
-    /// Clear any active reference images so subsequent turns use only
-    /// per-turn heuristics (such as explicit user images or the last
-    /// assistant image) when selecting inlineData.
-    ClearReferenceImages,
-
-    /// Set the image generation quality (output size) for Gemini image models.
-    /// Valid values: "1K" (1024x1024), "2K" (2048x2048), "4K" (4096x4096).
-    SetImageQuality {
-        /// Image size string (e.g., "1K", "2K", "4K")
-        size: String,
-    },
-
-    /// Set the aspect ratio for Gemini image generation.
-    /// Valid values: "1:1", "16:9", "9:16", "4:3", "3:4".
-    SetAspectRatio {
-        /// Aspect ratio string (e.g., "1:1", "16:9")
-        ratio: String,
-    },
-
     /// Execute a user-initiated one-off shell command (triggered by "!cmd").
     ///
     /// The command string is executed using the user's default shell and may
@@ -634,10 +605,6 @@ impl Op {
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",
             Self::Shutdown => "shutdown",
-            Self::SetReferenceImages { .. } => "set_reference_images",
-            Self::ClearReferenceImages => "clear_reference_images",
-            Self::SetImageQuality { .. } => "set_image_quality",
-            Self::SetAspectRatio { .. } => "set_aspect_ratio",
             Self::RunUserShellCommand { .. } => "run_user_shell_command",
             Self::ListModels => "list_models",
         }
@@ -1376,7 +1343,6 @@ pub enum EventMsg {
 
     /// Notification advising the user that something they are using has been
     /// deprecated and should be phased out.
-    FileSystemMutated(FileSystemMutatedEvent),
     DeprecationNotice(DeprecationNoticeEvent),
 
     BackgroundEvent(BackgroundEventEvent),
@@ -2975,14 +2941,6 @@ pub struct BackgroundEventEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct FileSystemMutatedEvent {
-    pub call_id: String,
-    pub files: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct DeprecationNoticeEvent {
     /// Concise summary of what is deprecated.
     pub summary: String,
@@ -4532,6 +4490,40 @@ mod tests {
         assert_eq!(json_op, json!({ "type": "user_input", "items": [] }));
 
         Ok(())
+    }
+
+    #[test]
+    fn removed_local_image_control_ops_do_not_deserialize() {
+        for value in [
+            json!({
+                "type": "set_reference_images",
+                "paths": [],
+            }),
+            json!({
+                "type": "clear_reference_images",
+            }),
+            json!({
+                "type": "set_image_quality",
+                "size": "2K",
+            }),
+            json!({
+                "type": "set_aspect_ratio",
+                "ratio": "16:9",
+            }),
+        ] {
+            assert!(serde_json::from_value::<Op>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn removed_file_system_mutated_event_does_not_deserialize() {
+        let value = json!({
+            "type": "file_system_mutated",
+            "callId": "call-123",
+            "files": ["src/main.rs"],
+        });
+
+        assert!(serde_json::from_value::<EventMsg>(value).is_err());
     }
 
     #[test]

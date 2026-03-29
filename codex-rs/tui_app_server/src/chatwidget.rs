@@ -3459,16 +3459,6 @@ impl ChatWidget {
         );
     }
 
-    fn on_file_system_mutated(&mut self, ev: codex_protocol::protocol::FileSystemMutatedEvent) {
-        if !ev.files.is_empty() {
-            let mut txt = "[Detected File Changes via Shell]\n".to_string();
-            for f in ev.files {
-                txt.push_str(&format!("  └ 📝 M {f}\n"));
-            }
-            self.on_agent_message(txt);
-        }
-    }
-
     fn on_exec_command_end(&mut self, ev: ExecCommandEndEvent) {
         if is_unified_exec_source(ev.source) {
             if let Some(process_id) = ev.process_id.as_deref()
@@ -6883,7 +6873,6 @@ impl ChatWidget {
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
             EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
-            EventMsg::FileSystemMutated(ev) => self.on_file_system_mutated(ev),
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,

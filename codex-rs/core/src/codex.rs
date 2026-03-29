@@ -4581,22 +4581,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     handlers::review(&sess, &config, sub.id.clone(), review_request).await;
                     false
                 }
-                Op::SetReferenceImages { paths } => {
-                    handlers::set_reference_images(&sess, paths).await;
-                    false
-                }
-                Op::ClearReferenceImages => {
-                    handlers::clear_reference_images(&sess).await;
-                    false
-                }
-                Op::SetImageQuality { size } => {
-                    handlers::set_image_quality(&sess, &size).await;
-                    false
-                }
-                Op::SetAspectRatio { ratio } => {
-                    handlers::set_aspect_ratio(&sess, &ratio).await;
-                    false
-                }
                 Op::Shutdown => handlers::shutdown(&sess, sub.id.clone()).await,
                 _ => false, // Ignore unknown ops; enum is non_exhaustive to allow extensions.
             }
@@ -5524,95 +5508,6 @@ mod handlers {
                 sess.send_event(&turn_context, event.msg).await;
             }
         }
-    }
-
-    pub async fn set_reference_images(sess: &Arc<Session>, paths: Vec<std::path::PathBuf>) {
-        use codex_protocol::models::ContentItem;
-        use codex_protocol::models::ResponseInputItem;
-        use codex_protocol::user_input::UserInput;
-
-        let cwd = {
-            let state = sess.state.lock().await;
-            state.session_configuration.cwd.clone()
-        };
-
-        let mut images: Vec<String> = Vec::new();
-
-        for path in paths {
-            let absolute = if path.is_absolute() {
-                path
-            } else {
-                match cwd.join(path) {
-                    Ok(path) => path.into_path_buf(),
-                    Err(err) => {
-                        warn!("failed to resolve reference image path against cwd: {err:#}");
-                        continue;
-                    }
-                }
-            };
-
-            let input = UserInput::LocalImage { path: absolute };
-            let item = ResponseInputItem::from(vec![input]);
-            if let ResponseInputItem::Message { content, .. } = item {
-                for entry in content {
-                    if let ContentItem::InputImage { image_url } = entry
-                        && !image_url.trim().is_empty()
-                    {
-                        images.push(image_url);
-                    }
-                }
-            }
-        }
-
-        let mut state = sess.state.lock().await;
-        state.set_reference_images(images);
-    }
-
-    pub async fn clear_reference_images(sess: &Arc<Session>) {
-        let mut state = sess.state.lock().await;
-        state.clear_reference_images();
-    }
-
-    pub async fn set_image_quality(sess: &Arc<Session>, size: &str) {
-        use crate::gemini_types::GeminiImageSize;
-
-        let parsed_size = match size.to_uppercase().as_str() {
-            "1K" => Some(GeminiImageSize::Size1K),
-            "2K" => Some(GeminiImageSize::Size2K),
-            "4K" => Some(GeminiImageSize::Size4K),
-            _ => {
-                tracing::warn!(
-                    "Invalid image quality '{}'. Valid options: 1K, 2K, 4K",
-                    size
-                );
-                return;
-            }
-        };
-
-        let mut state = sess.state.lock().await;
-        state.set_image_size(parsed_size);
-    }
-
-    pub async fn set_aspect_ratio(sess: &Arc<Session>, ratio: &str) {
-        use crate::gemini_types::GeminiAspectRatio;
-
-        let parsed_ratio = match ratio {
-            "1:1" => Some(GeminiAspectRatio::Square),
-            "16:9" => Some(GeminiAspectRatio::Landscape),
-            "9:16" => Some(GeminiAspectRatio::Portrait),
-            "4:3" => Some(GeminiAspectRatio::Standard),
-            "3:4" => Some(GeminiAspectRatio::StandardPortrait),
-            _ => {
-                tracing::warn!(
-                    "Invalid aspect ratio '{}'. Valid options: 1:1, 16:9, 9:16, 4:3, 3:4",
-                    ratio
-                );
-                return;
-            }
-        };
-
-        let mut state = sess.state.lock().await;
-        state.set_aspect_ratio(parsed_ratio);
     }
 }
 
@@ -7451,8 +7346,7 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeBegin(_)
-        | EventMsg::CollabResumeEnd(_)
-        | EventMsg::FileSystemMutated(_) => None,
+        | EventMsg::CollabResumeEnd(_) => None,
     }
 }
 

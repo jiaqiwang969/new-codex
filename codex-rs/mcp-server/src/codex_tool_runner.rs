@@ -262,9 +262,6 @@ async fn run_codex_tool_session_inner(
                     EventMsg::Warning(_) => {
                         continue;
                     }
-                    EventMsg::GuardianAssessment(_) => {
-                        continue;
-                    }
                     EventMsg::ElicitationRequest(_) => {
                         // TODO: forward elicitation requests to the client?
                         continue;
@@ -373,7 +370,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::RequestUserInput(_)
                     | EventMsg::RequestPermissions(_)
                     | EventMsg::DynamicToolCallRequest(_)
-                    | EventMsg::FileSystemMutated(_)
                     | EventMsg::DynamicToolCallResponse(_)
                     | EventMsg::ContextCompacted(_)
                     | EventMsg::ModelReroute(_)

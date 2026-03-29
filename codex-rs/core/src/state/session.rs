@@ -211,28 +211,12 @@ impl SessionState {
         self.startup_prewarm.take()
     }
 
-    pub(crate) fn set_reference_images(&mut self, images: Vec<String>) {
-        self.active_reference_images = images;
-    }
-
-    pub(crate) fn clear_reference_images(&mut self) {
-        self.active_reference_images.clear();
-    }
-
     pub(crate) fn reference_images(&self) -> &[String] {
         &self.active_reference_images
     }
 
-    pub(crate) fn set_image_size(&mut self, size: Option<GeminiImageSize>) {
-        self.image_size = size;
-    }
-
     pub(crate) fn image_size(&self) -> Option<GeminiImageSize> {
         self.image_size
-    }
-
-    pub(crate) fn set_aspect_ratio(&mut self, ratio: Option<GeminiAspectRatio>) {
-        self.aspect_ratio = ratio;
     }
 
     pub(crate) fn aspect_ratio(&self) -> Option<GeminiAspectRatio> {
