@@ -2903,5 +2903,9 @@ pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
 mod mcp_requirements_tests;
 
 #[cfg(test)]
+#[path = "mcp_config_tests.rs"]
+mod mcp_config_tests;
+
+#[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
