@@ -321,7 +321,6 @@ pub enum ModeKind {
         alias = "custom"
     )]
     Default,
-    Collaborative,
     #[doc(hidden)]
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
@@ -341,7 +340,6 @@ impl ModeKind {
         match self {
             Self::Plan => "Plan",
             Self::Default => "Default",
-            Self::Collaborative => "Collaborative",
             Self::PairProgramming => "Pair Programming",
             Self::Execute => "Execute",
         }
@@ -497,8 +495,6 @@ mod tests {
             assert!(mode.is_tui_visible());
         }
 
-        assert!(!ModeKind::Collaborative.is_tui_visible());
-        assert!(!ModeKind::Collaborative.allows_request_user_input());
         assert!(!ModeKind::PairProgramming.is_tui_visible());
         assert!(!ModeKind::Execute.is_tui_visible());
     }

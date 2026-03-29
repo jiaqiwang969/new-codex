@@ -22,10 +22,6 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
-
-const BUILT_IN_CLAUDE_OPUS_CONFIG: &str = include_str!("builtins/claude-opus.toml");
-const BUILT_IN_CLAUDE_SONNET_CONFIG: &str = include_str!("builtins/claude-sonnet.toml");
-const BUILT_IN_CLAUDE_HAIKU_CONFIG: &str = include_str!("builtins/claude-haiku.toml");
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
@@ -421,51 +417,6 @@ Rules:
                     }
                 ),
                 (
-                    "claude-opus".to_string(),
-                    AgentRoleConfig {
-                        description: Some(r#"Claude Opus 4.6 (1M context) for deep reasoning tasks.
-Typical tasks:
-- Complex cross-file refactoring and architecture redesign
-- Root cause analysis of hard-to-reproduce bugs
-- Security audits requiring understanding of full call chains
-Rules:
-- Prefer this role when reasoning depth matters more than latency.
-- Provide concrete file/module scope so the agent can focus quickly."#.to_string()),
-                        config_file: Some("claude-opus.toml".to_string().parse().unwrap_or_default()),
-                        nickname_candidates: None,
-                    }
-                ),
-                (
-                    "claude-sonnet".to_string(),
-                    AgentRoleConfig {
-                        description: Some(r#"Claude Sonnet 4.6 (1M context) for fast execution.
-Typical tasks:
-- Code exploration and targeted Q&A
-- Test writing and fixture updates
-- Straightforward bug fixes and docs updates
-Rules:
-- Prefer this role for speed-sensitive tasks with clear scope.
-- Split larger work into parallel sub-tasks when possible."#.to_string()),
-                        config_file: Some("claude-sonnet.toml".to_string().parse().unwrap_or_default()),
-                        nickname_candidates: None,
-                    }
-                ),
-                (
-                    "claude-haiku".to_string(),
-                    AgentRoleConfig {
-                        description: Some(r#"Claude Haiku 4.5 (200K context) for fastest responses.
-Typical tasks:
-- Quick code reviews and simple refactoring
-- Fast iteration on small changes
-- Lightweight exploration and validation
-Rules:
-- Prefer this role for speed-critical tasks with limited scope.
-- Best for tasks that don't require deep reasoning or large context."#.to_string()),
-                        config_file: Some("claude-haiku.toml".to_string().parse().unwrap_or_default()),
-                        nickname_candidates: None,
-                    }
-                ),
-                (
                     "worker".to_string(),
                     AgentRoleConfig {
                         description: Some(r#"Use for execution and production work.
@@ -480,22 +431,24 @@ Rules:
                         nickname_candidates: None,
                     }
                 ),
-                (
-                    "awaiter".to_string(),
-                    AgentRoleConfig {
-                        description: Some(r#"Use an `awaiter` agent EVERY TIME you must run a command that might take some very long time.
-This includes, but not only:
-* testing
-* monitoring of a long running process
-* explicit ask to wait for something
-
-When YOU wait for the `awaiter` agent to be done, use the largest possible timeout.
-Be patient with the `awaiter`.
-Close the awaiter when you're done with it."#.to_string()),
-                        config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
-                        nickname_candidates: None,
-                    }
-                ),
+                // Awaiter is temp removed
+//                 (
+//                     "awaiter".to_string(),
+//                     AgentRoleConfig {
+//                         description: Some(r#"Use an `awaiter` agent EVERY TIME you must run a command that will take some very long time.
+// This includes, but not only:
+// * testing
+// * monitoring of a long running process
+// * explicit ask to wait for something
+//
+// Rules:
+// - When an awaiter is running, you can work on something else. If you need to wait for its completion, use the largest possible timeout.
+// - Be patient with the `awaiter`.
+// - Do not use an awaiter for every compilation/test if it won't take time. Only use if for long running commands.
+// - Close the awaiter when you're done with it."#.to_string()),
+//                         config_file: Some("awaiter.toml".to_string().parse().unwrap_or_default()),
+//                     }
+//                 )
             ])
         });
         &CONFIG
@@ -508,9 +461,6 @@ Close the awaiter when you're done with it."#.to_string()),
         match path.to_str()? {
             "explorer.toml" => Some(EXPLORER),
             "awaiter.toml" => Some(AWAITER),
-            "claude-opus.toml" => Some(BUILT_IN_CLAUDE_OPUS_CONFIG),
-            "claude-sonnet.toml" => Some(BUILT_IN_CLAUDE_SONNET_CONFIG),
-            "claude-haiku.toml" => Some(BUILT_IN_CLAUDE_HAIKU_CONFIG),
             _ => None,
         }
     }

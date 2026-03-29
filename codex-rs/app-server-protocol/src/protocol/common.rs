@@ -799,6 +799,7 @@ server_request_definitions! {
         params: v2::PermissionsRequestApprovalParams,
         response: v2::PermissionsRequestApprovalResponse,
     },
+
     /// Execute a dynamic tool call on the client.
     DynamicToolCall => "item/tool/call" {
         params: v2::DynamicToolCallParams,

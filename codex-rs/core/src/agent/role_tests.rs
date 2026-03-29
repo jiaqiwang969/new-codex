@@ -804,26 +804,10 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
 }
 
 #[test]
-fn built_in_config_file_contents_resolves_known_files() {
+fn built_in_config_file_contents_resolves_explorer_only() {
     assert_eq!(
         built_in::config_file_contents(Path::new("explorer.toml")),
         Some(include_str!("builtins/explorer.toml"))
-    );
-    assert_eq!(
-        built_in::config_file_contents(Path::new("awaiter.toml")),
-        Some(include_str!("builtins/awaiter.toml"))
-    );
-    assert_eq!(
-        built_in::config_file_contents(Path::new("claude-opus.toml")),
-        Some(include_str!("builtins/claude-opus.toml"))
-    );
-    assert_eq!(
-        built_in::config_file_contents(Path::new("claude-sonnet.toml")),
-        Some(include_str!("builtins/claude-sonnet.toml"))
-    );
-    assert_eq!(
-        built_in::config_file_contents(Path::new("claude-haiku.toml")),
-        Some(include_str!("builtins/claude-haiku.toml"))
     );
     assert_eq!(
         built_in::config_file_contents(Path::new("missing.toml")),

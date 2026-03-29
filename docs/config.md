@@ -13,12 +13,13 @@ Approval handling now has two separate configuration axes:
 - `approval_policy`: when Codex must escalate an action for approval
 - `approvals_reviewer`: who reviews escalated actions (`user` or `guardian_subagent`)
 
-The `smart_approvals` feature flag is only a rollout and UI gate. It does not
-silently replace `approval_policy`.
+The experimental `guardian_approval` feature flag only gates the Guardian
+Approvals UI/preset. It does not silently replace `approval_policy`.
 
-Older configs that still use the deprecated `guardian_approval = true` alias are
-migrated to `approvals_reviewer = "guardian_subagent"` when no explicit reviewer
-is already set in the same scope.
+Older configs that still set the deprecated `smart_approvals = true` alias keep
+that value on disk, but the alias is ignored at runtime. To route approvals
+through the guardian reviewer, set `approvals_reviewer = "guardian_subagent"`
+explicitly.
 
 ## Provider account pool
 
