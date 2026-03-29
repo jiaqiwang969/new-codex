@@ -1222,6 +1222,93 @@ fn feedback_enabled_defaults_to_true() -> std::io::Result<()> {
     Ok(())
 }
 
+#[test]
+fn web_search_mode_defaults_to_none_if_unset() {
+    let cfg = ConfigToml::default();
+    let profile = ConfigProfile::default();
+    let features = Features::with_defaults();
+
+    assert_eq!(resolve_web_search_mode(&cfg, &profile, &features), None);
+}
+
+#[test]
+fn web_search_mode_prefers_profile_over_legacy_flags() {
+    let cfg = ConfigToml::default();
+    let profile = ConfigProfile {
+        web_search: Some(WebSearchMode::Live),
+        ..Default::default()
+    };
+    let mut features = Features::with_defaults();
+    features.enable(Feature::WebSearchCached);
+
+    assert_eq!(
+        resolve_web_search_mode(&cfg, &profile, &features),
+        Some(WebSearchMode::Live)
+    );
+}
+
+#[test]
+fn web_search_mode_disabled_overrides_legacy_request() {
+    let cfg = ConfigToml {
+        web_search: Some(WebSearchMode::Disabled),
+        ..Default::default()
+    };
+    let profile = ConfigProfile::default();
+    let mut features = Features::with_defaults();
+    features.enable(Feature::WebSearchRequest);
+
+    assert_eq!(
+        resolve_web_search_mode(&cfg, &profile, &features),
+        Some(WebSearchMode::Disabled)
+    );
+}
+
+#[test]
+fn web_search_mode_for_turn_uses_preference_for_read_only() {
+    let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
+    let mode =
+        resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::new_read_only_policy());
+
+    assert_eq!(mode, WebSearchMode::Cached);
+}
+
+#[test]
+fn web_search_mode_for_turn_prefers_live_for_danger_full_access() {
+    let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
+    let mode = resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+    assert_eq!(mode, WebSearchMode::Live);
+}
+
+#[test]
+fn web_search_mode_for_turn_respects_disabled_for_danger_full_access() {
+    let web_search_mode = Constrained::allow_any(WebSearchMode::Disabled);
+    let mode = resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+    assert_eq!(mode, WebSearchMode::Disabled);
+}
+
+#[test]
+fn web_search_mode_for_turn_falls_back_when_live_is_disallowed() -> anyhow::Result<()> {
+    let allowed = [WebSearchMode::Disabled, WebSearchMode::Cached];
+    let web_search_mode = Constrained::new(WebSearchMode::Cached, move |candidate| {
+        if allowed.contains(candidate) {
+            Ok(())
+        } else {
+            Err(ConstraintError::InvalidValue {
+                field_name: "web_search_mode",
+                candidate: format!("{candidate:?}"),
+                allowed: format!("{allowed:?}"),
+                requirement_source: RequirementSource::Unknown,
+            })
+        }
+    })?;
+    let mode = resolve_web_search_mode_for_turn(&web_search_mode, &SandboxPolicy::DangerFullAccess);
+
+    assert_eq!(mode, WebSearchMode::Cached);
+    Ok(())
+}
+
 #[tokio::test]
 async fn project_profile_overrides_user_profile() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
