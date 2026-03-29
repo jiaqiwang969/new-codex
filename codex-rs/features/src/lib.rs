@@ -140,8 +140,6 @@ pub enum Feature {
     MultiAgentV2,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
-    /// Create isolated git worktrees for forked sessions and resume-time restore.
-    AgentWorktrees,
     /// Enable apps.
     Apps,
     /// Enable the tool_search tool for apps.
@@ -719,16 +717,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::SpawnCsv,
         key: "enable_fanout",
         stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::AgentWorktrees,
-        key: "agent_worktrees",
-        stage: Stage::Experimental {
-            name: "Agent worktrees",
-            menu_description: "Run forked sessions inside isolated git worktrees and restore their leased worktrees on resume.",
-            announcement: "NEW: Forked sessions can now use isolated git worktrees. Enable in /experimental and restart Codex!",
-        },
         default_enabled: false,
     },
     FeatureSpec {

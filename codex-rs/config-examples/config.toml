@@ -17,7 +17,6 @@ undo = true                          # Ghost commit at each turn for undo
 
 # Experimental
 multi_agent = true                   # Spawn multiple agents in parallel
-agent_worktrees = true               # Isolated git worktrees for forked sessions + resume restore
 apps = true                          # ChatGPT Apps/Connectors via $ mentions
 prevent_idle_sleep = true            # Keep macOS awake while running
 

@@ -35,7 +35,6 @@ This directory contains example configuration files for Codex with multi-agent e
 ```toml
 [features]
 multi_agent = true           # Enable multi-agent collaboration
-agent_worktrees = true       # Isolated git worktrees for forked sessions + resume restore
 ```
 
 ### Model Selection
