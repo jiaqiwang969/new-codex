@@ -240,6 +240,13 @@
   - despite that isolation, removing `boomslang` still changes fallback behavior for any user-configured model slug that relies on its dedicated GPT-5.2 defaults, so it is not a blind-cleanup candidate
   - status: leave both aliases in place until there is an explicit product decision on whether those local model names still need first-class metadata
 
+- D7: `exp-codex` / `codex-1p` / generic `exp-*` alias tail
+  - these branches also come from the local `7cc1ea95578` built-in model metadata refresh rather than from upstream merge residue
+  - follow-up commit `53f041f121` extended the same fallback path to normalized namespaced slugs (`openai/*`, `google/*`, `anthropic/*`, `xai/*`, and `antigravity*/*`), so the catalog logic now serves both bare and namespaced configured model selections
+  - `exp-codex` is still a live behavior path, not dead catalog text: `exp-codex-personality` is covered in `core/tests/suite/personality.rs`, `core/tests/suite/model_switching.rs`, and `app-server/tests/suite/v2/turn_start.rs`
+  - `codex-1p` and the generic `exp-*` branch currently have no direct repo references outside `model_info.rs`, but removing them would still change offline metadata for user-configured experimental slugs
+  - status: leave these aliases in place unless there is an explicit product decision to drop support for those experimental model names
+
 ## Preserved Local Requirements
 
 - Keep account-pool and provider routing:
