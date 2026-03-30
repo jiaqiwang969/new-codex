@@ -15,10 +15,13 @@
 - `upstream/main` is already merged into `probe/upstream-merge-9dbe09834`.
 - Cleanup checkpoint `9e86f782f3` (`chore: align upstream cleanup batch`) is now committed.
 - There is no cherry-pick in progress.
-- The current uncommitted batch is a narrow Bucket D cleanup plus this plan doc update:
+- The latest committed cleanup batch is `9a5a59b5da` (`chore: drop spark model surface`):
   - remove the `gpt-5.3-codex-spark`-specific prompt/template files
   - remove the dedicated `gpt-5.3-codex-spark` model-catalog branch from `model_info.rs`
   - remove the spark-only text/image capability special-case and tests
+- The current uncommitted batch is a narrow role-layer cleanup plus this plan doc update:
+  - revert `core/src/agent/builtins/explorer.toml` back to the upstream-empty built-in config
+  - add a spawn-tool-spec regression test so `explorer` stays on local `model_sub` inheritance wording instead of advertising a locked `gpt-5.2` / `xhigh` preset
 - `endpoint-sec` is no longer present in the remaining diff.
 - `freeze` is no longer a functional feature line in the remaining diff.
 - Residual code search confirms `endpoint-sec` and `smart access` now appear only in this plan doc; `freeze` only remains in unrelated generic wording and the non-feature test key `freeze_sandbox_debug`.
@@ -35,10 +38,18 @@
   - `2556abae3c`
   - `b897b028b3`
   - `c3d31b9043`
-- Fresh verification on the current working tree after the spark model-surface cleanup:
+- Fresh verification on the committed tree after the spark model-surface cleanup:
   - `cargo test -p codex-core`: PASS (`929 passed`, `0 failed`, `14 ignored`) plus:
     - `tests/entire_config_test.rs`: PASS (`3 passed`)
     - `tests/responses_headers.rs`: PASS (`4 passed`)
+- Reverification on committed tree `9a5a59b5da` was re-run and progressed through the full unit phase cleanly:
+  - unit tests: PASS (`1807 passed`, `0 failed`, `5 ignored`)
+  - the follow-up `tests/all.rs` integration sweep is long-running but has shown no failures during repeated polling
+- Current working-tree verification for the role-layer cleanup:
+  - `cargo test -p codex-core agent::role::tests::spawn_tool_spec_explorer_inherits_model_sub_without_locked_model_note -- --exact`: PASS (`1 passed`, `0 failed`)
+  - `cargo test -p codex-core`: PASS (`929 passed`, `0 failed`, `14 ignored`)
+  - `tests/entire_config_test.rs`: PASS (`3 passed`)
+  - `tests/responses_headers.rs`: PASS (`4 passed`)
   - previously re-run focused checks still remain green:
     - `cargo test -p codex-protocol`
     - `cargo test -p codex-app-server-protocol`
@@ -115,6 +126,7 @@
 - Role/prompt/model metadata is not just unresolved merge fallout:
   - `core/src/models_manager/model_info.rs` is now a local model catalog entry point
   - `core/src/agent/role.rs` contains a required provider-reroute behavior so role-selected models still honor local provider/account-pool routing
+  - `core/src/agent/builtins/explorer.toml` was local drift rather than a provider requirement; locking `explorer` to `gpt-5.2` / `xhigh` conflicted with the local `model_sub` inheritance wording, so that built-in file is being restored toward upstream-empty content while keeping the reroute behavior
   - Anthropic/Gemini/Grok/Gemma prompt and model metadata should not be removed casually because they sit on top of the preserved provider stack
   - `core/src/client/provider_support.rs` and `core/src/model_provider_info.rs` are part of the same protected provider surface; trimming them would effectively mean shrinking the provider product line, not just resolving merge noise
   - extra built-in role presets are a separable product surface from the provider stack itself

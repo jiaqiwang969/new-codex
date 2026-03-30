@@ -734,6 +734,17 @@ fn spawn_tool_spec_does_not_render_role_tags() {
 }
 
 #[test]
+fn spawn_tool_spec_explorer_inherits_model_sub_without_locked_model_note() {
+    let spec = spawn_tool_spec::build(&BTreeMap::new());
+
+    assert!(spec.contains(
+        "- Inherits `model_sub` when configured unless this spawn sets an explicit `model` override."
+    ));
+    assert!(!spec.contains("This role's model is set to `gpt-5.2`"));
+    assert!(!spec.contains("This role's reasoning effort is set to `xhigh`"));
+}
+
+#[test]
 fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
     let user_defined_roles = BTreeMap::from([(
         "aaa".to_string(),
