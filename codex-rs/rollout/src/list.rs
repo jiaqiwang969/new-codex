@@ -1201,7 +1201,7 @@ async fn find_thread_path_by_id_str_in_subdir(
         if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
             return Ok(Some(db_path));
         }
-        tracing::warn!(
+        tracing::error!(
             "state db returned stale rollout path for thread {id_str}: {}",
             db_path.display()
         );
