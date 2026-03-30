@@ -15,13 +15,13 @@
 - `upstream/main` is already merged into `probe/upstream-merge-9dbe09834`.
 - Cleanup checkpoint `9e86f782f3` (`chore: align upstream cleanup batch`) is now committed.
 - There is no cherry-pick in progress.
-- The latest committed cleanup batch is `9a5a59b5da` (`chore: drop spark model surface`):
-  - remove the `gpt-5.3-codex-spark`-specific prompt/template files
-  - remove the dedicated `gpt-5.3-codex-spark` model-catalog branch from `model_info.rs`
-  - remove the spark-only text/image capability special-case and tests
-- The current uncommitted batch is a narrow role-layer cleanup plus this plan doc update:
-  - revert `core/src/agent/builtins/explorer.toml` back to the upstream-empty built-in config
-  - add a spawn-tool-spec regression test so `explorer` stays on local `model_sub` inheritance wording instead of advertising a locked `gpt-5.2` / `xhigh` preset
+- The latest committed cleanup batch is `5a95257662` (`chore: align explorer and model catalog metadata`):
+  - keep the default/explorer spawn-tool-spec wording aligned with local `model_sub` inheritance
+  - avoid advertising a locked `gpt-5.2` / `xhigh` explorer preset
+  - preserve the provider/model-catalog baseline while trimming role-layer drift
+- The current uncommitted batch is a prompt/permissions cleanup plus this plan doc update:
+  - remove legacy `Protected Filesystem Operations on macOS` prompt residue from shared/provider prompt files
+  - restore the `request_permissions` approval prompt scope to upstream `network` + `file_system` only
 - `endpoint-sec` is no longer present in the remaining diff.
 - `freeze` is no longer a functional feature line in the remaining diff.
 - Residual code search confirms `endpoint-sec` and `smart access` now appear only in this plan doc; `freeze` only remains in unrelated generic wording and the non-feature test key `freeze_sandbox_debug`.
@@ -45,13 +45,14 @@
 - Reverification on committed tree `9a5a59b5da` was re-run and progressed through the full unit phase cleanly:
   - unit tests: PASS (`1807 passed`, `0 failed`, `5 ignored`)
   - the follow-up `tests/all.rs` integration sweep is long-running but has shown no failures during repeated polling
-- Current working-tree verification for the role-layer cleanup:
-  - `cargo test -p codex-core agent::role::tests::spawn_tool_spec_explorer_inherits_model_sub_without_locked_model_note -- --exact`: PASS (`1 passed`, `0 failed`)
-  - `cargo test -p codex-core`: PASS (`929 passed`, `0 failed`, `14 ignored`)
-  - `tests/entire_config_test.rs`: PASS (`3 passed`)
-  - `tests/responses_headers.rs`: PASS (`4 passed`)
+- Current working-tree verification for the prompt/permissions cleanup:
+  - `cargo test -p codex-protocol`: PASS (`140 passed`, `0 failed`)
+  - `cargo test -p codex-core --test all 'suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions' -- --exact`: PASS (`1 passed`, `0 failed`)
+  - `cargo test -p codex-core --test all suite::compact_remote::`: PASS (`23 passed`, `0 failed`, `1 ignored`)
+  - `cargo test -p codex-core`: one transient failure in `suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions`
+    - isolated rerun and the full `compact_remote` subset both passed immediately afterward
+    - the failing full-run logs showed a transient `502 Bad Gateway` on proxied local `/responses` traffic rather than an assertion mismatch
   - previously re-run focused checks still remain green:
-    - `cargo test -p codex-protocol`
     - `cargo test -p codex-app-server-protocol`
     - `cargo test -p codex-hooks`
     - `cargo test -p codex-app-server collaboration_mode_list`
@@ -170,12 +171,13 @@
   - there are no remaining `endpoint-sec` or `smart access` code paths in those files
   - `docs/config.md` had local wording drift around approvals aliases and should track actual runtime behavior: `guardian_approval` is the experimental rollout gate, while deprecated `smart_approvals` is ignored
 - Tiny standalone cleanup can proceed selectively:
-  - `git-utils/src/info.rs` can be moved back to upstream visibility (`run_git_command_with_timeout` does not need to stay `pub(crate)`)
+  - `git-utils/src/info.rs` is already aligned again
   - `app-server-protocol/src/protocol/common.rs` had a whitespace-only merge residue and is now aligned
   - `protocol/bindings/.gitignore` should stay unless generated TS bindings hygiene is revisited separately, because local generated files may otherwise reappear as untracked noise
 - Additional low-coupling cleanup already looks justified:
-  - `core/templates/collaboration_mode/collaborative.md` was added by `c24a9a7801` but is not currently consumed by `collaboration_mode_presets.rs`
-  - `app-server/tests/suite/v2/collaboration_mode_list.rs` had only comment drift; restoring the comment to match the real preset list is safe
+  - legacy macOS protected-filesystem prompt residue was safe to strip from shared/provider prompt files
+  - `request_permissions` approval prompt scope is now back to upstream `network` + `file_system` wording
+  - `core/templates/collaboration_mode/collaborative.md` and `app-server/tests/suite/v2/collaboration_mode_list.rs` are already aligned and no longer active cleanup targets
   - `app-server/src/main.rs` debug-only gate on `MANAGED_CONFIG_PATH_ENV_VAR` should stay; it is a small correctness/cleanliness fix rather than a product fork
 
 ### Bucket D Split (2026-03-30 follow-up)

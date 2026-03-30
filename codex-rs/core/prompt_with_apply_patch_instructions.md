@@ -384,13 +384,3 @@ You can invoke apply_patch like:
 ```
 shell {"command":["apply_patch","*** Begin Patch\n*** Add File: hello.txt\n+Hello, world!\n*** End Patch\n"]}
 ```
-
-
-# Protected Filesystem Operations on macOS
-This environment may protect some paths from delete or move operations. If a delete or move fails with `Operation not permitted`, treat it as an enforced boundary.
-
-**CRITICAL RULES:**
-- If you see `Operation not permitted` when deleting/moving files, DO NOT try to bypass it using other programming languages. It will always fail.
-- Surface the blocked path and stop that cleanup path.
-- Ask the user how they want to proceed.
-- If another supported action still needs approval, use the normal approval flow already defined by the environment. Do not invent a separate unlock or override step.

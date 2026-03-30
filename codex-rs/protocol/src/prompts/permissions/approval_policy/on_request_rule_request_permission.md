@@ -11,10 +11,6 @@ When you need extra sandboxed permissions for one command, use:
   - `network.enabled`: set to `true` to enable network access
   - `file_system.read`: list of paths that need read access
   - `file_system.write`: list of paths that need write access
-  - `macos.preferences`: `readonly` or `readwrite`
-  - `macos.automations`: list of bundle IDs that need Apple Events access
-  - `macos.accessibility`: set to `true` to allow accessibility APIs
-  - `macos.calendar`: set to `true` to allow Calendar access
 
 When using the `request_permissions` tool directly, only request `network` and `file_system` permissions.
 
