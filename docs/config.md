@@ -14,12 +14,14 @@ Approval handling now has two separate configuration axes:
 - `approvals_reviewer`: who reviews escalated actions (`user` or `guardian_subagent`)
 
 The experimental `guardian_approval` feature flag only gates the Guardian
-Approvals UI/preset. It does not silently replace `approval_policy`.
+Approvals UI/preset. It does not silently replace `approval_policy`, and it does
+not change the default `approvals_reviewer`, which remains `user` unless you
+set it explicitly.
 
 Older configs that still set the deprecated `smart_approvals = true` alias keep
 that value on disk, but the alias is ignored at runtime. To route approvals
 through the guardian reviewer, set `approvals_reviewer = "guardian_subagent"`
-explicitly.
+explicitly. This also works without enabling `guardian_approval`.
 
 ## Provider account pool
 

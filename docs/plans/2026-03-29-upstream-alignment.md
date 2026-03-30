@@ -169,7 +169,7 @@
   - upstream already contains `e84ee33cc0` (`Add guardian approval MVP (#13692)`) and later guardian-reviewer follow-up commits
   - current diffs under `protocol/config_types.rs`, `app-server-protocol/src/protocol/v2.rs`, `app-server/src/codex_message_processor.rs`, `tui_app_server/src/app.rs`, and `tui_app_server/src/chatwidget.rs` are dominated by preserved local `model_sub` / memory wiring rather than custom approval routing
   - there are no remaining `endpoint-sec` or `smart access` code paths in those files
-  - `docs/config.md` had local wording drift around approvals aliases and should track actual runtime behavior: `guardian_approval` is the experimental rollout gate, while deprecated `smart_approvals` is ignored
+  - `docs/config.md` should track actual runtime behavior from `config_tests.rs`: `guardian_approval` is only the experimental rollout gate, enabling it does not change the default reviewer, `approvals_reviewer` can be set independently, and deprecated `smart_approvals` is preserved on disk but ignored at runtime
 - Tiny standalone cleanup can proceed selectively:
   - `git-utils/src/info.rs` is already aligned again
   - `app-server-protocol/src/protocol/common.rs` had a whitespace-only merge residue and is now aligned
@@ -228,6 +228,13 @@
     - extra prompt families and prompt wording
     - model-catalog-only entries like `gpt-5.3-codex-spark`
   - before trimming any of that, decide explicitly whether those model variants are product requirements or just historical local additions
+
+- D6: `bengalfox` / `boomslang` alias tail
+  - both aliases came from the local `7cc1ea95578` built-in model metadata refresh rather than from upstream merge noise
+  - `bengalfox` is not an isolated dead branch: `codex-api/src/rate_limits.rs` still parses `codex_bengalfox` headers, so dropping its offline metadata would create an inconsistent local catalog
+  - `boomslang` currently appears only in `core/src/models_manager/model_info.rs`, with no references in tests, docs, or `core/models.json`
+  - despite that isolation, removing `boomslang` still changes fallback behavior for any user-configured model slug that relies on its dedicated GPT-5.2 defaults, so it is not a blind-cleanup candidate
+  - status: leave both aliases in place until there is an explicit product decision on whether those local model names still need first-class metadata
 
 ## Preserved Local Requirements
 
