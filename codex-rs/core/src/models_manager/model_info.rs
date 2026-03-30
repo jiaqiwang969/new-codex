@@ -241,7 +241,12 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: true,
             truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
         )
-    } else if normalized_slug.starts_with("codex-") {
+    } else if normalized_slug.starts_with("codex-")
+        || (normalized_slug.starts_with("gpt-5") && normalized_slug.contains("-codex"))
+    {
+        // Persisted sessions and user configs still reference legacy GPT-5 Codex slugs.
+        // When model catalog data is unavailable, reuse the generic codex metadata so
+        // status rendering and offline flows keep a sensible context window/tool shape.
         model_info!(
             slug,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),

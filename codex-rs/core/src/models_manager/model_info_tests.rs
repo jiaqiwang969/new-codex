@@ -183,6 +183,25 @@ fn codex_1p_now_reuses_generic_codex_metadata() {
 }
 
 #[test]
+fn gpt_5_codex_family_legacy_slugs_reuse_generic_codex_metadata() {
+    let expected = find_model_info_for_slug("codex-1p");
+
+    for slug in [
+        "gpt-5-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex-pro",
+    ] {
+        let model = find_model_info_for_slug(slug);
+        let mut expected_model = expected.clone();
+        expected_model.slug = slug.to_string();
+        expected_model.display_name = slug.to_string();
+
+        assert_eq!(model, expected_model, "{slug}");
+    }
+}
+
+#[test]
 fn reasoning_summaries_override_true_enables_support() {
     let model = model_info_from_slug("unknown-model");
     let mut config = test_config();
