@@ -115,6 +115,29 @@
   - the remaining experimental path in Bucket D is the still-live `exp-codex` behavior, which is already covered by `core/tests/suite/personality.rs`, `core/tests/suite/model_switching.rs`, and `app-server/tests/suite/v2/turn_start.rs`
   - after this point, further Bucket D reduction requires an explicit product decision about `exp-codex` itself or the provider prompt families
 
+### Post-Exp-Codex Checkpoint (2026-03-31)
+
+- Follow-up Bucket D cleanup after the generic `exp-*` checkpoint:
+  - removed the undocumented `exp-codex` fallback branch from `core/src/models_manager/model_info.rs`
+  - deleted the three prompt/personality template files that were only embedded by that alias path:
+    - `core/templates/model_instructions/gpt-5.2-codex_instructions_template.md`
+    - `core/templates/personalities/gpt-5.2-codex_friendly.md`
+    - `core/templates/personalities/gpt-5.2-codex_pragmatic.md`
+  - rewired the remaining personality coverage onto existing catalog paths instead of a local-only runtime alias:
+    - direct `gpt-5.2-codex` where the test just needs a personality-capable model
+    - namespaced `custom/gpt-5.2-codex` where the test still needs a distinct model string that resolves through the bundled catalog
+  - repo audit confirmed there were no non-test references to `exp-codex` / `exp-codex-personality` in docs, config, or active code paths
+- Fresh verification for the `exp-codex` cleanup:
+  - `just fmt`: PASS
+  - `cargo test -p codex-core models_manager::model_info::tests::`: PASS (`14 passed`, `0 failed`)
+  - `cargo test -p codex-core --test all suite::personality::`: PASS (`12 passed`, `0 failed`)
+  - `cargo test -p codex-core --test all suite::model_switching::`: PASS (`9 passed`, `0 failed`)
+  - `cargo test -p codex-app-server personality`: PASS (`4 passed`, `0 failed`)
+  - `just argument-comment-lint`: still blocked by the missing `./tools/argument-comment-lint/run-prebuilt-linter.sh` artifact
+- Consequence:
+  - the experimental alias tail in `model_info.rs` is now fully removed
+  - further Bucket D work should focus on provider prompt families or preserved provider runtime surfaces, not legacy alias cleanup
+
 ## Post-Checkpoint Inventory (2026-03-30)
 
 - Relative to `upstream/main`, the branch is now `0 behind / 281 ahead`.
@@ -299,10 +322,10 @@
 - D7: `exp-codex` / `codex-1p` / generic `exp-*` alias tail
   - these branches also come from the local `7cc1ea95578` built-in model metadata refresh rather than from upstream merge residue
   - follow-up commit `53f041f121` extended the same fallback path to normalized namespaced slugs (`openai/*`, `google/*`, `anthropic/*`, `xai/*`, and `antigravity*/*`), so the catalog logic now serves both bare and namespaced configured model selections
-  - `exp-codex` is still a live behavior path, not dead catalog text: `exp-codex-personality` is covered in `core/tests/suite/personality.rs`, `core/tests/suite/model_switching.rs`, and `app-server/tests/suite/v2/turn_start.rs`
   - `codex-1p` no longer needs its own special-case handling; it now falls through to the generic `codex-*` branch, which preserves non-fallback offline metadata without keeping a dedicated alias arm
-  - repo/config audit found no live `exp-*` references outside `exp-codex-personality`, so the generic `exp-*` branch has now been removed and unknown `exp-*` slugs fall back to ordinary unknown-model metadata
-  - status: `codex-1p` and generic `exp-*` cleanup is complete; leave `exp-codex` in place unless there is an explicit product decision to drop support for that experimental personality model
+  - repo/config audit found no non-test references to `exp-codex-personality`, so the remaining `exp-codex` branch and its dedicated template files have now been removed
+  - the personality/regression coverage that used to rely on `exp-codex-personality` now uses the existing bundled `gpt-5.2-codex` metadata or the already-supported namespaced `custom/gpt-5.2-codex` resolution path
+  - status: complete; this alias tail is no longer an active Bucket D target
 
 ## Preserved Local Requirements
 

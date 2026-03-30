@@ -212,7 +212,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
                 .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
-    let next_model = "exp-codex-personality";
+    let next_model = "custom/gpt-5.2-codex";
 
     test.codex
         .submit(Op::UserTurn {

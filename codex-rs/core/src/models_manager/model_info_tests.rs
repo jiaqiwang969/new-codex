@@ -167,21 +167,6 @@ fn generic_exp_models_now_use_unknown_model_fallback_metadata() {
 }
 
 #[test]
-fn exp_codex_models_still_use_codex_personality_metadata() {
-    let model = find_model_info_for_slug("exp-codex-personality");
-
-    assert_eq!(model.slug, "exp-codex-personality".to_string());
-    assert!(!model.used_fallback_model_metadata);
-    assert_eq!(
-        model.apply_patch_tool_type,
-        Some(ApplyPatchToolType::Freeform)
-    );
-    assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
-    assert!(model.supports_parallel_tool_calls);
-    assert!(model.model_messages.is_some());
-}
-
-#[test]
 fn codex_1p_now_reuses_generic_codex_metadata() {
     let model = find_model_info_for_slug("codex-1p");
 

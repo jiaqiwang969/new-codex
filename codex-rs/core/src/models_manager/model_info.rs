@@ -4,8 +4,6 @@ use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::openai_models::ModelInstructionsVariables;
-use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
@@ -28,8 +26,6 @@ const BASE_INSTRUCTIONS_WITH_APPLY_PATCH: &str =
     include_str!("../../prompt_with_apply_patch_instructions.md");
 
 const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md");
-const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
-
 const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
 const GROK_INSTRUCTIONS: &str = include_str!("../../grok_prompt.md");
 const CLAUDE_INSTRUCTIONS: &str = include_str!("../../claude_prompt.md");
@@ -40,13 +36,6 @@ pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
 pub(crate) const CONTEXT_WINDOW_256K: i64 = 256_000;
 pub(crate) const CONTEXT_WINDOW_2M: i64 = 2_000_000;
 pub(crate) const CONTEXT_WINDOW_200K: i64 = 200_000;
-const GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE: &str =
-    include_str!("../../templates/model_instructions/gpt-5.2-codex_instructions_template.md");
-
-const GPT_5_2_CODEX_PERSONALITY_FRIENDLY: &str =
-    include_str!("../../templates/personalities/gpt-5.2-codex_friendly.md");
-const GPT_5_2_CODEX_PERSONALITY_PRAGMATIC: &str =
-    include_str!("../../templates/personalities/gpt-5.2-codex_pragmatic.md");
 
 macro_rules! model_info {
     (
@@ -251,26 +240,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             shell_type: ConfigShellToolType::ShellCommand,
             support_verbosity: true,
             truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
-        )
-    } else if normalized_slug.starts_with("exp-codex") {
-        model_info!(
-            slug,
-            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
-            model_messages: Some(ModelMessages {
-                instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
-                instructions_variables: Some(ModelInstructionsVariables {
-                    personality_default: Some(String::new()),
-                    personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
-                    personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
-                }),
-            }),
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
-            supports_reasoning_summaries: true,
-            support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
         )
     } else if normalized_slug.starts_with("codex-") {
         model_info!(

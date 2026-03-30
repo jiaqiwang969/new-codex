@@ -310,7 +310,7 @@ async fn user_turn_personality_some_adds_update_message() -> anyhow::Result<()> 
     )
     .await;
     let mut builder = test_codex()
-        .with_model("exp-codex-personality")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config
                 .features
@@ -414,7 +414,7 @@ async fn user_turn_personality_same_value_does_not_add_update_message() -> anyho
     )
     .await;
     let mut builder = test_codex()
-        .with_model("exp-codex-personality")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config
                 .features
@@ -533,7 +533,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
     )
     .await;
     let mut builder = test_codex()
-        .with_model("exp-codex-personality")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config
                 .features
