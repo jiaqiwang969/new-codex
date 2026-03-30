@@ -176,6 +176,7 @@
   - `protocol/bindings/.gitignore` should stay unless generated TS bindings hygiene is revisited separately, because local generated files may otherwise reappear as untracked noise
 - Additional low-coupling cleanup already looks justified:
   - legacy macOS protected-filesystem prompt residue was safe to strip from shared/provider prompt files
+  - dead prompt files `core/gpt-5.1-codex-max_prompt.md` and `core/gpt_5_1_prompt.md` were local additions with no remaining `include_str!` or code/test references, so they can be removed without touching runtime model behavior
   - `request_permissions` approval prompt scope is now back to upstream `network` + `file_system` wording
   - `core/templates/collaboration_mode/collaborative.md` and `app-server/tests/suite/v2/collaboration_mode_list.rs` are already aligned and no longer active cleanup targets
   - `app-server/src/main.rs` debug-only gate on `MANAGED_CONFIG_PATH_ENV_VAR` should stay; it is a small correctness/cleanliness fix rather than a product fork
