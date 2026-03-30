@@ -6066,6 +6066,17 @@ impl ChatWidget {
                     },
                 });
             }
+            ThreadItem::GuardianApprovalReview {
+                target_item_id,
+                review,
+                action,
+                ..
+            } => self.on_guardian_review_notification(
+                target_item_id,
+                turn_id.clone(),
+                review,
+                action,
+            ),
             ThreadItem::WebSearch { id, query, action } => {
                 self.on_web_search_begin(WebSearchBeginEvent {
                     call_id: id.clone(),

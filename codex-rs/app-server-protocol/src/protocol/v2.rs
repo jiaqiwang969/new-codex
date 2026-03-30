@@ -4316,6 +4316,16 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    /// [UNSTABLE] Replay-only guardian approval review item reconstructed from
+    /// persisted rollout events when extended history is enabled.
+    GuardianApprovalReview {
+        id: String,
+        target_item_id: String,
+        review: GuardianApprovalReview,
+        action: Option<JsonValue>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     DynamicToolCall {
         id: String,
         tool: String,
@@ -4420,6 +4430,7 @@ impl ThreadItem {
             | ThreadItem::CommandExecution { id, .. }
             | ThreadItem::FileChange { id, .. }
             | ThreadItem::McpToolCall { id, .. }
+            | ThreadItem::GuardianApprovalReview { id, .. }
             | ThreadItem::DynamicToolCall { id, .. }
             | ThreadItem::CollabAgentToolCall { id, .. }
             | ThreadItem::WebSearch { id, .. }

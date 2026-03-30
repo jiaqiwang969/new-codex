@@ -2708,6 +2708,36 @@
           "type": "object"
         },
         {
+          "description": "[UNSTABLE] Replay-only guardian approval review item reconstructed from persisted rollout events when extended history is enabled.",
+          "properties": {
+            "action": true,
+            "id": {
+              "type": "string"
+            },
+            "review": {
+              "$ref": "#/definitions/GuardianApprovalReview"
+            },
+            "targetItemId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "guardianApprovalReview"
+              ],
+              "title": "GuardianApprovalReviewThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "review",
+            "targetItemId",
+            "type"
+          ],
+          "title": "GuardianApprovalReviewThreadItem",
+          "type": "object"
+        },
+        {
           "properties": {
             "arguments": true,
             "contentItems": {

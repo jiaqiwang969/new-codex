@@ -840,6 +840,7 @@ fn thread_item_to_core(item: &ThreadItem) -> Option<TurnItem> {
         ThreadItem::CommandExecution { .. }
         | ThreadItem::FileChange { .. }
         | ThreadItem::McpToolCall { .. }
+        | ThreadItem::GuardianApprovalReview { .. }
         | ThreadItem::DynamicToolCall { .. }
         | ThreadItem::CollabAgentToolCall { .. }
         | ThreadItem::HookPrompt { .. }
