@@ -47,7 +47,6 @@ mod flags;
 #[cfg(test)]
 mod git_info_tests;
 mod guardian;
-pub mod harness;
 mod hook_memory;
 mod hook_runtime;
 pub mod instructions;
