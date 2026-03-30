@@ -180,6 +180,10 @@
   - `request_permissions` approval prompt scope is now back to upstream `network` + `file_system` wording
   - `core/templates/collaboration_mode/collaborative.md` and `app-server/tests/suite/v2/collaboration_mode_list.rs` are already aligned and no longer active cleanup targets
   - `app-server/src/main.rs` debug-only gate on `MANAGED_CONFIG_PATH_ENV_VAR` should stay; it is a small correctness/cleanliness fix rather than a product fork
+  - the smallest remaining one-line diffs are mostly propagation for preserved local fields rather than standalone cleanup targets:
+    - `Turn.memory` / item-level `memory` in app-server tests and protocol helpers
+    - Gemini `thought_signature` in protocol/core test fixtures and response-item builders
+    - provider `account_pool` in core provider/test fixtures
 
 ### Bucket D Split (2026-03-30 follow-up)
 
@@ -200,19 +204,18 @@
     - legacy Gemini alias rewriting
   - this file is also where current capability exceptions live, for example:
     - Grok restrictions for `web_search`, `external_web_access`, `reasoning.effort`, and memory trace summarize
-    - text-only handling for `gpt-5.3-codex-spark`
+    - legacy Gemini alias rewriting for `gemini-3*` / `antigravity-gemini/*` selections
   - status: protected as long as Bucket A keeps multi-provider routing
 
 - D3: model catalog and prompt binding
   - `core/src/models_manager/model_info.rs` is mixed:
     - part of it is hard dependency for Bucket A/D1 because it assigns shell/tool/reasoning/context defaults for Anthropic, Gemini, Grok, and Gemma
     - another part is prompt/catalog expansion surface layered on top of that runtime support
-  - provider-specific prompt files are all absent from `upstream/main` and currently only enter the runtime through `model_info.rs`:
+  - current provider-specific prompt files absent from `upstream/main` only enter the runtime through `model_info.rs`:
     - `core/gemini_prompt.md`
     - `core/grok_prompt.md`
     - `core/claude_prompt.md`
-    - `core/gpt-5.3-codex-spark_prompt.md`
-    - `core/templates/model_instructions/gpt-5.3-codex-spark_instructions_template.md`
+  - earlier `gpt-5.3-codex-spark` prompt/template surface no longer appears in the current tree, so it is not an active cleanup target anymore
   - implication: if we want to keep the runtime provider stack but still reduce local surface, the likely place to trim later is `model_info.rs` plus these prompt/template bindings, not D1 transport code
 
 - D4: Gemini `thought_signature` cross-cut
@@ -226,8 +229,8 @@
 
 - D5: likely next reducible tail inside Bucket D
   - the best remaining candidate is not provider transport, but optional model/prompt product surface:
-    - extra prompt families and prompt wording
-    - model-catalog-only entries like `gpt-5.3-codex-spark`
+    - extra provider prompt families and prompt wording
+    - model-catalog-only alias metadata inside `model_info.rs`
   - before trimming any of that, decide explicitly whether those model variants are product requirements or just historical local additions
 
 - D6: `bengalfox` / `boomslang` alias tail
