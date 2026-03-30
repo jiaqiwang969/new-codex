@@ -314,20 +314,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_rate_limit_for_limit_prefers_limit_name_header() {
+    fn parse_rate_limit_for_limit_prefers_limit_name_header_for_custom_family() {
         let mut headers = HeaderMap::new();
         headers.insert(
-            "x-codex-bengalfox-primary-used-percent",
+            "x-codex-sonic-primary-used-percent",
             HeaderValue::from_static("80"),
         );
         headers.insert(
-            "x-codex-bengalfox-limit-name",
+            "x-codex-sonic-limit-name",
             HeaderValue::from_static("gpt-5.2-codex-sonic"),
         );
 
-        let snapshot =
-            parse_rate_limit_for_limit(&headers, Some("codex_bengalfox")).expect("snapshot");
-        assert_eq!(snapshot.limit_id.as_deref(), Some("codex_bengalfox"));
+        let snapshot = parse_rate_limit_for_limit(&headers, Some("codex_sonic")).expect("snapshot");
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex_sonic"));
         assert_eq!(snapshot.limit_name.as_deref(), Some("gpt-5.2-codex-sonic"));
     }
 

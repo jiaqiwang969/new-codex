@@ -80,6 +80,25 @@
   - the other tiny `core/src/unified_exec/*` delta is an event-ordering/stability fix, not dead merge residue
   - consequence: there is no obvious next blind-delete cleanup slice after `harness`; the next safe work should come from a deeper Bucket D review or another documentation checkpoint, not another micro-revert
 
+### Post-Model-Alias Checkpoint (2026-03-31)
+
+- Bucket D cleanup since the harness checkpoint:
+  - committed `78459ec895` (`chore: drop unused model alias metadata`)
+    - removed the isolated `boomslang` special-case metadata branch from `core/src/models_manager/model_info.rs`
+    - removed `codex-1p` from the `exp-codex` branch so it now reuses the generic `codex-*` metadata path
+    - deleted the now-unused `core/gpt_5_2_prompt.md`
+  - current working-tree follow-up trims the remaining isolated alias tail:
+    - removes the `bengalfox` offline metadata branch from `model_info.rs`
+    - replaces the `codex-api` rate-limit test's `codex_bengalfox` sample with a generic custom family id so the parser coverage stays intact without preserving the historical alias
+- Fresh verification for the model-alias cleanup:
+  - `just fmt`: PASS
+  - `cargo test -p codex-core models_manager::model_info::tests::`: PASS (`13 passed`, `0 failed`)
+  - `cargo test -p codex-api rate_limits::tests::`: PASS (`5 passed`, `0 failed`)
+  - `just argument-comment-lint`: still blocked by the missing `./tools/argument-comment-lint/run-prebuilt-linter.sh` artifact
+- Consequence:
+  - the obviously isolated `model_info.rs` alias tail has now been reduced to the still-live `exp-codex` / generic `exp-*` behavior paths
+  - further Bucket D reduction now requires an explicit product decision about provider prompt families or experimental model names, not another blind alias deletion
+
 ## Post-Checkpoint Inventory (2026-03-30)
 
 - Relative to `upstream/main`, the branch is now `0 behind / 281 ahead`.
@@ -256,17 +275,18 @@
 
 - D6: `bengalfox` / `boomslang` alias tail
   - both aliases came from the local `7cc1ea95578` built-in model metadata refresh rather than from upstream merge noise
-  - `bengalfox` is not an isolated dead branch: `codex-api/src/rate_limits.rs` still parses `codex_bengalfox` headers, so dropping its offline metadata would create an inconsistent local catalog
-  - `boomslang` currently appears only in `core/src/models_manager/model_info.rs`, with no references in tests, docs, or `core/models.json`
-  - despite that isolation, removing `boomslang` still changes fallback behavior for any user-configured model slug that relies on its dedicated GPT-5.2 defaults, so it is not a blind-cleanup candidate
-  - status: leave both aliases in place until there is an explicit product decision on whether those local model names still need first-class metadata
+  - repo/config audit showed neither alias exists in `core/models.json`, `~/.codex/models_cache.json`, or active config files
+  - `boomslang` was isolated to `core/src/models_manager/model_info.rs` and has now been dropped; offline lookups for that slug now use ordinary unknown-model fallback metadata
+  - `bengalfox` turned out to be similarly isolated on the model-catalog side; the only other repo hit was a `codex-api` rate-limit parsing test fixture, which now uses a generic custom family id instead of preserving the historical alias
+  - status: complete; this alias tail is no longer an active Bucket D target
 
 - D7: `exp-codex` / `codex-1p` / generic `exp-*` alias tail
   - these branches also come from the local `7cc1ea95578` built-in model metadata refresh rather than from upstream merge residue
   - follow-up commit `53f041f121` extended the same fallback path to normalized namespaced slugs (`openai/*`, `google/*`, `anthropic/*`, `xai/*`, and `antigravity*/*`), so the catalog logic now serves both bare and namespaced configured model selections
   - `exp-codex` is still a live behavior path, not dead catalog text: `exp-codex-personality` is covered in `core/tests/suite/personality.rs`, `core/tests/suite/model_switching.rs`, and `app-server/tests/suite/v2/turn_start.rs`
-  - `codex-1p` and the generic `exp-*` branch currently have no direct repo references outside `model_info.rs`, but removing them would still change offline metadata for user-configured experimental slugs
-  - status: leave these aliases in place unless there is an explicit product decision to drop support for those experimental model names
+  - `codex-1p` no longer needs its own special-case handling; it now falls through to the generic `codex-*` branch, which preserves non-fallback offline metadata without keeping a dedicated alias arm
+  - the remaining generic `exp-*` branch is still a real behavior choice for user-configured experimental slugs, not dead merge residue
+  - status: `codex-1p` cleanup is complete; leave `exp-codex` and generic `exp-*` in place unless there is an explicit product decision to drop support for those experimental model names
 
 ## Preserved Local Requirements
 

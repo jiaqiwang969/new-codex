@@ -145,6 +145,17 @@ fn boomslang_now_uses_unknown_model_fallback_metadata() {
 }
 
 #[test]
+fn bengalfox_now_uses_unknown_model_fallback_metadata() {
+    let model = find_model_info_for_slug("bengalfox");
+
+    assert_eq!(model.slug, "bengalfox".to_string());
+    assert!(model.used_fallback_model_metadata);
+    assert_eq!(model.context_window, None);
+    assert!(model.supported_reasoning_levels.is_empty());
+    assert_eq!(model.default_reasoning_level, None);
+}
+
+#[test]
 fn codex_1p_now_reuses_generic_codex_metadata() {
     let model = find_model_info_for_slug("codex-1p");
 

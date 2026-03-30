@@ -149,28 +149,6 @@ fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {
     ]
 }
 
-/// Returns reasoning effort presets for Low, Medium, High, XHigh.
-fn supported_reasoning_level_low_medium_high_xhigh() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::XHigh,
-            description: "Extra high reasoning depth for complex problems".to_string(),
-        },
-    ]
-}
-
 fn context_window_for_grok_slug(slug: &str) -> i64 {
     let Some(grok_slug) = normalized_grok_model_slug(slug) else {
         return CONTEXT_WINDOW_256K;
@@ -307,27 +285,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             shell_type: ConfigShellToolType::UnifiedExec,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
-        )
-    } else if normalized_slug.starts_with("bengalfox") {
-        model_info!(
-            slug,
-            base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
-            supports_reasoning_summaries: true,
-            support_verbosity: false,
-            truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
-            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
-            model_messages: Some(ModelMessages {
-                instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
-                instructions_variables: Some(ModelInstructionsVariables {
-                    personality_default: Some(String::new()),
-                    personality_friendly: Some(GPT_5_2_CODEX_PERSONALITY_FRIENDLY.to_string()),
-                    personality_pragmatic: Some(GPT_5_2_CODEX_PERSONALITY_PRAGMATIC.to_string()),
-                }),
-            }),
         )
     } else if normalized_slug.starts_with("codex-") {
         model_info!(
