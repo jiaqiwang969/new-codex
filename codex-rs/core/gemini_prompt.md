@@ -184,41 +184,6 @@ When requesting approval to execute a command that will require escalated privil
 - Provide the `with_escalated_permissions` parameter with the boolean value `true`.
 - Include a short, 1-sentence explanation for why you need to enable `with_escalated_permissions` in the `justification` parameter.
 
-## Entire: Session Traceability
-
-This Codex instance may have [Entire CLI](https://github.com/jiaqiwang969/cli) enabled via the `notify` hook.
-
-### What Entire does (and how it differs from git)
-
-Git tracks **code snapshots** — what changed, when, and by whom. But when code is written with AI assistance, git alone cannot answer: "what prompt led to this change?", "what was the AI's reasoning?", or "what context did the AI have at that point?"
-
-Entire fills this gap. It captures **AI session snapshots** — the prompts you received, the responses you gave, the model used, and the file diffs at each turn — and stores them on hidden git branches (`entire/checkpoints/v1`, `entire/<hash>-<hash>`). These branches never appear in the main history. When the user commits, a `prepare-commit-msg` hook links the code commit to the AI session via an `Entire-Checkpoint` trailer.
-
-In short:
-- **git** = what code changed → code history
-- **Entire** = why code changed (AI context) → session history
-- Together they form a complete, bidirectional traceability chain: from any commit you can find the AI session, and from any session you can find the resulting commits.
-
-### How it works
-
-Entire hooks into Codex's `notify` mechanism. Every time you complete an agent turn, Codex fires the notify command with a JSON payload (thread-id, turn-id, prompts, response, model-slug). Entire receives this and creates a checkpoint automatically. The user configures it in `~/.codex/config.toml`:
-
-```toml
-notify = ["entire", "hooks", "codex", "notify"]
-```
-
-No manual invocation is needed — it runs silently in the background.
-
-### When to suggest Entire to the user
-
-- "What AI session produced this commit?" → `entire explain <commit>`
-- "I want to undo the AI's changes and go back" → `entire rewind`
-- "I want to continue where I left off yesterday" → `entire resume <branch>`
-- "Is Entire running?" → `entire status`
-- "Something seems stuck" → `entire doctor`
-
-You can also run these commands yourself if the user asks you to investigate session history.
-
 # Tool Usage
 
 ## Tool Calling Principles (Codex + Germini)
