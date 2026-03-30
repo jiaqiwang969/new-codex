@@ -28,7 +28,6 @@ const BASE_INSTRUCTIONS_WITH_APPLY_PATCH: &str =
     include_str!("../../prompt_with_apply_patch_instructions.md");
 
 const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md");
-const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
 
 const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
@@ -275,7 +274,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             support_verbosity: true,
             truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
         )
-    } else if normalized_slug.starts_with("exp-codex") || normalized_slug.starts_with("codex-1p") {
+    } else if normalized_slug.starts_with("exp-codex") {
         model_info!(
             slug,
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
@@ -342,21 +341,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
-        )
-    } else if normalized_slug.starts_with("boomslang") {
-        model_info!(
-            slug,
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            supports_reasoning_summaries: true,
-            support_verbosity: true,
-            default_verbosity: Some(Verbosity::Low),
-            base_instructions: GPT_5_2_INSTRUCTIONS.to_string(),
-            default_reasoning_level: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_272K),
-            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
         )
     } else if normalized_slug.starts_with("gemini-") {
         model_info!(

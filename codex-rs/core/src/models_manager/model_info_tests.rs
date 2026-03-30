@@ -134,6 +134,33 @@ fn antigravity_anthropic_models_reuse_claude_metadata_without_fallback() {
 }
 
 #[test]
+fn boomslang_now_uses_unknown_model_fallback_metadata() {
+    let model = find_model_info_for_slug("boomslang");
+
+    assert_eq!(model.slug, "boomslang".to_string());
+    assert!(model.used_fallback_model_metadata);
+    assert_eq!(model.context_window, None);
+    assert!(model.supported_reasoning_levels.is_empty());
+    assert_eq!(model.default_reasoning_level, None);
+}
+
+#[test]
+fn codex_1p_now_reuses_generic_codex_metadata() {
+    let model = find_model_info_for_slug("codex-1p");
+
+    assert_eq!(model.slug, "codex-1p".to_string());
+    assert!(!model.used_fallback_model_metadata);
+    assert_eq!(
+        model.apply_patch_tool_type,
+        Some(ApplyPatchToolType::Freeform)
+    );
+    assert_eq!(model.shell_type, ConfigShellToolType::ShellCommand);
+    assert!(!model.supports_parallel_tool_calls);
+    assert!(model.model_messages.is_none());
+    assert_eq!(model.supported_reasoning_levels.len(), 3);
+}
+
+#[test]
 fn reasoning_summaries_override_true_enables_support() {
     let model = model_info_from_slug("unknown-model");
     let mut config = test_config();
