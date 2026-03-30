@@ -28,7 +28,6 @@ const BASE_INSTRUCTIONS_WITH_APPLY_PATCH: &str =
     include_str!("../../prompt_with_apply_patch_instructions.md");
 
 const GPT_5_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt_5_codex_prompt.md");
-const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
 
@@ -153,46 +152,6 @@ fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {
 
 /// Returns reasoning effort presets for Low, Medium, High, XHigh.
 fn supported_reasoning_level_low_medium_high_xhigh() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::XHigh,
-            description: "Extra high reasoning depth for complex problems".to_string(),
-        },
-    ]
-}
-
-/// Returns reasoning effort presets for Low, Medium, High (non-codex models).
-fn supported_reasoning_level_low_medium_high_non_codex() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-    ]
-}
-
-/// Returns reasoning effort presets for Low, Medium, High, XHigh (non-codex models).
-fn supported_reasoning_level_low_medium_high_xhigh_non_codex() -> Vec<ReasoningEffortPreset> {
     vec![
         ReasoningEffortPreset {
             effort: ReasoningEffort::Low,
@@ -350,10 +309,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if normalized_slug.starts_with("gpt-5.3-codex")
-        || normalized_slug.starts_with("gpt-5.2-codex")
-        || normalized_slug.starts_with("bengalfox")
-    {
+    } else if normalized_slug.starts_with("bengalfox") {
         model_info!(
             slug,
             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
@@ -374,10 +330,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
                 }),
             }),
         )
-    } else if normalized_slug.starts_with("gpt-5.1-codex")
-        || normalized_slug.starts_with("gpt-5-codex")
-        || normalized_slug.starts_with("codex-")
-    {
+    } else if normalized_slug.starts_with("codex-") {
         model_info!(
             slug,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
@@ -390,7 +343,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
         )
-    } else if normalized_slug.starts_with("gpt-5.2") || normalized_slug.starts_with("boomslang") {
+    } else if normalized_slug.starts_with("boomslang") {
         model_info!(
             slug,
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
@@ -403,50 +356,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             shell_type: ConfigShellToolType::ShellCommand,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
-            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh_non_codex(),
-        )
-    } else if normalized_slug.starts_with("gpt-5.1") {
-        model_info!(
-            slug,
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            supports_reasoning_summaries: true,
-            support_verbosity: true,
-            default_verbosity: Some(Verbosity::Low),
-            base_instructions: GPT_5_1_INSTRUCTIONS.to_string(),
-            default_reasoning_level: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-            shell_type: ConfigShellToolType::ShellCommand,
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_272K),
-            supported_reasoning_levels: supported_reasoning_level_low_medium_high_non_codex(),
-        )
-    } else if normalized_slug.starts_with("gpt-5") {
-        model_info!(
-            slug,
-            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
-            shell_type: ConfigShellToolType::Default,
-            supports_reasoning_summaries: true,
-            support_verbosity: true,
-            supported_reasoning_levels: vec![
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::Minimal,
-                    description: "Fastest responses with little reasoning".to_string(),
-                },
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::Low,
-                    description: "Fast responses with lighter reasoning".to_string(),
-                },
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::Medium,
-                    description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-                },
-                ReasoningEffortPreset {
-                    effort: ReasoningEffort::High,
-                    description: "Greater reasoning depth for complex problems".to_string(),
-                },
-            ],
-            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-            context_window: Some(CONTEXT_WINDOW_272K),
+            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
         )
     } else if normalized_slug.starts_with("gemini-") {
         model_info!(
@@ -541,6 +451,7 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
     find_model_info_for_slug(slug)
 }

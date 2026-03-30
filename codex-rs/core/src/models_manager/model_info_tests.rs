@@ -134,23 +134,6 @@ fn antigravity_anthropic_models_reuse_claude_metadata_without_fallback() {
 }
 
 #[test]
-fn gpt_5_family_uses_272k_context_window_defaults() {
-    let gpt_53_codex = find_model_info_for_slug("gpt-5.3-codex");
-    let gpt_52_codex = find_model_info_for_slug("gpt-5.2-codex");
-    let gpt_51_codex = find_model_info_for_slug("gpt-5.1-codex");
-    let gpt_52 = find_model_info_for_slug("gpt-5.2");
-    let gpt_51 = find_model_info_for_slug("gpt-5.1");
-    let gpt_5 = find_model_info_for_slug("gpt-5");
-
-    assert_eq!(gpt_53_codex.context_window, Some(CONTEXT_WINDOW_272K));
-    assert_eq!(gpt_52_codex.context_window, Some(CONTEXT_WINDOW_272K));
-    assert_eq!(gpt_51_codex.context_window, Some(CONTEXT_WINDOW_272K));
-    assert_eq!(gpt_52.context_window, Some(CONTEXT_WINDOW_272K));
-    assert_eq!(gpt_51.context_window, Some(CONTEXT_WINDOW_272K));
-    assert_eq!(gpt_5.context_window, Some(CONTEXT_WINDOW_272K));
-}
-
-#[test]
 fn reasoning_summaries_override_true_enables_support() {
     let model = model_info_from_slug("unknown-model");
     let mut config = test_config();

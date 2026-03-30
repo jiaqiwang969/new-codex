@@ -334,50 +334,43 @@ pub(crate) mod spawn_tool_spec {
     }
 
     fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
-        let locked_settings_note = declaration
-            .config_file
-            .as_ref()
-            .and_then(|config_file| {
-                built_in::config_file_contents(config_file)
-                    .map(str::to_owned)
-                    .or_else(|| std::fs::read_to_string(config_file).ok())
-            })
-            .and_then(|contents| toml::from_str::<TomlValue>(&contents).ok())
-            .map(|role_toml| {
-                let model = role_toml.get("model").and_then(TomlValue::as_str);
-                let reasoning_effort = role_toml
-                    .get("model_reasoning_effort")
-                    .and_then(TomlValue::as_str);
-
-                match (model, reasoning_effort) {
-                    (Some(model), Some(reasoning_effort)) => format!(
-                        "- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
-                    ),
-                    (Some(model), None) => {
-                        format!("- This role's model is set to `{model}` and cannot be changed.")
-                    }
-                    (None, Some(reasoning_effort)) => {
-                        format!(
-                            "- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
-                        )
-                    }
-                    (None, None) => String::new(),
-                }
-            })
-            .filter(|note| !note.is_empty());
-
-        let mut lines = Vec::new();
         if let Some(description) = &declaration.description {
-            lines.push(description.clone());
-        }
-        if let Some(locked_settings_note) = locked_settings_note {
-            lines.push(locked_settings_note);
-        }
+            let locked_settings_note = declaration
+                .config_file
+                .as_ref()
+                .and_then(|config_file| {
+                    built_in::config_file_contents(config_file)
+                        .map(str::to_owned)
+                        .or_else(|| std::fs::read_to_string(config_file).ok())
+                })
+                .and_then(|contents| toml::from_str::<TomlValue>(&contents).ok())
+                .map(|role_toml| {
+                    let model = role_toml.get("model").and_then(TomlValue::as_str);
+                    let reasoning_effort = role_toml
+                        .get("model_reasoning_effort")
+                        .and_then(TomlValue::as_str);
 
-        if lines.is_empty() {
-            format!("{name}: no description")
+                    match (model, reasoning_effort) {
+                        (Some(model), Some(reasoning_effort)) => format!(
+                            "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
+                        ),
+                        (Some(model), None) => {
+                            format!(
+                                "\n- This role's model is set to `{model}` and cannot be changed."
+                            )
+                        }
+                        (None, Some(reasoning_effort)) => {
+                            format!(
+                                "\n- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
+                            )
+                        }
+                        (None, None) => String::new(),
+                    }
+                })
+                .unwrap_or_default();
+            format!("{name}: {{\n{description}{locked_settings_note}\n}}")
         } else {
-            format!("{name}: {{\n{}\n}}", lines.join("\n"))
+            format!("{name}: no description")
         }
     }
 }

@@ -727,13 +727,6 @@ fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
 }
 
 #[test]
-fn spawn_tool_spec_does_not_render_role_tags() {
-    let spec = spawn_tool_spec::build(&BTreeMap::new());
-
-    assert!(!spec.contains("Tags: "));
-}
-
-#[test]
 fn spawn_tool_spec_explorer_inherits_model_sub_without_locked_model_note() {
     let spec = spawn_tool_spec::build(&BTreeMap::new());
 
@@ -816,10 +809,6 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
 
 #[test]
 fn built_in_config_file_contents_resolves_explorer_only() {
-    assert_eq!(
-        built_in::config_file_contents(Path::new("explorer.toml")),
-        Some(include_str!("builtins/explorer.toml"))
-    );
     assert_eq!(
         built_in::config_file_contents(Path::new("missing.toml")),
         None

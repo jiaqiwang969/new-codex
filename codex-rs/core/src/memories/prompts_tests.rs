@@ -1,13 +1,24 @@
 use super::*;
-use crate::models_manager::model_info::model_info_from_slug;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelsResponse;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 use tokio::fs as tokio_fs;
 
+fn bundled_model_info(slug: &str) -> ModelInfo {
+    let response: ModelsResponse =
+        serde_json::from_str(include_str!("../../models.json")).expect("valid models.json");
+    response
+        .models
+        .into_iter()
+        .find(|model| model.slug == slug)
+        .unwrap_or_else(|| panic!("model slug {slug} is missing from bundled models.json"))
+}
+
 #[test]
 fn build_stage_one_input_message_truncates_rollout_using_model_context_window() {
     let input = format!("{}{}{}", "a".repeat(700_000), "middle", "z".repeat(700_000));
-    let mut model_info = model_info_from_slug("gpt-5.2-codex");
+    let mut model_info = bundled_model_info("gpt-5.2-codex");
     model_info.context_window = Some(123_000);
     let expected_rollout_token_limit = usize::try_from(
         ((123_000_i64 * model_info.effective_context_window_percent) / 100)
@@ -36,7 +47,7 @@ fn build_stage_one_input_message_truncates_rollout_using_model_context_window() 
 #[test]
 fn build_stage_one_input_message_uses_default_limit_when_model_context_window_missing() {
     let input = format!("{}{}{}", "a".repeat(700_000), "middle", "z".repeat(700_000));
-    let mut model_info = model_info_from_slug("gpt-5.2-codex");
+    let mut model_info = bundled_model_info("gpt-5.2-codex");
     model_info.context_window = None;
     let expected_truncated = truncate_text(
         &input,
