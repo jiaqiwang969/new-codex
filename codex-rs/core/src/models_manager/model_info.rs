@@ -272,20 +272,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             truncation_policy: TruncationPolicyConfig::tokens(/*limit*/ 10_000),
             context_window: Some(CONTEXT_WINDOW_272K),
         )
-    } else if normalized_slug.starts_with("exp-") {
-        model_info!(
-            slug,
-            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-            supports_reasoning_summaries: true,
-            support_verbosity: true,
-            default_verbosity: Some(Verbosity::Low),
-            base_instructions: BASE_INSTRUCTIONS.to_string(),
-            default_reasoning_level: Some(ReasoningEffort::Medium),
-            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-            shell_type: ConfigShellToolType::UnifiedExec,
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_272K),
-        )
     } else if normalized_slug.starts_with("codex-") {
         model_info!(
             slug,

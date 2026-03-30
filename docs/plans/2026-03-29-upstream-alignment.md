@@ -99,6 +99,22 @@
   - the obviously isolated `model_info.rs` alias tail has now been reduced to the still-live `exp-codex` / generic `exp-*` behavior paths
   - further Bucket D reduction now requires an explicit product decision about provider prompt families or experimental model names, not another blind alias deletion
 
+### Post-Generic-Exp Checkpoint (2026-03-31)
+
+- Follow-up Bucket D cleanup after the alias-tail checkpoint:
+  - current working-tree change removes the generic `exp-*` fallback branch from `core/src/models_manager/model_info.rs`
+  - repo/config audit showed no `exp-*` references outside the more specific `exp-codex-personality` path, so the generic branch was dead local catalog surface rather than an active behavior line
+  - added focused coverage to prove the new boundary:
+    - `exp-foo` now uses unknown-model fallback metadata
+    - `exp-codex-personality` still uses the dedicated Codex personality metadata path
+- Fresh verification for the generic `exp-*` cleanup:
+  - `just fmt`: PASS
+  - `cargo test -p codex-core models_manager::model_info::tests::`: PASS (`15 passed`, `0 failed`)
+- Consequence:
+  - the reducible experimental-alias tail is now exhausted
+  - the remaining experimental path in Bucket D is the still-live `exp-codex` behavior, which is already covered by `core/tests/suite/personality.rs`, `core/tests/suite/model_switching.rs`, and `app-server/tests/suite/v2/turn_start.rs`
+  - after this point, further Bucket D reduction requires an explicit product decision about `exp-codex` itself or the provider prompt families
+
 ## Post-Checkpoint Inventory (2026-03-30)
 
 - Relative to `upstream/main`, the branch is now `0 behind / 281 ahead`.
@@ -285,8 +301,8 @@
   - follow-up commit `53f041f121` extended the same fallback path to normalized namespaced slugs (`openai/*`, `google/*`, `anthropic/*`, `xai/*`, and `antigravity*/*`), so the catalog logic now serves both bare and namespaced configured model selections
   - `exp-codex` is still a live behavior path, not dead catalog text: `exp-codex-personality` is covered in `core/tests/suite/personality.rs`, `core/tests/suite/model_switching.rs`, and `app-server/tests/suite/v2/turn_start.rs`
   - `codex-1p` no longer needs its own special-case handling; it now falls through to the generic `codex-*` branch, which preserves non-fallback offline metadata without keeping a dedicated alias arm
-  - the remaining generic `exp-*` branch is still a real behavior choice for user-configured experimental slugs, not dead merge residue
-  - status: `codex-1p` cleanup is complete; leave `exp-codex` and generic `exp-*` in place unless there is an explicit product decision to drop support for those experimental model names
+  - repo/config audit found no live `exp-*` references outside `exp-codex-personality`, so the generic `exp-*` branch has now been removed and unknown `exp-*` slugs fall back to ordinary unknown-model metadata
+  - status: `codex-1p` and generic `exp-*` cleanup is complete; leave `exp-codex` in place unless there is an explicit product decision to drop support for that experimental personality model
 
 ## Preserved Local Requirements
 
