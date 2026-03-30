@@ -119,7 +119,7 @@
 
 - Follow-up Bucket D cleanup after the generic `exp-*` checkpoint:
   - removed the undocumented `exp-codex` fallback branch from `core/src/models_manager/model_info.rs`
-  - deleted the three prompt/personality template files that were only embedded by that alias path:
+  - retained the upstream `gpt-5.2-codex` prompt/personality template files; they are still present in `upstream/main` and are not part of the alias cleanup:
     - `core/templates/model_instructions/gpt-5.2-codex_instructions_template.md`
     - `core/templates/personalities/gpt-5.2-codex_friendly.md`
     - `core/templates/personalities/gpt-5.2-codex_pragmatic.md`
@@ -323,7 +323,7 @@
   - these branches also come from the local `7cc1ea95578` built-in model metadata refresh rather than from upstream merge residue
   - follow-up commit `53f041f121` extended the same fallback path to normalized namespaced slugs (`openai/*`, `google/*`, `anthropic/*`, `xai/*`, and `antigravity*/*`), so the catalog logic now serves both bare and namespaced configured model selections
   - `codex-1p` no longer needs its own special-case handling; it now falls through to the generic `codex-*` branch, which preserves non-fallback offline metadata without keeping a dedicated alias arm
-  - repo/config audit found no non-test references to `exp-codex-personality`, so the remaining `exp-codex` branch and its dedicated template files have now been removed
+  - repo/config audit found no non-test references to `exp-codex-personality`, so the remaining `exp-codex` branch has now been removed; the dedicated `gpt-5.2-codex` template files remain because they are upstream-tracked assets
   - the personality/regression coverage that used to rely on `exp-codex-personality` now uses the existing bundled `gpt-5.2-codex` metadata or the already-supported namespaced `custom/gpt-5.2-codex` resolution path
   - status: complete; this alias tail is no longer an active Bucket D target
 
