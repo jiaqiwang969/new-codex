@@ -232,7 +232,6 @@ mod tests {
 
     use anyhow::Result;
     use codex_protocol::ThreadId;
-    use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
@@ -303,7 +302,7 @@ mod tests {
                 model_provider_id: "test-provider".to_string(),
                 service_tier: None,
                 approval_policy: AskForApproval::Never,
-                approvals_reviewer: ApprovalsReviewer::User,
+                approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 cwd: PathBuf::from("/home/user/project"),
                 reasoning_effort: Some(ReasoningEffort::default()),
@@ -347,7 +346,7 @@ mod tests {
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
             approval_policy: AskForApproval::Never,
-            approvals_reviewer: ApprovalsReviewer::User,
+            approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/home/user/project"),
             reasoning_effort: Some(ReasoningEffort::default()),
@@ -416,7 +415,7 @@ mod tests {
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
             approval_policy: AskForApproval::Never,
-            approvals_reviewer: ApprovalsReviewer::User,
+            approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/home/user/project"),
             reasoning_effort: Some(ReasoningEffort::default()),
