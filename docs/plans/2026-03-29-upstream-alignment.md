@@ -13,6 +13,11 @@
 ## Current Status
 
 - `upstream/main` is already merged into `probe/upstream-merge-9dbe09834`.
+- Latest cleanup commit is `e835e8a9e6` (`chore: drop unused core harness module`):
+  - removed `core/src/harness/{mod,middleware}.rs`
+  - removed the `pub mod harness;` export from `core/src/lib.rs`
+  - fresh code search found no in-repo consumers of `codex_core::harness` / `HarnessMiddleware`; the only remaining `harness` hit is the unrelated `otel/tests` module name
+- Local `main`, `origin/main`, and `origin/probe/upstream-merge-9dbe09834` are all fast-forwarded to `e835e8a9e6`.
 - Cleanup checkpoint `9e86f782f3` (`chore: align upstream cleanup batch`) is now committed.
 - There is no cherry-pick in progress.
 - The latest committed cleanup batch is `5a95257662` (`chore: align explorer and model catalog metadata`):
@@ -58,6 +63,22 @@
     - `cargo test -p codex-app-server collaboration_mode_list`
     - `cargo test -p codex-tui collaboration_mode`
 - `just argument-comment-lint` is still blocked by missing repo artifact `./tools/argument-comment-lint/run-prebuilt-linter.sh`; treat this as a pre-existing environment/tooling issue until the script is restored.
+
+### Post-Harness Checkpoint (2026-03-31)
+
+- Fresh verification for `e835e8a9e6`:
+  - `just fmt`: PASS
+  - `cargo test -p codex-core --tests --no-run`: PASS
+  - `cargo test -p codex-core codex::tests::record_initial_history_reconstructs_forked_transcript -- --exact`: PASS (`1 passed`)
+  - `cargo test -p codex-core codex::tests::record_initial_history_forked_hydrates_previous_turn_settings -- --exact`: PASS (`1 passed`)
+  - `cargo test -p codex-core --lib`: not a clean gate right now
+    - a fresh run advanced through the unit sweep, then spent more than three minutes with `codex::tests::fork_startup_context_then_first_turn_diff_snapshot` still running
+    - no assertion failure surfaced before the session was abandoned, so do not report this command as passing
+  - `just argument-comment-lint`: still blocked by the missing `./tools/argument-comment-lint/run-prebuilt-linter.sh` artifact
+- Fresh smallest-diff scan after the harness cleanup:
+  - the remaining 1-2 line diffs are mostly propagation for preserved local surfaces (`Turn.memory`, item `thought_signature`, provider `account_pool`)
+  - the other tiny `core/src/unified_exec/*` delta is an event-ordering/stability fix, not dead merge residue
+  - consequence: there is no obvious next blind-delete cleanup slice after `harness`; the next safe work should come from a deeper Bucket D review or another documentation checkpoint, not another micro-revert
 
 ## Post-Checkpoint Inventory (2026-03-30)
 
