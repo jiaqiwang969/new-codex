@@ -11511,6 +11511,75 @@ async fn guardian_approved_exec_renders_approved_request() {
     );
 }
 
+async fn assert_runtime_warning_snapshot(snapshot_name: &str, message: &str) {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.show_welcome_banner = false;
+
+    chat.handle_codex_event(Event {
+        id: format!("{snapshot_name}-warning"),
+        msg: EventMsg::Warning(WarningEvent {
+            message: message.to_string(),
+        }),
+    });
+
+    let width: u16 = 96;
+    let ui_height: u16 = chat.desired_height(width);
+    let vt_height: u16 = 12;
+    let viewport = Rect::new(0, vt_height - ui_height - 1, width, ui_height);
+
+    let backend = VT100Backend::new(width, vt_height);
+    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    term.set_viewport_area(viewport);
+
+    for lines in drain_insert_history(&mut rx) {
+        crate::insert_history::insert_history_lines(&mut term, lines)
+            .expect("Failed to insert history lines in test");
+    }
+
+    term.draw(|f| {
+        chat.render(f.area(), f.buffer_mut());
+    })
+    .expect("draw runtime warning history");
+
+    assert_snapshot!(snapshot_name, term.backend().vt100().screen().contents());
+}
+
+#[tokio::test]
+async fn runtime_recovery_warning_snapshot() {
+    assert_runtime_warning_snapshot(
+        "runtime_recovery_warning",
+        "runtime recovery: switched to conservative enforcement while the runtime recovers",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_policy_drift_warning_snapshot() {
+    assert_runtime_warning_snapshot(
+        "runtime_policy_drift_warning",
+        "runtime policy drift detected: enforcement policy changed after approval",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_mismatch_warning_snapshot() {
+    assert_runtime_warning_snapshot(
+        "runtime_mismatch_warning",
+        "runtime mismatch detected: observed delete exceeded the predicted permit scope",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_fallback_to_human_warning_snapshot() {
+    assert_runtime_warning_snapshot(
+        "runtime_fallback_to_human_warning",
+        "runtime fallback to human: runtime lease unavailable for destructive patch",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn app_server_guardian_review_started_sets_review_status() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;

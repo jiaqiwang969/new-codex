@@ -358,6 +358,8 @@ use self::realtime::RenderedUserMessageEvent;
 mod status_surfaces;
 use self::status_surfaces::CachedProjectRootName;
 use self::status_surfaces::TerminalTitleStatusKind;
+mod warnings;
+use self::warnings::format_warning_message;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
 use crate::streaming::commit_tick::run_commit_tick;
@@ -2776,7 +2778,8 @@ impl ChatWidget {
     }
 
     fn on_warning(&mut self, message: impl Into<String>) {
-        self.add_to_history(history_cell::new_warning_event(message.into()));
+        let message = format_warning_message(message.into());
+        self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
     }
 
