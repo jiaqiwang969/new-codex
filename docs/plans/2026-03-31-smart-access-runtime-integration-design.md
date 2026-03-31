@@ -29,6 +29,29 @@ But `main` deliberately removed the old Smart Access / endpoint-security product
 
 So the continuation problem is not "how to merge the old branch." It is "which parts of `phase2b` should be transplanted into the current approval architecture."
 
+## Post-Landing Residue Audit
+
+A follow-up audit on 2026-03-31 confirmed that
+`feature-smart-access-phase2b-control-plane` no longer carries unique commits beyond
+`main`; the remaining delta is entirely uncommitted worktree state.
+
+That residue falls into three buckets:
+
+1. `security_runtime/{bootstrap,hosted,remote,legacy}`:
+   real runtime bootstrap and backend experiments that were not part of the
+   landed `approval_runtime` scope on `main`, which currently uses the smaller
+   in-memory runtime client by default.
+2. `smart_access.rs`, `security_host`, `es_daemon`, and related session plumbing:
+   broad changes tied to the deleted Smart Access product surface and legacy
+   endpoint-security control flow.
+3. Legacy TUI rendering work under `codex-rs/tui`:
+   warning/snapshot changes aimed at the pre-merge UI path, whereas the landed
+   runtime warning rendering now lives in `codex-rs/tui_app_server`.
+
+The practical conclusion is that there is no safe "merge the residue" path left.
+Any future continuation should selectively extract backend/bootstrap ideas into
+`approval_runtime`, not replay the old Smart Access stack or its stale UI hooks.
+
 ## Constraints
 
 - Do not restore the deleted `smart_access.rs` / `security_mode` stack as a top-level product mode.
