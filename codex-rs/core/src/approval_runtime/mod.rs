@@ -115,8 +115,6 @@ pub(crate) trait ApprovalRuntimeClient: Send + Sync {
 
     async fn revoke_lease(&self, lease_id: &str) -> anyhow::Result<()>;
 
-    async fn lease_is_usable(&self, lease_id: &str) -> anyhow::Result<bool>;
-
     async fn preflight(
         &self,
         request: &RuntimePreflightRequest,
@@ -149,10 +147,6 @@ where
 
     async fn revoke_lease(&self, lease_id: &str) -> anyhow::Result<()> {
         self.as_ref().revoke_lease(lease_id).await
-    }
-
-    async fn lease_is_usable(&self, lease_id: &str) -> anyhow::Result<bool> {
-        self.as_ref().lease_is_usable(lease_id).await
     }
 
     async fn preflight(
@@ -233,11 +227,6 @@ impl ApprovalRuntimeClient for InMemoryApprovalRuntimeClient {
         let mut state = self.state.lock().await;
         state.revoke_lease_and_descendants(lease_id);
         Ok(())
-    }
-
-    async fn lease_is_usable(&self, lease_id: &str) -> anyhow::Result<bool> {
-        let state = self.state.lock().await;
-        Ok(state.leases.get(lease_id).is_some_and(|entry| entry.usable))
     }
 
     async fn preflight(

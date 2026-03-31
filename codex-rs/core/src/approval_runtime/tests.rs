@@ -50,10 +50,6 @@ impl ApprovalRuntimeClient for FakeApprovalRuntimeClient {
         Ok(())
     }
 
-    async fn lease_is_usable(&self, _lease_id: &str) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
     async fn preflight(
         &self,
         _request: &RuntimePreflightRequest,

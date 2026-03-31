@@ -178,10 +178,6 @@ impl ApprovalRuntimeClient for ScriptedApprovalRuntime {
         self.lease_runtime.revoke_lease(lease_id).await
     }
 
-    async fn lease_is_usable(&self, lease_id: &str) -> anyhow::Result<bool> {
-        self.lease_runtime.lease_is_usable(lease_id).await
-    }
-
     async fn preflight(
         &self,
         request: &RuntimePreflightRequest,

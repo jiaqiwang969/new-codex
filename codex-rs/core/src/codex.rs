@@ -2593,17 +2593,6 @@ impl Session {
         state.runtime_lease()
     }
 
-    pub(crate) async fn runtime_lease_is_usable(&self) -> bool {
-        let Some(runtime_lease) = self.runtime_lease().await else {
-            return false;
-        };
-        self.services
-            .approval_runtime
-            .lease_is_usable(runtime_lease.id.as_str())
-            .await
-            .unwrap_or(false)
-    }
-
     pub(crate) async fn get_config(&self) -> std::sync::Arc<Config> {
         let state = self.state.lock().await;
         state

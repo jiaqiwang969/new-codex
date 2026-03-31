@@ -1,6 +1,9 @@
 use super::*;
+use crate::approval_runtime::ApprovalRuntime;
+use crate::approval_runtime::RuntimeDecision;
 use crate::approval_runtime::RuntimeLease;
 use crate::approval_runtime::RuntimeLeaseKind;
+use crate::approval_runtime::RuntimePreflightRequest;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX;
 use async_channel::bounded;
@@ -440,7 +443,15 @@ async fn runtime_lease_delegate_derives_child_lease_from_parent_session() {
         child.session.runtime_lease().await,
         Some(expected_child_lease.clone())
     );
-    assert!(child.session.runtime_lease_is_usable().await);
+    let prepared = ApprovalRuntime::new(Arc::clone(&child.session.services.approval_runtime))
+        .prepare(&RuntimePreflightRequest {
+            lease_id: expected_child_lease.id,
+            destructive: true,
+            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
+        })
+        .await
+        .expect("child lease preflight should succeed");
+    assert_eq!(prepared.decision, RuntimeDecision::Ok);
 }
 
 #[tokio::test]
@@ -472,5 +483,24 @@ async fn runtime_lease_parent_invalidation_clears_child_usability() {
         .await
         .expect("parent lease revoke should succeed");
 
-    assert!(!child.session.runtime_lease_is_usable().await);
+    let child_lease = child
+        .session
+        .runtime_lease()
+        .await
+        .expect("child session should keep its derived runtime lease id");
+    let child_lease_id = child_lease.id.clone();
+    let prepared = ApprovalRuntime::new(Arc::clone(&child.session.services.approval_runtime))
+        .prepare(&RuntimePreflightRequest {
+            lease_id: child_lease_id.clone(),
+            destructive: true,
+            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
+        })
+        .await
+        .expect("child lease preflight should succeed");
+    assert_eq!(
+        prepared.decision,
+        RuntimeDecision::FallbackToHuman {
+            summary: format!("runtime lease {child_lease_id} is no longer usable"),
+        }
+    );
 }
