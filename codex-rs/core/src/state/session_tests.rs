@@ -1,6 +1,4 @@
 use super::*;
-use crate::approval_runtime::RuntimeLease;
-use crate::approval_runtime::RuntimeLeaseKind;
 use crate::codex::make_session_configuration_for_tests;
 use crate::protocol::RateLimitWindow;
 use pretty_assertions::assert_eq;
@@ -154,23 +152,4 @@ async fn set_rate_limits_carries_credits_and_plan_type_from_codex_to_codex_other
             plan_type: Some(codex_protocol::account::PlanType::Plus),
         })
     );
-}
-
-#[tokio::test]
-async fn runtime_lease_round_trips_through_session_state() {
-    let session_configuration = make_session_configuration_for_tests().await;
-    let mut state = SessionState::new(session_configuration);
-    let lease = RuntimeLease {
-        id: "lease-root".to_string(),
-        kind: RuntimeLeaseKind::Session,
-        owner_id: "thread-root".to_string(),
-        thread_id: "thread-root".to_string(),
-        parent_lease_id: None,
-    };
-
-    state.set_runtime_lease(Some(lease.clone()));
-
-    assert_eq!(state.runtime_lease(), Some(lease.clone()));
-    assert_eq!(state.take_runtime_lease(), Some(lease.clone()));
-    assert_eq!(state.runtime_lease(), None);
 }

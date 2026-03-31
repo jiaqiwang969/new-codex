@@ -1,13 +1,9 @@
 use super::ApprovalRuntime;
 use super::ApprovalRuntimeClient;
-use super::RuntimeChildLeaseRequest;
 use super::RuntimeDecision;
 use super::RuntimeFinishObservation;
 use super::RuntimeFinishRequest;
 use super::RuntimeHealth;
-use super::RuntimeLease;
-use super::RuntimeLeaseKind;
-use super::RuntimeLeaseRegistration;
 use super::RuntimePreflight;
 use super::RuntimePreflightRequest;
 use async_trait::async_trait;
@@ -20,40 +16,6 @@ struct FakeApprovalRuntimeClient {
 
 #[async_trait]
 impl ApprovalRuntimeClient for FakeApprovalRuntimeClient {
-    async fn register_lease(
-        &self,
-        request: RuntimeLeaseRegistration,
-    ) -> anyhow::Result<RuntimeLease> {
-        Ok(RuntimeLease {
-            id: "lease-1".to_string(),
-            kind: RuntimeLeaseKind::Session,
-            owner_id: request.owner_id,
-            thread_id: request.thread_id,
-            parent_lease_id: None,
-        })
-    }
-
-    async fn derive_child_lease(
-        &self,
-        request: RuntimeChildLeaseRequest,
-    ) -> anyhow::Result<RuntimeLease> {
-        Ok(RuntimeLease {
-            id: "lease-child-1".to_string(),
-            kind: RuntimeLeaseKind::ChildAgent,
-            owner_id: request.child_owner_id,
-            thread_id: request.thread_id,
-            parent_lease_id: Some(request.parent_lease_id),
-        })
-    }
-
-    async fn revoke_lease(&self, _lease_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn lease_is_usable(&self, _lease_id: &str) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
     async fn preflight(
         &self,
         _request: &RuntimePreflightRequest,

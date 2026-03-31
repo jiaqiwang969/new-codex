@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::AuthManager;
 use crate::RolloutRecorder;
-use crate::approval_runtime::SharedApprovalRuntime;
 use crate::SkillsManager;
 use crate::agent::AgentControl;
 use crate::client::ModelClient;
@@ -43,7 +42,6 @@ pub(crate) struct SessionServices {
     pub(crate) shell_snapshot_tx: watch::Sender<Option<Arc<crate::shell_snapshot::ShellSnapshot>>>,
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
-    pub(crate) approval_runtime: SharedApprovalRuntime,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) session_telemetry: SessionTelemetry,

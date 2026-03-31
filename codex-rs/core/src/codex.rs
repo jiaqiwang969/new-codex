@@ -11,11 +11,6 @@ use tokio::sync::OnceCell;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::SandboxState;
-use crate::approval_runtime::RuntimeChildLeaseRequest;
-use crate::approval_runtime::RuntimeLease;
-use crate::approval_runtime::RuntimeLeaseRegistration;
-use crate::approval_runtime::SharedApprovalRuntime;
-use crate::approval_runtime::default_runtime_client;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
@@ -433,8 +428,6 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) metrics_service_name: Option<String>,
     pub(crate) inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
     pub(crate) inherited_exec_policy: Option<Arc<ExecPolicyManager>>,
-    pub(crate) inherited_approval_runtime: Option<SharedApprovalRuntime>,
-    pub(crate) parent_runtime_lease: Option<RuntimeLease>,
     pub(crate) user_shell_override: Option<shell::Shell>,
     pub(crate) parent_trace: Option<W3cTraceContext>,
 }
@@ -513,8 +506,6 @@ impl Codex {
             inherited_shell_snapshot,
             user_shell_override,
             inherited_exec_policy,
-            inherited_approval_runtime,
-            parent_runtime_lease,
             parent_trace: _,
         } = args;
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -694,8 +685,6 @@ impl Codex {
             agent_status_tx.clone(),
             conversation_history,
             session_source_clone,
-            inherited_approval_runtime,
-            parent_runtime_lease,
             environment_manager,
             skills_manager,
             plugins_manager,
@@ -1512,8 +1501,6 @@ impl Session {
         agent_status: watch::Sender<AgentStatus>,
         initial_history: InitialHistory,
         session_source: SessionSource,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
-        parent_runtime_lease: Option<RuntimeLease>,
         environment_manager: Arc<EnvironmentManager>,
         skills_manager: Arc<SkillsManager>,
         plugins_manager: Arc<PluginsManager>,
@@ -1820,25 +1807,7 @@ impl Session {
                 }
             };
         session_configuration.thread_name = thread_name.clone();
-        let approval_runtime = inherited_approval_runtime.unwrap_or_else(default_runtime_client);
-        let runtime_lease = if let Some(parent_runtime_lease) = parent_runtime_lease {
-            approval_runtime
-                .derive_child_lease(RuntimeChildLeaseRequest {
-                    parent_lease_id: parent_runtime_lease.id,
-                    child_owner_id: conversation_id.to_string(),
-                    thread_id: conversation_id.to_string(),
-                })
-                .await?
-        } else {
-            approval_runtime
-                .register_lease(RuntimeLeaseRegistration {
-                    owner_id: conversation_id.to_string(),
-                    thread_id: conversation_id.to_string(),
-                })
-                .await?
-        };
-        let mut state = SessionState::new(session_configuration.clone());
-        state.set_runtime_lease(Some(runtime_lease));
+        let state = SessionState::new(session_configuration.clone());
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
         let network_approval = Arc::new(NetworkApprovalService::default());
         // The managed proxy can call back into core for allowlist-miss decisions.
@@ -1941,7 +1910,6 @@ impl Session {
             shell_snapshot_tx,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             exec_policy,
-            approval_runtime,
             auth_manager: Arc::clone(&auth_manager),
             session_telemetry,
             models_manager: Arc::clone(&models_manager),
@@ -2586,22 +2554,6 @@ impl Session {
     pub(crate) async fn take_session_startup_prewarm(&self) -> Option<SessionStartupPrewarmHandle> {
         let mut state = self.state.lock().await;
         state.take_session_startup_prewarm()
-    }
-
-    pub(crate) async fn runtime_lease(&self) -> Option<RuntimeLease> {
-        let state = self.state.lock().await;
-        state.runtime_lease()
-    }
-
-    pub(crate) async fn runtime_lease_is_usable(&self) -> bool {
-        let Some(runtime_lease) = self.runtime_lease().await else {
-            return false;
-        };
-        self.services
-            .approval_runtime
-            .lease_is_usable(runtime_lease.id.as_str())
-            .await
-            .unwrap_or(false)
     }
 
     pub(crate) async fn get_config(&self) -> std::sync::Arc<Config> {
@@ -5483,19 +5435,6 @@ mod handlers {
             .terminate_all_processes()
             .await;
         sess.guardian_review_session.shutdown().await;
-        let runtime_lease = {
-            let mut state = sess.state.lock().await;
-            state.take_runtime_lease()
-        };
-        if let Some(runtime_lease) = runtime_lease
-            && let Err(err) = sess
-                .services
-                .approval_runtime
-                .revoke_lease(runtime_lease.id.as_str())
-                .await
-        {
-            warn!("failed to revoke runtime lease {}: {err}", runtime_lease.id);
-        }
         info!("Shutting down Codex instance");
         let history = sess.clone_history().await;
         let turn_count = history

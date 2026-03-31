@@ -3,8 +3,6 @@ use crate::CodexAuth;
 use crate::ModelProviderInfo;
 use crate::OPENAI_PROVIDER_ID;
 use crate::SkillsManager;
-use crate::approval_runtime::RuntimeLease;
-use crate::approval_runtime::SharedApprovalRuntime;
 use crate::agent::AgentControl;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnArgs;
@@ -722,8 +720,6 @@ impl ThreadManagerState {
             /*metrics_service_name*/ None,
             /*inherited_shell_snapshot*/ None,
             /*inherited_exec_policy*/ None,
-            /*inherited_approval_runtime*/ None,
-            /*parent_runtime_lease*/ None,
         ))
         .await
     }
@@ -738,8 +734,6 @@ impl ThreadManagerState {
         metrics_service_name: Option<String>,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
-        parent_runtime_lease: Option<RuntimeLease>,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_thread_with_source(
             config,
@@ -752,8 +746,6 @@ impl ThreadManagerState {
             metrics_service_name,
             inherited_shell_snapshot,
             inherited_exec_policy,
-            inherited_approval_runtime,
-            parent_runtime_lease,
             /*parent_trace*/ None,
             /*user_shell_override*/ None,
         ))
@@ -768,8 +760,6 @@ impl ThreadManagerState {
         session_source: SessionSource,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
-        parent_runtime_lease: Option<RuntimeLease>,
     ) -> CodexResult<NewThread> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
         Box::pin(self.spawn_thread_with_source(
@@ -783,8 +773,6 @@ impl ThreadManagerState {
             /*metrics_service_name*/ None,
             inherited_shell_snapshot,
             inherited_exec_policy,
-            inherited_approval_runtime,
-            parent_runtime_lease,
             /*parent_trace*/ None,
             /*user_shell_override*/ None,
         ))
@@ -801,8 +789,6 @@ impl ThreadManagerState {
         persist_extended_history: bool,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
-        parent_runtime_lease: Option<RuntimeLease>,
     ) -> CodexResult<NewThread> {
         Box::pin(self.spawn_thread_with_source(
             config,
@@ -815,8 +801,6 @@ impl ThreadManagerState {
             /*metrics_service_name*/ None,
             inherited_shell_snapshot,
             inherited_exec_policy,
-            inherited_approval_runtime,
-            parent_runtime_lease,
             /*parent_trace*/ None,
             /*user_shell_override*/ None,
         ))
@@ -848,8 +832,6 @@ impl ThreadManagerState {
             metrics_service_name,
             /*inherited_shell_snapshot*/ None,
             /*inherited_exec_policy*/ None,
-            /*inherited_approval_runtime*/ None,
-            /*parent_runtime_lease*/ None,
             parent_trace,
             user_shell_override,
         ))
@@ -869,8 +851,6 @@ impl ThreadManagerState {
         metrics_service_name: Option<String>,
         inherited_shell_snapshot: Option<Arc<ShellSnapshot>>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
-        parent_runtime_lease: Option<RuntimeLease>,
         parent_trace: Option<W3cTraceContext>,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
@@ -898,8 +878,6 @@ impl ThreadManagerState {
             metrics_service_name,
             inherited_shell_snapshot,
             inherited_exec_policy,
-            inherited_approval_runtime,
-            parent_runtime_lease,
             user_shell_override,
             parent_trace,
         })
