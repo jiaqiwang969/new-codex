@@ -1820,7 +1820,8 @@ impl Session {
                 }
             };
         session_configuration.thread_name = thread_name.clone();
-        let approval_runtime = inherited_approval_runtime.unwrap_or_else(default_runtime_client);
+        let approval_runtime = inherited_approval_runtime
+            .unwrap_or_else(|| default_runtime_client(config.codex_home.as_path()));
         let runtime_lease = if let Some(parent_runtime_lease) = parent_runtime_lease {
             approval_runtime
                 .derive_child_lease(RuntimeChildLeaseRequest {

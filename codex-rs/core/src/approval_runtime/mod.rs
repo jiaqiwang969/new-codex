@@ -1,10 +1,13 @@
+mod hosted;
 mod types;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hosted::HostedApprovalRuntimeClient;
 use tokio::sync::Mutex;
 
 pub(crate) use types::PreparedRuntimeAction;
@@ -97,8 +100,8 @@ impl InMemoryApprovalRuntimeState {
     }
 }
 
-pub(crate) fn default_runtime_client() -> SharedApprovalRuntime {
-    Arc::new(InMemoryApprovalRuntimeClient::default())
+pub(crate) fn default_runtime_client(codex_home: &Path) -> SharedApprovalRuntime {
+    Arc::new(HostedApprovalRuntimeClient::new(codex_home))
 }
 
 #[async_trait]

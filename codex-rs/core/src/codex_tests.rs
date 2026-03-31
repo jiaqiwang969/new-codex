@@ -3058,12 +3058,13 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
 
 // todo: use online model info
 async fn test_approval_runtime_for_thread(
+    codex_home: &Path,
     conversation_id: ThreadId,
 ) -> (
     crate::approval_runtime::SharedApprovalRuntime,
     crate::approval_runtime::RuntimeLease,
 ) {
-    let approval_runtime = crate::approval_runtime::default_runtime_client();
+    let approval_runtime = crate::approval_runtime::default_runtime_client(codex_home);
     let runtime_lease = approval_runtime
         .register_lease(crate::approval_runtime::RuntimeLeaseRegistration {
             owner_id: conversation_id.to_string(),
@@ -3145,7 +3146,8 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_configuration.session_source.clone(),
     );
 
-    let (approval_runtime, runtime_lease) = test_approval_runtime_for_thread(conversation_id).await;
+    let (approval_runtime, runtime_lease) =
+        test_approval_runtime_for_thread(config.codex_home.as_path(), conversation_id).await;
     let mut state = SessionState::new(session_configuration.clone());
     state.set_runtime_lease(Some(runtime_lease));
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
@@ -3986,7 +3988,8 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         session_configuration.session_source.clone(),
     );
 
-    let (approval_runtime, runtime_lease) = test_approval_runtime_for_thread(conversation_id).await;
+    let (approval_runtime, runtime_lease) =
+        test_approval_runtime_for_thread(config.codex_home.as_path(), conversation_id).await;
     let mut state = SessionState::new(session_configuration.clone());
     state.set_runtime_lease(Some(runtime_lease));
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
