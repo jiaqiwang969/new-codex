@@ -5,6 +5,17 @@ upstream `main`. Upstream product docs remain the baseline for general Codex
 usage; this page only calls out the local behaviors that are easy to miss when
 working from upstream docs alone.
 
+## Current source of truth
+
+As of 2026-03-31, this page is the live capability map for local behavior on
+`main`.
+
+- Use this page for the current runtime and config shape.
+- Use `docs/plans/` for merge history, implementation rationale, and archived
+  execution notes.
+- Treat the old detached archive branch and pre-merge worktree notes as
+  historical material, not as the current product surface.
+
 ## Active local capability map
 
 The current merge inventory still treats these areas as intentional local
@@ -14,11 +25,19 @@ customization, not accidental fork residue:
 - provider-family expansion plus utility-model routing (`model_sub`,
   `model_sub_responses`)
 - memory, context-packet, and Entire checkpoint integration
+- approval-runtime closure for destructive tool flows
+- guardian approval review replay in app-server extended history / TUI replay
 - selected multi-agent extensions
 
 The old local `smart-access`, `endpoint-sec`, and `/freeze` line is no longer
 part of the runtime. Remaining mentions of that direction should be treated as
 historical notes only.
+
+What survived from that old direction is narrower:
+
+- the deleted Smart Access product mode did not return
+- but `main` now includes an internal runtime companion for destructive
+  approval closure under the existing guardian + exec-policy architecture
 
 Older merge notes that discuss agent worktrees or TUI workbench reattachment
 describe preservation candidates from the detached archive branch, not features
@@ -86,6 +105,29 @@ Useful entry points:
 - Checkpoint/history integration:
   [`codex-rs/core/src/entire_integration.rs`](../codex-rs/core/src/entire_integration.rs)
 
+## Approval runtime and guardian replay
+
+Current `main` also keeps two landed extensions around approval closure and
+history reconstruction:
+
+- an internal `approval_runtime` layer that adds runtime health, lease, permit,
+  and fallback-to-human handling for destructive tool execution
+- replayable `guardianApprovalReview` thread items in app-server extended
+  history so resume/fork/TUI replay can reconstruct guardian review state
+
+Useful entry points:
+
+- Runtime companion:
+  [`codex-rs/core/src/approval_runtime/`](../codex-rs/core/src/approval_runtime/)
+- Destructive tool integration:
+  [`codex-rs/core/src/tools/runtimes/shell.rs`](../codex-rs/core/src/tools/runtimes/shell.rs)
+- Unified-exec runtime finish handling:
+  [`codex-rs/core/src/unified_exec/async_watcher.rs`](../codex-rs/core/src/unified_exec/async_watcher.rs)
+- Replay reconstruction:
+  [`codex-rs/app-server-protocol/src/protocol/thread_history.rs`](../codex-rs/app-server-protocol/src/protocol/thread_history.rs)
+- App-server contract notes:
+  [`codex-rs/app-server/README.md`](../codex-rs/app-server/README.md)
+
 ## Example MCP presets
 
 The local example config also carries two repo-specific MCP launcher presets in
@@ -111,5 +153,5 @@ preservation ideas that were later dropped from `main`:
 - [2026-03-24-upstream-merge-memory-entire-analysis.md](./plans/2026-03-24-upstream-merge-memory-entire-analysis.md)
 - [2026-03-24-upstream-merge-tui-workbench-analysis.md](./plans/2026-03-24-upstream-merge-tui-workbench-analysis.md)
 
-Treat those notes as the current map of what is intentionally local versus what
-should follow upstream structure as-is.
+Treat those notes as historical merge context. This page is the current map of
+what is intentionally local versus what should follow upstream structure as-is.
