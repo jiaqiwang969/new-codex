@@ -2,6 +2,11 @@
 
 **Date:** 2026-03-31
 
+> **Status (2026-03-31): Implemented on `main`.**
+> The design below was landed as `452f8e13e2`
+> (`feat: replay guardian approval reviews`).
+> Keep this note as implementation rationale, not as a pending design review.
+
 **Goal:** Persist and replay guardian automatic approval review state through app-server v2 `thread/read`, resume, and fork flows when extended history is enabled.
 
 ## Context

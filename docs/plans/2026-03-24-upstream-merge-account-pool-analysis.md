@@ -4,6 +4,11 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical merge analysis.**
+> The upstream merge has since landed on `main`.
+> This note is still useful for intent and conflict history, but it is not the
+> current implementation contract; verify behavior against current `main`.
+
 > **Goal of this note:** explain what the local account-pool line actually
 > changed, what problem it was solving, why it conflicts with upstream, and
 > what should be preserved during future merge work.

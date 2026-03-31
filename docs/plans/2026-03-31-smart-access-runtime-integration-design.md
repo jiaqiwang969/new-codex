@@ -2,6 +2,12 @@
 
 **Date:** 2026-03-31
 
+> **Status (2026-03-31): Implemented on `main`.**
+> The runtime-integration line described here landed across:
+> `34d1ec3196`, `28c95fafe0`, `12de9aea64`, and `e185d62ed7`.
+> Treat this file as rationale for the landed architecture, not as a pending
+> design proposal.
+
 **Goal:** Reuse the valuable runtime/control-plane work from the unfinished Smart Access `phase2b` worktree without reviving the deleted Smart Access mode stack on `main`.
 
 ## Context

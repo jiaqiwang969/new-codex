@@ -4,6 +4,11 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical merge analysis.**
+> The upstream merge has since landed on `main`.
+> Keep this as a map of where merge pain concentrated, but validate any file
+> ownership assumptions against the current tree before acting on it.
+
 > **Goal of this note:** identify the shared files where the preserved local
 > features actually attach to upstream-owned architecture, so future merge work
 > can resolve conflicts by file responsibility instead of by vague feature

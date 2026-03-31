@@ -1,6 +1,11 @@
 # Guardian Review Replay Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+>
+> **Status (2026-03-31): Implemented on `main`.**
+> The plan below has already been completed by `452f8e13e2`
+> (`feat: replay guardian approval reviews`).
+> Keep it as a historical execution record, not as an open task list.
 
 **Goal:** Add app-server v2 replay support for guardian approval review state by reconstructing it as a replayable thread item and rendering it in TUI history.
 

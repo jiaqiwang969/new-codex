@@ -1,6 +1,11 @@
 # Smart Access Runtime Integration Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+>
+> **Status (2026-03-31): Implemented on `main`.**
+> The plan below has already been completed across:
+> `34d1ec3196`, `28c95fafe0`, `12de9aea64`, and `e185d62ed7`.
+> Keep it as a historical implementation record, not as an open execution plan.
 
 **Goal:** Recover the runtime/control-plane value from Smart Access `phase2b` by adding a small runtime companion to current `main` that closes destructive approval flows without restoring the deleted Smart Access product mode.
 

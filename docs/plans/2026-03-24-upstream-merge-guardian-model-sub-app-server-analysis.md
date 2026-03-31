@@ -4,6 +4,11 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical merge analysis.**
+> The upstream merge has since landed on `main`.
+> Read this as a branch-era architecture note, not as a promise that every
+> local wire shape described below is still current.
+
 > **Goal of this note:** separate the parts of this area that are now upstream
 > baseline from the parts that are still local customization, so the eventual
 > merge can anchor on the right architecture.

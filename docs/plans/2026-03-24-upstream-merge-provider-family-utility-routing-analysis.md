@@ -4,6 +4,11 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical merge analysis.**
+> The upstream merge has since landed on `main`.
+> This file captures why this capability mattered during merge work, but it is
+> not a substitute for checking the current provider-routing code directly.
+
 > **Goal of this note:** explain what the local provider-family expansion and
 > utility-routing layer actually does, why it is more than a few extra model
 > aliases, and where the future upstream merge will keep colliding with it.

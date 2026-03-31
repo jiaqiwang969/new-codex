@@ -4,6 +4,11 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical merge analysis.**
+> The upstream merge has since landed on `main`.
+> Treat this as a dated explanation of merge intent and attachment points, not
+> as the live spec for memory or Entire behavior.
+
 > **Goal of this note:** capture what the local memory/context/Entire line adds,
 > why it conflicts with upstream, and what should be preserved if this block is
 > migrated onto a newer upstream base.
