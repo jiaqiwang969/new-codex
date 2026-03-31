@@ -5,6 +5,22 @@ upstream `main`. Upstream product docs remain the baseline for general Codex
 usage; this page only calls out the local behaviors that are easy to miss when
 working from upstream docs alone.
 
+## Active local capability map
+
+The current merge inventory still treats these areas as intentional local
+customization, not accidental fork residue:
+
+- account-pool overlays and provider failover
+- provider-family expansion plus utility-model routing (`model_sub`,
+  `model_sub_responses`)
+- memory, context-packet, and Entire checkpoint integration
+- agent worktrees and selected multi-agent extensions
+- TUI workbench features such as `git-graph`, session bar, and `ralph-loop`
+
+The old local `smart-access`, `endpoint-sec`, and `/freeze` line is no longer
+part of the runtime. Remaining mentions of that direction should be treated as
+historical notes only.
+
 ## Account pool overlays
 
 Provider account-pool routing is documented in [config.md](./config.md#provider-account-pool)
