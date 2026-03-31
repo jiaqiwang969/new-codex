@@ -221,7 +221,7 @@ Route them through the same warning/history path used by current guardian and co
 Run:
 
 ```bash
-cargo test -p codex-tui-app-server runtime_
+cargo test -p codex-tui runtime_
 ```
 
 Expected: FAIL because the current TUI does not render these runtime warning variants distinctly.
@@ -241,7 +241,7 @@ Prefer existing status/history helpers over adding a new standalone rendering su
 Run:
 
 ```bash
-cargo test -p codex-tui-app-server runtime_
+cargo test -p codex-tui runtime_
 ```
 
 Expected: PASS, producing reviewed snapshot diffs where UI text changed intentionally.
@@ -249,7 +249,7 @@ Expected: PASS, producing reviewed snapshot diffs where UI text changed intentio
 If snapshots changed intentionally:
 
 ```bash
-cargo insta pending-snapshots -p codex-tui-app-server
+cargo insta pending-snapshots -p codex-tui
 ```
 
 Review the generated `*.snap.new` files directly, then accept only the intended ones.
@@ -274,7 +274,8 @@ git commit -m "feat: render runtime closure warnings in tui" -m "Co-authored-by:
 Run:
 
 ```bash
-cd codex-rs
+# Run `just` from the repo root. The root justfile already sets
+# `working-directory := "codex-rs"` for cargo-backed recipes.
 just fmt
 ```
 
@@ -285,9 +286,9 @@ Expected: PASS
 Run:
 
 ```bash
-cd codex-rs
+# Run `just` from the repo root for the same reason as above.
 just fix -p codex-core
-just fix -p codex-tui-app-server
+just fix -p codex-tui
 just argument-comment-lint
 ```
 
@@ -302,7 +303,7 @@ cd codex-rs
 cargo test -p codex-core approval_runtime
 cargo test -p codex-core --test all suite::unified_exec::runtime_
 cargo test -p codex-core --test all suite::approvals::runtime_
-cargo test -p codex-tui-app-server runtime_
+cargo test -p codex-tui runtime_
 ```
 
 Expected: PASS
