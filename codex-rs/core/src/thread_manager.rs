@@ -494,19 +494,6 @@ impl ThreadManager {
         .await
     }
 
-    pub(crate) async fn start_thread_with_user_shell_override_for_tests(
-        &self,
-        config: Config,
-        user_shell_override: crate::shell::Shell,
-    ) -> CodexResult<NewThread> {
-        Box::pin(self.start_thread_with_test_overrides_for_tests(
-            config,
-            Some(user_shell_override),
-            /*inherited_approval_runtime*/ None,
-        ))
-        .await
-    }
-
     pub(crate) async fn start_thread_with_test_overrides_for_tests(
         &self,
         config: Config,
@@ -529,25 +516,6 @@ impl ThreadManager {
             /*parent_trace*/ None,
             user_shell_override,
         ))
-        .await
-    }
-
-    pub(crate) async fn resume_thread_from_rollout_with_user_shell_override_for_tests(
-        &self,
-        config: Config,
-        rollout_path: PathBuf,
-        auth_manager: Arc<AuthManager>,
-        user_shell_override: crate::shell::Shell,
-    ) -> CodexResult<NewThread> {
-        Box::pin(
-            self.resume_thread_from_rollout_with_test_overrides_for_tests(
-                config,
-                rollout_path,
-                auth_manager,
-                Some(user_shell_override),
-                /*inherited_approval_runtime*/ None,
-            ),
-        )
         .await
     }
 

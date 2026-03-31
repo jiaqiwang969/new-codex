@@ -137,6 +137,7 @@ pub(crate) fn normalize_legacy_gemini_model_selection(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn model_supports_web_search_tool(slug: &str) -> bool {
     match normalized_grok_model_slug(slug) {
         Some(grok_slug) => grok_slug.starts_with("grok-4"),
@@ -144,6 +145,7 @@ pub(crate) fn model_supports_web_search_tool(slug: &str) -> bool {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn model_supports_web_search_external_web_access(slug: &str) -> bool {
     normalized_grok_model_slug(slug).is_none()
 }
