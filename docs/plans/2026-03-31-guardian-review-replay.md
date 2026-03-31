@@ -64,7 +64,7 @@ Add a replay-oriented TUI test that feeds a `guardianApprovalReview` thread item
 
 **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p codex-tui-app-server guardian_review`
+Run: `cargo test -p codex-tui guardian_review`
 
 Expected: FAIL because replayed guardian review items are not yet recognized by the TUI.
 
@@ -74,7 +74,7 @@ When replaying `guardianApprovalReview`, route it through the existing `on_guard
 
 **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p codex-tui-app-server guardian_review`
+Run: `cargo test -p codex-tui guardian_review`
 
 Expected: PASS
 
@@ -116,10 +116,10 @@ Document `guardianReview` on relevant replayable thread items, then regenerate a
 Run:
 
 ```bash
-cd codex-rs && just write-app-server-schema
+just write-app-server-schema
 just fmt
 cargo test -p codex-app-server-protocol
-cargo test -p codex-tui-app-server guardian_review
+cargo test -p codex-tui guardian_review
 just argument-comment-lint
 ```
 
