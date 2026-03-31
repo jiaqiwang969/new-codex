@@ -36,6 +36,8 @@ use uuid::Uuid;
 
 pub struct BatchJobHandler;
 
+pub(crate) const AGENT_JOB_WORKER_ROLE: &str = "agent_job_worker";
+
 const DEFAULT_AGENT_JOB_CONCURRENCY: usize = 16;
 const MAX_AGENT_JOB_CONCURRENCY: usize = 64;
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -637,7 +639,7 @@ async fn run_agent_job_loop(
                             session.conversation_id,
                             &turn.session_source,
                             next_thread_spawn_depth(&turn.session_source),
-                            /*agent_role*/ None,
+                            /*agent_role*/ Some(AGENT_JOB_WORKER_ROLE),
                             /*task_name*/ None,
                         )?),
                     )

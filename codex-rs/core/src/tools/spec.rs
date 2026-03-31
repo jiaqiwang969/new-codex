@@ -17,6 +17,7 @@ use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::TOOL_SEARCH_DEFAULT_LIMIT;
 use crate::tools::handlers::TOOL_SEARCH_TOOL_NAME;
 use crate::tools::handlers::TOOL_SUGGEST_TOOL_NAME;
+use crate::tools::handlers::agent_jobs::AGENT_JOB_WORKER_ROLE;
 use crate::tools::handlers::agent_jobs::BatchJobHandler;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
@@ -78,6 +79,24 @@ static TOOL_SUGGEST_DESCRIPTION_TEMPLATE: LazyLock<Template> = LazyLock::new(|| 
     Template::parse(TOOL_SUGGEST_DESCRIPTION_TEMPLATE_SOURCE)
         .unwrap_or_else(|err| panic!("tool_suggest description template must parse: {err}"))
 });
+
+fn is_agent_jobs_worker_session_source(session_source: &SessionSource) -> bool {
+    match session_source {
+        SessionSource::SubAgent(SubAgentSource::Review)
+        | SessionSource::SubAgent(SubAgentSource::Compact)
+        | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
+        | SessionSource::Cli
+        | SessionSource::VSCode
+        | SessionSource::Exec
+        | SessionSource::Mcp
+        | SessionSource::Custom(_)
+        | SessionSource::Unknown => false,
+        SessionSource::SubAgent(SubAgentSource::Other(label)) => label.starts_with("agent_job:"),
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
+            agent_role.as_deref() == Some(AGENT_JOB_WORKER_ROLE)
+        }
+    }
+}
 const WEB_SEARCH_CONTENT_TYPES: [&str; 2] = ["text", "image"];
 
 fn unified_exec_output_schema() -> JsonValue {
@@ -470,12 +489,7 @@ impl ToolsConfig {
             }
         };
 
-        let agent_jobs_worker_tools = include_agent_jobs
-            && matches!(
-                session_source,
-                SessionSource::SubAgent(SubAgentSource::Other(label))
-                    if label.starts_with("agent_job:")
-            );
+        let agent_jobs_worker_tools = is_agent_jobs_worker_session_source(session_source);
 
         Self {
             available_models: available_models_ref.to_vec(),
@@ -2850,15 +2864,17 @@ pub(crate) fn build_specs_with_discoverable_tools(
         }
     }
 
-    if config.agent_jobs_tools {
+    if config.agent_jobs_tools || config.agent_jobs_worker_tools {
         let agent_jobs_handler = Arc::new(BatchJobHandler);
-        push_tool_spec(
-            &mut builder,
-            create_spawn_agents_on_csv_tool(),
-            /*supports_parallel_tool_calls*/ false,
-            config.code_mode_enabled,
-        );
-        builder.register_handler("spawn_agents_on_csv", agent_jobs_handler.clone());
+        if config.agent_jobs_tools {
+            push_tool_spec(
+                &mut builder,
+                create_spawn_agents_on_csv_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
+            builder.register_handler("spawn_agents_on_csv", agent_jobs_handler.clone());
+        }
         if config.agent_jobs_worker_tools {
             push_tool_spec(
                 &mut builder,
