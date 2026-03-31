@@ -14,12 +14,15 @@ customization, not accidental fork residue:
 - provider-family expansion plus utility-model routing (`model_sub`,
   `model_sub_responses`)
 - memory, context-packet, and Entire checkpoint integration
-- agent worktrees and selected multi-agent extensions
-- TUI workbench features such as `git-graph`, session bar, and `ralph-loop`
+- selected multi-agent extensions
 
 The old local `smart-access`, `endpoint-sec`, and `/freeze` line is no longer
 part of the runtime. Remaining mentions of that direction should be treated as
 historical notes only.
+
+Older merge notes that discuss agent worktrees or TUI workbench reattachment
+describe preservation candidates from the detached archive branch, not features
+that remain in the current `main` runtime.
 
 ## Account pool overlays
 
@@ -97,9 +100,10 @@ Treat them as local example integrations, not upstream Codex defaults.
 
 ## Merge-analysis notes
 
-The active upstream-merge analysis lives in `docs/plans/` and is worth reading
-before touching provider routing, utility models, memory/Entire wiring, or TUI
-workbench features:
+The preserved upstream-merge analysis lives in `docs/plans/`. It remains worth
+reading before touching provider routing, utility models, memory/Entire
+wiring, or collaboration-related local extensions, but some notes also capture
+preservation ideas that were later dropped from `main`:
 
 - [2026-03-24-upstream-merge-live-customization-inventory.md](./plans/2026-03-24-upstream-merge-live-customization-inventory.md)
 - [2026-03-24-upstream-merge-account-pool-analysis.md](./plans/2026-03-24-upstream-merge-account-pool-analysis.md)
