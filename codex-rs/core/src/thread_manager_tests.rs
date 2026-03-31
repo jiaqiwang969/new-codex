@@ -1,8 +1,4 @@
 use super::*;
-use crate::approval_runtime::RuntimeHealth;
-use crate::approval_runtime::RuntimeLeaseKind;
-use crate::approval_runtime::RuntimePreflight;
-use crate::approval_runtime::RuntimePreflightRequest;
 use crate::codex::make_session_and_context;
 use crate::config::test_config;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
@@ -14,8 +10,6 @@ use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AgentMessageEvent;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use core_test_support::PathExt;
@@ -283,155 +277,6 @@ async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
     assert!(report.submit_failed.is_empty());
     assert!(report.timed_out.is_empty());
     assert!(manager.list_thread_ids().await.is_empty());
-}
-
-#[tokio::test]
-async fn start_thread_registers_runtime_lease_in_default_hosted_backend() {
-    let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
-    config.cwd = config.codex_home.abs();
-    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
-
-    let manager = ThreadManager::with_models_provider_and_home_for_tests(
-        CodexAuth::from_api_key("dummy"),
-        config.model_provider.clone(),
-        config.codex_home.clone(),
-        Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
-    );
-    let NewThread {
-        thread_id, thread, ..
-    } = manager
-        .start_thread(config.clone())
-        .await
-        .expect("start root thread");
-
-    let runtime_lease = thread
-        .codex
-        .session
-        .runtime_lease()
-        .await
-        .expect("root session should register a runtime lease");
-    let preflight = crate::approval_runtime::default_runtime_client(config.codex_home.as_path())
-        .preflight(&RuntimePreflightRequest {
-            lease_id: runtime_lease.id,
-            destructive: true,
-            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
-        })
-        .await
-        .expect("fresh hosted runtime client should read root lease");
-
-    assert_eq!(
-        preflight,
-        RuntimePreflight {
-            health: RuntimeHealth::Healthy,
-            action_id: Some("action-1".to_string()),
-        }
-    );
-
-    let report = manager
-        .shutdown_all_threads_bounded(Duration::from_secs(10))
-        .await;
-    assert_eq!(report.completed, vec![thread_id]);
-    assert!(report.submit_failed.is_empty());
-    assert!(report.timed_out.is_empty());
-}
-
-#[tokio::test]
-async fn delegated_thread_inherits_parent_runtime_and_lease_from_root_thread() {
-    let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
-    config.codex_home = temp_dir.path().join("codex-home");
-    config.cwd = config.codex_home.abs();
-    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
-
-    let manager = ThreadManager::with_models_provider_and_home_for_tests(
-        CodexAuth::from_api_key("dummy"),
-        config.model_provider.clone(),
-        config.codex_home.clone(),
-        Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
-    );
-    let NewThread {
-        thread_id: root_thread_id,
-        thread: root_thread,
-        ..
-    } = manager
-        .start_thread(config.clone())
-        .await
-        .expect("start root thread");
-    let parent_session = Arc::clone(&root_thread.codex.session);
-    let parent_lease = parent_session
-        .runtime_lease()
-        .await
-        .expect("root session should register a runtime lease");
-
-    let NewThread {
-        thread_id: child_thread_id,
-        thread: child_thread,
-        ..
-    } = manager
-        .state
-        .spawn_new_thread_with_source(
-            config.clone(),
-            manager.agent_control(),
-            SessionSource::SubAgent(SubAgentSource::Other("runtime-test".to_string())),
-            /*persist_extended_history*/ false,
-            /*metrics_service_name*/ None,
-            /*inherited_shell_snapshot*/ None,
-            Some(Arc::clone(&parent_session.services.exec_policy)),
-            Some(Arc::clone(&parent_session.services.approval_runtime)),
-            Some(parent_lease.clone()),
-        )
-        .await
-        .expect("start child thread");
-
-    let child_lease = child_thread
-        .codex
-        .session
-        .runtime_lease()
-        .await
-        .expect("child session should derive a runtime lease");
-    assert_eq!(child_lease.kind, RuntimeLeaseKind::ChildAgent);
-    assert_eq!(child_lease.owner_id, child_thread_id.to_string());
-    assert_eq!(child_lease.thread_id, child_thread_id.to_string());
-    assert_eq!(child_lease.parent_lease_id, Some(parent_lease.id.clone()));
-
-    crate::approval_runtime::default_runtime_client(config.codex_home.as_path())
-        .revoke_lease(parent_lease.id.as_str())
-        .await
-        .expect("fresh hosted runtime client should revoke parent lease");
-    let child_lease_id = child_lease.id.clone();
-    let preflight = crate::approval_runtime::default_runtime_client(config.codex_home.as_path())
-        .preflight(&RuntimePreflightRequest {
-            lease_id: child_lease_id.clone(),
-            destructive: true,
-            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
-        })
-        .await
-        .expect("fresh hosted runtime client should read child lease linkage");
-
-    assert_eq!(
-        preflight,
-        RuntimePreflight {
-            health: RuntimeHealth::FallbackToHuman {
-                summary: format!("runtime lease {child_lease_id} is no longer usable"),
-            },
-            action_id: None,
-        }
-    );
-
-    let report = manager
-        .shutdown_all_threads_bounded(Duration::from_secs(10))
-        .await;
-    let mut expected_completed = vec![child_thread_id, root_thread_id];
-    expected_completed.sort_by_key(std::string::ToString::to_string);
-    assert_eq!(report.completed, expected_completed);
-    assert!(report.submit_failed.is_empty());
-    assert!(report.timed_out.is_empty());
 }
 
 #[tokio::test]

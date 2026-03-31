@@ -2331,14 +2331,6 @@ async fn build_test_config(codex_home: &Path) -> Config {
         .expect("load default test config")
 }
 
-fn persistent_test_codex_home() -> PathBuf {
-    tempfile::Builder::new()
-        .prefix("codex-tests-")
-        .tempdir()
-        .expect("create temp dir")
-        .keep()
-}
-
 fn session_telemetry(
     conversation_id: ThreadId,
     config: &Config,
@@ -2360,8 +2352,8 @@ fn session_telemetry(
 }
 
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {
-    let codex_home = persistent_test_codex_home();
-    let config = build_test_config(codex_home.as_path()).await;
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let config = build_test_config(codex_home.path()).await;
     let config = Arc::new(config);
     let model = ModelsManager::get_model_offline_for_tests(config.model.as_deref());
     let model_info = ModelsManager::construct_model_info_offline_for_tests(model.as_str(), &config);
@@ -3063,8 +3055,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
 // todo: use online model info
 pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let (tx_event, _rx_event) = async_channel::unbounded();
-    let codex_home = persistent_test_codex_home();
-    let config = build_test_config(codex_home.as_path()).await;
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let config = build_test_config(codex_home.path()).await;
     let config = Arc::new(config);
     let conversation_id = ThreadId::default();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
@@ -3901,8 +3893,8 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
     async_channel::Receiver<Event>,
 ) {
     let (tx_event, rx_event) = async_channel::unbounded();
-    let codex_home = persistent_test_codex_home();
-    let config = build_test_config(codex_home.as_path()).await;
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let config = build_test_config(codex_home.path()).await;
     let config = Arc::new(config);
     let conversation_id = ThreadId::default();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
