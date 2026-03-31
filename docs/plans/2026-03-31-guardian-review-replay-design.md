@@ -32,22 +32,17 @@ This deliberately excludes request types that do not currently have a replayable
 
 ## Recommended Approach
 
-Add a replayable `ThreadItem::GuardianApprovalReview` item that reconstructs guardian review state from persisted rollout events.
+Attach guardian review state directly to eligible `ThreadItem` variants.
 
 ### Data model
 
-Add a new replay-only `ThreadItem` variant:
+Add an optional `guardian_review: Option<GuardianApprovalReview>` field to:
 
-- `GuardianApprovalReview { id, target_item_id, review, action }`
+- `ThreadItem::CommandExecution`
+- `ThreadItem::FileChange`
+- `ThreadItem::McpToolCall`
 
-Where:
-
-- `id` is a stable synthetic thread item id derived from the reviewed request id
-- `target_item_id` is the reviewed request/tool id from `GuardianAssessmentEvent.id`
-- `review` reuses the existing `GuardianApprovalReview` payload shape
-- `action` carries the guardian action summary payload from core when available
-
-This keeps replay state durable without requiring us to synthesize incomplete command/file/MCP items for denied reviews.
+Reuse the existing `GuardianApprovalReview` payload shape for now. Although comments mark it as temporary, reusing it avoids inventing a second review representation and keeps live notifications and replayed items aligned.
 
 ### Replay mapping
 
@@ -58,9 +53,8 @@ Mapping rule:
 - `assessment.id` is the reviewed tool/request id
 - `assessment.turn_id` is the owning turn id when available
 - `assessment.status`, `risk_score`, `risk_level`, and `rationale` populate `GuardianApprovalReview`
-- `assessment.action` is copied onto the replay item so clients can render the same approval summary they use for live notifications
 
-The builder should upsert by synthetic guardian-review item id so `inProgress -> approved/denied/aborted` transitions collapse into one final replay item.
+The builder should upsert guardian review state onto an existing matching item when present. If the owning turn exists but the item does not yet exist, create a minimal placeholder item only when that would preserve a valid replay surface; otherwise drop with a warning. For this first pass, prefer updating already-known items and logging unmatched cases rather than synthesizing partially-known item payloads.
 
 ### Live compatibility
 
@@ -68,13 +62,13 @@ Keep the existing standalone guardian review notifications in app-server for now
 
 ### TUI replay behavior
 
-Update TUI app-server replay handling so that a replayed `ThreadItem::GuardianApprovalReview` invokes the same guardian rendering flow currently used for standalone notifications. This keeps live and replayed output visually consistent without rewriting the existing history-cell logic.
+Update TUI app-server replay handling so that a replayed `ThreadItem` with `guardian_review` invokes the same guardian rendering flow currently used for standalone notifications. This keeps live and replayed output visually consistent without rewriting the existing history-cell logic.
 
 ## Alternatives Considered
 
-### 1. Attaching guardian state to existing command/file/MCP items
+### 1. Replay-only guardian notifications
 
-Rejected for this iteration. Denied reviews often do not emit a subsequent command execution, patch apply, or MCP completion item, so replay would still need synthetic placeholder items. A dedicated replay item gets us complete history reconstruction with lower risk.
+Rejected. This would preserve the current split model where live state uses notifications and replay state uses a different API path. It does not solve the product-model problem and would need to be removed later.
 
 ### 2. Full approval timeline model
 
@@ -86,9 +80,9 @@ Rejected for now. A separate approval timeline could unify command, file, MCP, n
 
 Guardian assessment events may appear before or after the matching terminal tool event depending on persistence order and turn reconstruction. The implementation should therefore upsert onto existing items and tolerate unmatched assessments without panicking.
 
-### Product model mismatch
+### Partial item coverage
 
-The replay item is a pragmatic bridge, not the final guardian lifecycle model. A future protocol revision could still fold this state into richer approval-request items if the live app-server API grows that surface.
+Not every guardian-reviewed request type maps to a `ThreadItem`. That is acceptable for this iteration as long as documented coverage is explicit and unmatched replay is non-fatal.
 
 ### API growth
 
@@ -96,9 +90,12 @@ Adding `guardianReview` expands v2 schema. README and generated app-server schem
 
 ## Testing Strategy
 
-1. Add protocol-level replay tests in `thread_history.rs` showing guardian assessment replay becomes a `guardianApprovalReview` thread item for command, patch, and MCP review actions.
-2. Verify repeated guardian assessment lifecycle updates upsert into one replay item.
-3. Add TUI app-server replay coverage showing replayed `guardianApprovalReview` produces the same approved/denied rendering path as live guardian notifications.
+1. Add protocol-level replay tests in `thread_history.rs` showing guardian assessment replay attaches to:
+   - command execution
+   - file change
+   - MCP tool call
+2. Verify unmatched guardian assessment events do not crash replay and do not invent malformed items.
+3. Add TUI app-server replay coverage showing replayed `guardianReview` produces the same approved/denied rendering path as live guardian notifications.
 4. Regenerate app-server schema fixtures and run targeted crate tests.
 
 ## Non-Goals

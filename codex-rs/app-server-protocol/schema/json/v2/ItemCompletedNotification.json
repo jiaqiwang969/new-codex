@@ -266,61 +266,6 @@
       ],
       "type": "object"
     },
-    "GuardianApprovalReview": {
-      "description": "[UNSTABLE] Temporary guardian approval review payload used by `item/autoApprovalReview/*` notifications. This shape is expected to change soon.",
-      "properties": {
-        "rationale": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "riskLevel": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/GuardianRiskLevel"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "riskScore": {
-          "format": "uint8",
-          "minimum": 0.0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "status": {
-          "$ref": "#/definitions/GuardianApprovalReviewStatus"
-        }
-      },
-      "required": [
-        "status"
-      ],
-      "type": "object"
-    },
-    "GuardianApprovalReviewStatus": {
-      "description": "[UNSTABLE] Lifecycle state for a guardian approval review.",
-      "enum": [
-        "inProgress",
-        "approved",
-        "denied",
-        "aborted"
-      ],
-      "type": "string"
-    },
-    "GuardianRiskLevel": {
-      "description": "[UNSTABLE] Risk level assigned by guardian approval review.",
-      "enum": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "type": "string"
-    },
     "HookPromptFragment": {
       "properties": {
         "hookRunId": {
@@ -897,36 +842,6 @@
             "type"
           ],
           "title": "McpToolCallThreadItem",
-          "type": "object"
-        },
-        {
-          "description": "[UNSTABLE] Replay-only guardian approval review item reconstructed from persisted rollout events when extended history is enabled.",
-          "properties": {
-            "action": true,
-            "id": {
-              "type": "string"
-            },
-            "review": {
-              "$ref": "#/definitions/GuardianApprovalReview"
-            },
-            "targetItemId": {
-              "type": "string"
-            },
-            "type": {
-              "enum": [
-                "guardianApprovalReview"
-              ],
-              "title": "GuardianApprovalReviewThreadItemType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "review",
-            "targetItemId",
-            "type"
-          ],
-          "title": "GuardianApprovalReviewThreadItem",
           "type": "object"
         },
         {
