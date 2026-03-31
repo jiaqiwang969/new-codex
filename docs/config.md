@@ -64,7 +64,7 @@ account_pool = [
 When `account_pool` is present, pool order is the source of truth for account
 selection. Every new turn starts scanning from the first pool entry. If an
 account fails with an auth/rate-limit style error, Codex cools that account
-down for 10 minutes for the current session, switches to the next pool entry
+down for 1 minute for the current session, switches to the next pool entry
 for the current turn, and retries the first account again on a later turn once
 its cooldown has expired.
 
