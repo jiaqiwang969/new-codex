@@ -4,6 +4,13 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical execution playbook.**
+> The upstream merge has since landed on `main`, but the final outcome did
+> **not** preserve every local feature family listed below.
+> In particular, treat agent worktrees and TUI workbench restoration
+> (`git-graph`, `session bar`, `ralph-loop`) as rejected historical branches,
+> not current merge tasks.
+
 > **Baseline refresh note:** after rechecking the live upstream remote, the
 > tracked official baseline moved from `047ea642d` to `9dbe09834`. The newest
 > upstream churn in this area is concentrated in `config/mod.rs`, `codex.rs`,

@@ -7,6 +7,11 @@
 > **Status:** Current working inventory for the ongoing upstream merge cleanup.
 > This supersedes older assumptions that the local Smart Access / `endpoint-sec` /
 > `/freeze` line was still part of the target architecture.
+>
+> **Status (2026-03-31): Historical inventory snapshot.**
+> The upstream merge cleanup has since landed on `main`, so this file should be
+> read as a dated checkpoint rather than the current source of truth.
+> For the live capability map, see `docs/local-customizations.md`.
 
 ## Fresh upstream drift
 

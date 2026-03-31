@@ -1,6 +1,13 @@
 # Upstream Sync With Custom Feature Preservation Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+>
+> **Status (2026-03-31): Historical execution plan.**
+> The final `main` branch deliberately did **not** execute every task below.
+> In particular, do not read this plan as an instruction to restore
+> `git-graph`, `session bar`, `ralph-loop`, agent worktrees, or the removed
+> Smart Access / `endpoint-sec` / `/freeze` line.
+> For the current runtime direction, see `docs/local-customizations.md`.
 
 **Goal:** Rebuild our customized Codex branch on top of the latest `upstream/main` while preserving and improving key custom capabilities through explicit, feature-family-based migration.
 

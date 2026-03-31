@@ -8,6 +8,12 @@
 **Divergence:** `165` commits ahead of `upstream/main`, `221` commits behind `upstream/main`
 
 > **Status:** Historical inventory only. The `/freeze` and related sandbox customizations noted below are not part of the current upstream merge target and should not be reintroduced during merge prep.
+>
+> **Status (2026-03-31): Historical migration snapshot.**
+> The upstream-sync work has since landed on `main`, but not every feature
+> family listed below survived the final selection.
+> Treat `git-graph`, `session bar`, `ralph-loop`, and agent worktrees as
+> historical candidates rather than current preservation requirements.
 
 ## Branch Topology Summary
 

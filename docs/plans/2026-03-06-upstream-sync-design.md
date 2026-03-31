@@ -2,6 +2,13 @@
 
 **Date:** 2026-03-06
 
+> **Status (2026-03-31): Historical design note.**
+> The upstream-sync line has already been integrated on `main`, but the final
+> outcome did **not** preserve every feature proposed here.
+> Treat `git-graph`, `session bar`, `ralph-loop`, and agent-worktree restoration
+> as rejected historical options, not current merge targets.
+> For the live capability map, see `docs/local-customizations.md`.
+
 **Objective:** Rebase our customized Codex codebase onto the latest `openai/codex` while preserving and improving our differentiated capabilities, especially `git-graph`, Entire hook/rewind workflows, account-pool/provider routing, collaboration/multi-agent extensions, and memory-related behavior.
 
 ## Current State

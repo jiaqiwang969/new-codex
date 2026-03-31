@@ -4,6 +4,11 @@
 **Branch state:** `0fa92816c`
 **Baseline:** `upstream/main` at `9dbe09834`
 
+> **Status (2026-03-31): Historical analysis only.**
+> This note documents the old local TUI workbench line, but `main` ultimately
+> did **not** reattach `git-graph`, `session bar`, or `ralph-loop`.
+> Preserve this as merge history, not as an active roadmap.
+
 > **Goal of this note:** explain which TUI enhancements are genuinely local
 > assets, where they attach to the main TUI runtime, and why this block is
 > lower-risk than protocol work but still a merge hotspot.
