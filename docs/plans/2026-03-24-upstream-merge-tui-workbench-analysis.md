@@ -1,8 +1,8 @@
 # TUI Workbench Merge Analysis
 
 **Date:** 2026-03-24
-**Branch state:** `17922658f`
-**Baseline:** `upstream/main` at `f9545278e`
+**Branch state:** `0fa92816c`
+**Baseline:** `upstream/main` at `9dbe09834`
 
 > **Goal of this note:** explain which TUI enhancements are genuinely local
 > assets, where they attach to the main TUI runtime, and why this block is

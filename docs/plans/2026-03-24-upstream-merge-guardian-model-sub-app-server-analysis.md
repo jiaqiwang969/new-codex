@@ -1,8 +1,8 @@
 # Guardian / Model-Sub / App-Server Wire Merge Analysis
 
 **Date:** 2026-03-24
-**Branch state:** `17922658f`
-**Baseline:** `upstream/main` at `f9545278e2`
+**Branch state:** `0fa92816c`
+**Baseline:** `upstream/main` at `9dbe09834`
 
 > **Goal of this note:** separate the parts of this area that are now upstream
 > baseline from the parts that are still local customization, so the eventual
@@ -22,6 +22,23 @@ This area is no longer one problem.
 3. That means the merge should not preserve the local guardian/app-server patch
    shape as an architecture anchor. It should preserve the local model-routing
    and memory semantics, then reattach them onto newer upstream contracts.
+
+## Fresh upstream drift after the previous local baseline
+
+The refreshed upstream `main` added a small new round of shared-file churn on
+top of the older `047ea642d` baseline:
+
+- `504aeb0e0` moved session/config/TUI cwd state toward `AbsolutePathBuf`
+- `9dbe09834` extracted core skills loading into a dedicated crate
+
+Practical implication:
+
+- this creates fresh merge pressure in `codex.rs`, `config/mod.rs`,
+  `agent/role.rs`, `memories/phase2.rs`, `tui/src/app.rs`, and
+  `tui/src/chatwidget.rs`
+- it does **not** change the main architectural judgment of this note:
+  guardian remains upstream-owned, while the local value still sits around
+  `model_sub`, provider-aware child routing, and memory continuity wire
 
 ## What Upstream Already Covers
 
@@ -87,12 +104,21 @@ Why it conflicts:
 - upstream collaboration code is active in the same area
 - config, agent roles, and spawn-tool descriptions are still moving upstream
 
+Current upstream confirmation:
+
+- `codex-rs/core/src/utility_model.rs` does not exist in `upstream/main`
+- `codex-rs/core/src/model_compat.rs` does not exist in `upstream/main`
+- upstream does have collaboration mode plumbing, which means the overlap is at
+  the integration layer rather than as a same-file feature baseline
+
 ### 2. `model_sub_vouch` and session-level auto selection
 
 Representative local-only files:
 
 - `codex-rs/core/src/model_sub_vouch.rs`
 - `codex-rs/core/src/state/session.rs`
+- `codex-rs/tui/src/team_profile.rs`
+- `codex-rs/tui/src/model_sub_vouch.rs`
 
 Behavior:
 
@@ -110,6 +136,8 @@ Why it conflicts:
 - upstream does not currently have this ledger concept
 - the surrounding multi-agent wire/events now overlap upstream collaboration
   work even though the ledger itself is local-only
+- the main TUI control surfaces for this line (`team_profile.rs`,
+  `tui/model_sub_vouch.rs`) are also absent in `upstream/main`
 
 ### 3. Provider/account-pool-aware child routing
 
@@ -217,6 +245,7 @@ Upstream in this area is optimizing for:
 - app-server v2 contract evolution
 - collaboration lifecycle events
 - cross-client protocol consistency
+- collaboration mode presets rather than local team-profile / vouch workflows
 
 So the overlap is not "local bad, upstream good". The overlap is:
 

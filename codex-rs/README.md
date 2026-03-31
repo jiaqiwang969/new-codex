@@ -104,35 +104,30 @@ entire doctor                # 修复卡住的 session
 
 ### API Account Pool (多账户故障转移)
 
-Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个账户遇到认证失败 (400/401/403) 或限流 (429) 时，自动切换到下一个账户。支持多轮循环（默认 2 轮），所有账户都失败后才报错退出。
+Account Pool 系统支持为每个 provider 配置多个 API 账户，当某个账户遇到认证失败 (400/401/403)、限流 (429) 或 quota/usage 类错误时，自动切换到下一个账户。`config.toml` 继续负责逻辑 provider 选择，`config-pool.toml` 负责运行时账户池与 endpoint 覆盖；同一轮失败时最多循环 2 轮账户池，所有账户都失败后才报错退出。
 
 配置文件与主配置隔离，存放在 `~/.codex/` 目录下：
 
 `~/.codex/config-pool.toml` — Pool 账户配置：
 
 ```toml
-# ── OpenAI-compatible provider pool ─────────────────────────────────
-[model_providers.codex]
-base_url = "https://your-openai-proxy.example.com/v1"
+# `account_pool` 是 source of truth；每个新 turn 都从 key 1 开始探测。
+# pool 账号只放在 `config-pool.toml`，不回写主配置。
+
+# ── Codex (OpenAI-compatible) provider pool ─────────────────────────
+[[model_providers.codex.account_pool]]
+base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_1"
 
 [[model_providers.codex.account_pool]]
-base_url = "https://your-openai-proxy.example.com/v1"
-env_key = "OPENAI_API_KEY_POOL_1"
-
-[[model_providers.codex.account_pool]]
-base_url = "https://your-openai-proxy.example.com/v1"
+base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_2"
 
 [[model_providers.codex.account_pool]]
-base_url = "https://your-openai-proxy.example.com/v1"
+base_url = "https://code.ppchat.vip/v1"
 env_key = "OPENAI_API_KEY_POOL_3"
 
 # ── Gemini provider pool ───────────────────────────────────────────
-[model_providers.gemini]
-base_url = "https://generativelanguage.googleapis.com/v1beta"
-env_key = "GEMINI_API_KEY_POOL_1"
-
 [[model_providers.gemini.account_pool]]
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_1"
@@ -146,10 +141,6 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 env_key = "GEMINI_API_KEY_POOL_3"
 
 # ── Grok provider pool ─────────────────────────────────────────────
-[model_providers.grok]
-base_url = "https://api.x.ai/v1"
-env_key = "XAI_API_KEY_POOL_1"
-
 [[model_providers.grok.account_pool]]
 base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_1"
@@ -163,20 +154,16 @@ base_url = "https://api.x.ai/v1"
 env_key = "XAI_API_KEY_POOL_3"
 
 # ── Anthropic provider pool ───────────────────────────────────────
-[model_providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
+[[model_providers.anthropic.account_pool]]
+base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_1"
 
 [[model_providers.anthropic.account_pool]]
-base_url = "https://api.anthropic.com/v1"
-env_key = "ANTHROPIC_API_KEY_POOL_1"
-
-[[model_providers.anthropic.account_pool]]
-base_url = "https://api.anthropic.com/v1"
+base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_2"
 
 [[model_providers.anthropic.account_pool]]
-base_url = "https://api.anthropic.com/v1"
+base_url = "https://code.ppchat.vip"
 env_key = "ANTHROPIC_API_KEY_POOL_3"
 ```
 
@@ -200,12 +187,15 @@ env_key = "ANTHROPIC_API_KEY_POOL_3"
 ```
 
 行为说明：
-- 每个 `account_pool` 条目可以有不同的 `base_url` 和 `env_key`，支持跨代理/跨区域分布
-- 认证失败 (400/401/403) 立即切换，不等待重试
-- 限流 (429) 也立即切换
-- 可重试错误 (5xx) 先重试到上限，再切换账户
-- 默认循环 2 轮（3 账户 × 2 轮 = 最多 6 次切换），全部失败后报错退出
-- 成功的账户会持久化到 `config-pool.toml`，下次启动直接使用
+- `config.toml` 保持逻辑 provider 和模型配置，`config-pool.toml` 只覆盖 `account_pool`（以及必要时的 `base_url` / `env_key`）
+- 每个 `account_pool` 条目都是 `(base_url, env_key)`，支持跨代理、跨区域、跨账号分布
+- 每个新 turn 都按 `config-pool.toml` 的顺序从 key 1 开始探测
+- 认证失败 (400/401/403)、限流 (429) 和 quota/usage 类错误会立即切换到下一个账户
+- 账户 cooldown 是 session 内临时状态；当前实现冷却 60 秒，冷却结束后的下一个 turn 会重新从 key 1 开始探测
+- 同一轮失败时最多循环 2 轮账户池，然后才报错退出
+- 如果所有账户都还在 cooldown，Codex 仍会强制从 key 1 发起一次 fresh probe，而不是直接失败
+- API key 会优先按选中账户的 `env_key` 从环境变量或 `auth-pool.json` 解析
+- Codex 不会回写 `config.toml` 或 `config-pool.toml`，也不会持久化“上次成功账户”
 
 #### MCP client
 

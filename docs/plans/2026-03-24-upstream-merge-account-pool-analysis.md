@@ -1,8 +1,8 @@
 # Account Pool / Provider Routing Merge Analysis
 
 **Date:** 2026-03-24
-**Branch state:** `17922658f`
-**Baseline:** `upstream/main` at `f9545278e`
+**Branch state:** `0fa92816c`
+**Baseline:** `upstream/main` at `9dbe09834`
 
 > **Goal of this note:** explain what the local account-pool line actually
 > changed, what problem it was solving, why it conflicts with upstream, and
@@ -95,10 +95,12 @@ Meaning:
 Local branch adds:
 
 - session-local cooldown runtime state per provider/account
+- current cooldown window is `PROVIDER_POOL_COOLDOWN = 60s`
 - each new turn starts from pool order again
 - failed accounts cool down temporarily
 - if all accounts are cooling, the next turn forces a fresh probe from key 1
 - same-turn retries can switch to the next account
+- a single failing turn can cycle up to `MAX_POOL_ROUNDS = 2` full rounds
 
 Relevant files:
 
@@ -169,6 +171,49 @@ This is not an oversight. It is a different product priority.
 
 ## Why This Area Keeps Conflicting
 
+### Current upstream confirmation (`upstream/main` at `9dbe09834`)
+
+Rechecked directly against the current upstream baseline:
+
+- `codex-rs/core/src/model_provider_info.rs`
+  - still has no `ModelProviderAccount`, `account_pool`, `current_account()`,
+    or `with_account()`
+- `codex-rs/core/src/config/mod.rs`
+  - still uses the simpler built-in merge policy:
+    `model_providers.entry(key).or_insert(provider)`
+  - there is still no `config-pool.toml` overlay path in the upstream loader
+- `codex-rs/core/src/codex.rs`
+  - still has no provider-pool runtime state, cooldown handling, or
+    turn-scoped account rotation logic
+- `codex-rs/core/src/client.rs`
+  - still has no account-pool-specific auth lookup path wired through
+    `auth-pool.json` by selected `env_key`
+
+So this remains a true architecture delta, not just a stale merge artifact.
+
+### Fresh upstream drift after the previous local baseline
+
+After refreshing `upstream/main`, the tracked upstream baseline moved from
+`047ea642d` (2026-03-25 13:34:43 +0000) to `9dbe09834` (2026-03-25
+12:57:42 -0700).
+
+Relevant upstream commits touching the shared conflict files in this area:
+
+- `504aeb0e0` `Use AbsolutePathBuf for cwd state`
+- `d273efc0f` `Extract codex-analytics crate`
+- `91337399f` `[apps][tool_suggest] Remove tool_suggest's dependency on tool search.`
+- `9dbe09834` `Extract codex-core-skills crate`
+
+Interpretation for account-pool merge work:
+
+- upstream did **not** add account-pool or `config-pool` semantics
+- upstream did add fresh churn in `config/mod.rs` and `codex.rs`
+- the new upstream movement is mostly around absolute-cwd normalization and
+  skills/analytics extraction, which increases merge pressure in the exact
+  shared files where local provider routing already attaches
+- this makes Block 2 more conflict-prone mechanically, but it does not weaken
+  the case for preserving local account-pool semantics
+
 ### Conflict 1: provider schema drift
 
 `ModelProviderInfo` is heavily customized locally:
@@ -227,7 +272,8 @@ Based on current user requirements, the following semantics are non-negotiable:
 3. Keep logical provider identity stable while runtime selects concrete accounts.
 4. Keep turn-scoped reset to pool order rather than persisting last-successful
    fallback as the new default.
-5. Keep cooldown-based temporary failover.
+5. Keep cooldown-based temporary failover, including the current `60s`
+   session-local cooling behavior unless intentionally redesigned.
 6. Keep auth lookup by selected account `env_key`.
 
 ## What Can Change

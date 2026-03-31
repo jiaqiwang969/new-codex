@@ -1,8 +1,8 @@
 # Memory / Context Packet / Entire Merge Analysis
 
 **Date:** 2026-03-24
-**Branch state:** `17922658f`
-**Baseline:** `upstream/main` at `f9545278e`
+**Branch state:** `0fa92816c`
+**Baseline:** `upstream/main` at `9dbe09834`
 
 > **Goal of this note:** capture what the local memory/context/Entire line adds,
 > why it conflicts with upstream, and what should be preserved if this block is

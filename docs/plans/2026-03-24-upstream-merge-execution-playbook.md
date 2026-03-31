@@ -1,8 +1,13 @@
 # Upstream Merge Execution Playbook
 
 **Date:** 2026-03-24
-**Branch state:** `17922658f`
-**Baseline:** `upstream/main` at `f9545278e2`
+**Branch state:** `0fa92816c`
+**Baseline:** `upstream/main` at `9dbe09834`
+
+> **Baseline refresh note:** after rechecking the live upstream remote, the
+> tracked official baseline moved from `047ea642d` to `9dbe09834`. The newest
+> upstream churn in this area is concentrated in `config/mod.rs`, `codex.rs`,
+> and TUI cwd plumbing, not in local account-pool or `model_sub` semantics.
 
 > **Purpose:** turn the current merge research into a practical execution
 > order, with explicit preserve/drop decisions and conflict-handling rules for
@@ -34,6 +39,7 @@ The right split is:
   - MCP elicitation contract
 - **Local differentiated workflow**
   - account-pool/provider routing
+  - provider-family transport / utility routing
   - `model_sub`
   - memory/context/Entire continuity
   - agent worktrees
@@ -43,6 +49,75 @@ So the merge should prefer:
 
 - upstream architecture where the feature is now upstream-owned
 - local semantics where the feature is still a real branch differentiator
+
+## New Upstream Changes To Mostly Take As-Is
+
+After refreshing `upstream/main`, the newest official commits touching our main
+overlap set are mostly upstream-owned infrastructure changes rather than
+competing local product semantics.
+
+### 1. `504aeb0e0` `Use AbsolutePathBuf for cwd state`
+
+Judgment: take upstream structure.
+
+Reason:
+
+- this is a general state/type hardening pass across config, session runtime,
+  memory consolidation, and TUI
+- it does not compete with local account-pool or `model_sub` intent
+
+Merge caution:
+
+- port local provider/account hooks onto the new absolute-cwd types
+- do not accidentally drop local provider routing while rewriting the type
+  plumbing
+
+### 2. `9dbe09834` `Extract codex-core-skills crate`
+
+Judgment: take upstream structure.
+
+Reason:
+
+- this is upstream codebase modularization
+- local preserved value is not in the old skills import paths
+
+Merge caution:
+
+- reattach any local skill-loading integrations to the new upstream module
+  boundaries
+
+### 3. `d273efc0f` `Extract codex-analytics crate`
+
+Judgment: take upstream structure.
+
+Reason:
+
+- this is upstream package/layout ownership
+- it is orthogonal to local provider routing and TUI workflow differentiation
+
+### 4. `6b10e186c` `Add non-interactive resume filter option`
+
+Judgment: take upstream behavior unless it directly breaks a local TUI path.
+
+Reason:
+
+- this is a small upstream TUI/resume workflow improvement
+- it does not appear to compete with local `model_sub` or account-pool logic
+
+### 5. `91337399f` `[apps][tool_suggest] Remove tool_suggest's dependency on tool search.`
+
+Judgment: take upstream behavior.
+
+Reason:
+
+- this is upstream `codex.rs` cleanup in an area not central to the preserved
+  local semantics
+
+Practical implication:
+
+- the newest upstream motion increases mechanical merge work in shared files
+- it does **not** materially change which semantics should be preserved from
+  the local branch
 
 ## Block Order
 
@@ -118,13 +193,74 @@ So the merge should prefer:
 - this is the most important explicit user requirement
 - later blocks depend on correct provider routing
 
+**Real attachment points inside shared files:**
+
+- `config/mod.rs`
+  - `config-pool.toml` overlay, `user_configured_provider`, provider-family
+    auto-switch
+- `codex.rs`
+  - runtime provider restore/switch, account-pool cooldown, active-account
+    labels
+- `client.rs`
+  - auth lookup by active account `env_key`
+
 **Conflict rule:**
 
 - preserve semantics, not exact local hunks
 - when upstream refactors provider/config code, re-express local pool behavior
   in the new structure instead of replaying the old patch verbatim
 
-### Block 3: Preserve `model_sub` On Top Of Provider Routing
+### Block 3: Preserve Provider-Family Utility Routing Before `model_sub`
+
+**Decision:** preserve local feature, but fit it onto upstream collaboration.
+
+**Primary files:**
+
+- `codex-rs/core/src/config/mod.rs`
+- `codex-rs/core/src/client.rs`
+- `codex-rs/core/src/model_compat.rs`
+- `codex-rs/core/src/utility_model.rs`
+- `codex-rs/core/src/anthropic_content.rs`
+- `codex-rs/core/src/anthropic_streaming.rs`
+- `codex-rs/core/src/gemini_content.rs`
+- `codex-rs/core/src/gemini_streaming.rs`
+
+**Must survive:**
+
+1. provider-family-aware utility routing for internal tasks
+2. compatibility with account-pool/custom endpoints
+3. local capability gating for Gemini / Gemma / Grok / Claude families
+4. provider-specific transport shaping for Anthropic and Gemini families
+5. a Responses-compatible path for utility work that cannot run on non-Responses
+   providers
+
+**Why after Block 2:**
+
+- provider-family utility routing is not trustworthy unless provider routing is
+  already stable
+- `model_sub` depends on this layer, so this block has to be stabilized first
+
+**Real attachment points inside shared files:**
+
+- `config/mod.rs`
+  - family-aware provider auto-switch must not clobber custom providers
+- `codex.rs`
+  - `TurnContext::with_model()` and runtime model switches must pick the
+    right logical provider family
+- `client.rs`
+  - Responses vs Gemini vs Anthropic transport dispatch
+- `memories/phase2.rs`
+  - memory consolidation must resolve provider family consistently too
+
+**Conflict rule:**
+
+- preserve the semantics, not the current module boundaries
+- treat local-only transport modules as reattachable workflow code, not as
+  sacred patch shape
+- when upstream refactors provider/config/runtime flow, re-express the routing
+  layer against the newer attachment points
+
+### Block 4: Preserve `model_sub` On Top Of Utility Routing
 
 **Decision:** preserve local feature, but fit it onto upstream collaboration.
 
@@ -137,23 +273,27 @@ So the merge should prefer:
 - `codex-rs/core/src/agent/role.rs`
 - `codex-rs/core/src/tools/spec.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/*.rs`
-
-**Must survive:**
-
-1. `model_sub`
-2. `model_sub_responses`
-3. child-role inheritance of `model_sub`
-4. provider-family-aware utility routing
-5. compatibility with account-pool/custom endpoints
+- `codex-rs/tui/src/team_profile.rs`
+- `codex-rs/tui/src/model_sub_vouch.rs`
 
 **Keep only if still worth the complexity:**
 
 - `model_sub_vouch`
 - session-local calibration memory
 
-**Why after Block 2:**
+**Real attachment points inside shared files:**
 
-- `model_sub` is not trustworthy unless provider routing is already stable
+- `agent/role.rs`
+  - built-in role descriptions and defaults currently assume `model_sub`
+    inheritance
+- `protocol.rs`
+  - collab events gained local `model_source` / `agent_type` / memory metadata
+- `app-server-protocol/v2.rs`
+  - app-server config/profile payloads gained `model_sub` and
+    `model_sub_responses`
+- `tui/src/app.rs` and `tui/src/chatwidget.rs`
+  - local pickers, vouch flows, and team-profile UX all land in these
+    high-churn files
 
 **Conflict rule:**
 
@@ -162,7 +302,7 @@ So the merge should prefer:
 - do not force current local app-server metadata fields if they are only
   partially wired
 
-### Block 4: Preserve Memory / Context Packet / Entire
+### Block 5: Preserve Memory / Context Packet / Entire
 
 **Decision:** preserve local workflow layer.
 
@@ -190,7 +330,7 @@ So the merge should prefer:
 - preserve the local semantics even if file boundaries change
 - do not couple this step to app-server wire decisions yet
 
-### Block 5: Reattach `MemoryLink` / Continuity Wire
+### Block 6: Reattach `MemoryLink` / Continuity Wire
 
 **Decision:** preserve the semantics, not the old field layout.
 
@@ -212,12 +352,20 @@ So the merge should prefer:
 - wire contracts are the most conflict-prone part of the memory stack
 - core logic should be stable before shared contract work
 
+**Shared-file caution:**
+
+- keep `MemoryLink` semantics
+- do not assume every current optional collab-routing field deserves to survive
+  unchanged
+- `protocol.rs` and `app-server-protocol/v2.rs` should follow upstream event
+  shape conventions unless a local field has a real downstream consumer
+
 **Conflict rule:**
 
 - preserve the boundary semantics
 - adapt the exact payload shape to current upstream protocol conventions
 
-### Block 6: Preserve Agent Worktrees
+### Block 7: Preserve Agent Worktrees
 
 **Decision:** preserve local feature.
 
@@ -242,7 +390,7 @@ So the merge should prefer:
 - integrate with newer upstream agent lifecycle code rather than insisting on
   current local attachment points
 
-### Block 7: Preserve TUI Workbench Features
+### Block 8: Preserve TUI Workbench Features
 
 **Decision:** preserve local features, re-integrate against upstream TUI shell.
 
@@ -272,7 +420,7 @@ So the merge should prefer:
 - preserve behavior
 - do not preserve giant old `app.rs` / `chatwidget.rs` hunks verbatim
 
-### Block 8: Re-evaluate Extra App-Server Observability
+### Block 9: Re-evaluate Extra App-Server Observability
 
 **Decision:** keep selectively.
 
