@@ -58,8 +58,10 @@ memory_tool = true           # Enable memory extraction and consolidation
 
 For high-volume usage, use `config-pool.toml` and `auth-pool.json` to define an
 ordered account pool per provider. When `account_pool` exists, Codex starts
-each new or resumed turn from `POOL_1`, skips accounts that are still cooling
-down, and retries `POOL_1` again after the 10-minute cooldown expires.
+each new or resumed turn from `POOL_1`, cools failed accounts for 1 minute,
+and retries `POOL_1` again after that session-local cooldown expires. If every
+account is still cooling down, Codex still forces a fresh probe from
+`POOL_1` instead of failing immediately.
 
 ```toml
 # In config-pool.toml
