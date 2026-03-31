@@ -1,4 +1,6 @@
 use super::*;
+use crate::approval_runtime::RuntimeLease;
+use crate::approval_runtime::RuntimeLeaseKind;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX;
 use async_channel::bounded;
@@ -402,4 +404,73 @@ async fn delegated_mcp_guardian_abort_returns_synthetic_decline_answer() {
             )]),
         })
     );
+}
+
+#[tokio::test]
+async fn runtime_lease_delegate_derives_child_lease_from_parent_session() {
+    let (parent_session, parent_ctx, _rx_events) =
+        crate::codex::make_session_and_context_with_rx().await;
+    let parent_lease = parent_session
+        .runtime_lease()
+        .await
+        .expect("parent session should register a runtime lease");
+
+    let child = run_codex_thread_interactive(
+        (*parent_ctx.config).clone(),
+        Arc::clone(&parent_session.services.auth_manager),
+        Arc::clone(&parent_session.services.models_manager),
+        Arc::clone(&parent_session),
+        Arc::clone(&parent_ctx),
+        CancellationToken::new(),
+        SubAgentSource::Other("runtime_delegate".to_string()),
+        None,
+    )
+    .await
+    .expect("delegate spawn should succeed");
+
+    let expected_child_lease = RuntimeLease {
+        id: "lease-2".to_string(),
+        kind: RuntimeLeaseKind::ChildAgent,
+        owner_id: child.session.conversation_id.to_string(),
+        thread_id: child.session.conversation_id.to_string(),
+        parent_lease_id: Some(parent_lease.id.clone()),
+    };
+
+    assert_eq!(
+        child.session.runtime_lease().await,
+        Some(expected_child_lease.clone())
+    );
+    assert!(child.session.runtime_lease_is_usable().await);
+}
+
+#[tokio::test]
+async fn runtime_lease_parent_invalidation_clears_child_usability() {
+    let (parent_session, parent_ctx, _rx_events) =
+        crate::codex::make_session_and_context_with_rx().await;
+    let parent_lease = parent_session
+        .runtime_lease()
+        .await
+        .expect("parent session should register a runtime lease");
+
+    let child = run_codex_thread_interactive(
+        (*parent_ctx.config).clone(),
+        Arc::clone(&parent_session.services.auth_manager),
+        Arc::clone(&parent_session.services.models_manager),
+        Arc::clone(&parent_session),
+        Arc::clone(&parent_ctx),
+        CancellationToken::new(),
+        SubAgentSource::Other("runtime_delegate".to_string()),
+        None,
+    )
+    .await
+    .expect("delegate spawn should succeed");
+
+    parent_session
+        .services
+        .approval_runtime
+        .revoke_lease(parent_lease.id.as_str())
+        .await
+        .expect("parent lease revoke should succeed");
+
+    assert!(!child.session.runtime_lease_is_usable().await);
 }

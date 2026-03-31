@@ -3,6 +3,8 @@ use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
+use crate::approval_runtime::RuntimeLease;
+use crate::approval_runtime::SharedApprovalRuntime;
 use crate::agent::status::is_final;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::error::CodexErr;
@@ -154,6 +156,12 @@ impl AgentControl {
         let inherited_exec_policy = self
             .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
             .await;
+        let inherited_approval_runtime = self
+            .inherited_approval_runtime_for_source(&state, session_source.as_ref())
+            .await;
+        let parent_runtime_lease = self
+            .parent_runtime_lease_for_source(&state, session_source.as_ref())
+            .await;
         let (session_source, mut agent_metadata) = match session_source {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -238,6 +246,8 @@ impl AgentControl {
                             /*persist_extended_history*/ false,
                             inherited_shell_snapshot,
                             inherited_exec_policy,
+                            inherited_approval_runtime,
+                            parent_runtime_lease,
                         )
                         .await?
                 } else {
@@ -250,6 +260,8 @@ impl AgentControl {
                             /*metrics_service_name*/ None,
                             inherited_shell_snapshot,
                             inherited_exec_policy,
+                            inherited_approval_runtime,
+                            parent_runtime_lease,
                         )
                         .await?
                 }
@@ -416,6 +428,12 @@ impl AgentControl {
         let inherited_exec_policy = self
             .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
             .await;
+        let inherited_approval_runtime = self
+            .inherited_approval_runtime_for_source(&state, Some(&session_source))
+            .await;
+        let parent_runtime_lease = self
+            .parent_runtime_lease_for_source(&state, Some(&session_source))
+            .await;
         let rollout_path =
             match find_thread_path_by_id_str(config.codex_home.as_path(), &thread_id.to_string())
                 .await?
@@ -437,6 +455,8 @@ impl AgentControl {
                 session_source,
                 inherited_shell_snapshot,
                 inherited_exec_policy,
+                inherited_approval_runtime,
+                parent_runtime_lease,
             )
             .await?;
         let mut agent_metadata = agent_metadata;
@@ -934,6 +954,40 @@ impl AgentControl {
         Some(Arc::clone(
             &parent_thread.codex.session.services.exec_policy,
         ))
+    }
+
+    async fn inherited_approval_runtime_for_source(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        session_source: Option<&SessionSource>,
+    ) -> Option<SharedApprovalRuntime> {
+        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        })) = session_source
+        else {
+            return None;
+        };
+
+        let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
+        Some(Arc::clone(
+            &parent_thread.codex.session.services.approval_runtime,
+        ))
+    }
+
+    async fn parent_runtime_lease_for_source(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        session_source: Option<&SessionSource>,
+    ) -> Option<RuntimeLease> {
+        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        })) = session_source
+        else {
+            return None;
+        };
+
+        let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
+        parent_thread.codex.session.runtime_lease().await
     }
 
     async fn open_thread_spawn_children(

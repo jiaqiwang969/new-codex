@@ -300,6 +300,8 @@ async fn startup_prewarm_uses_resolved_account_pool_provider() {
         agent_status_tx,
         InitialHistory::New,
         SessionSource::Exec,
+        None,
+        None,
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
@@ -3033,6 +3035,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         agent_status_tx,
         InitialHistory::New,
         SessionSource::Exec,
+        None,
+        None,
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
@@ -3053,6 +3057,23 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
 }
 
 // todo: use online model info
+async fn test_approval_runtime_for_thread(
+    conversation_id: ThreadId,
+) -> (
+    crate::approval_runtime::SharedApprovalRuntime,
+    crate::approval_runtime::RuntimeLease,
+) {
+    let approval_runtime = crate::approval_runtime::default_runtime_client();
+    let runtime_lease = approval_runtime
+        .register_lease(crate::approval_runtime::RuntimeLeaseRegistration {
+            owner_id: conversation_id.to_string(),
+            thread_id: conversation_id.to_string(),
+        })
+        .await
+        .expect("register test runtime lease");
+    (approval_runtime, runtime_lease)
+}
+
 pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let (tx_event, _rx_event) = async_channel::unbounded();
     let codex_home = tempfile::tempdir().expect("create temp dir");
@@ -3124,7 +3145,9 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_configuration.session_source.clone(),
     );
 
-    let state = SessionState::new(session_configuration.clone());
+    let (approval_runtime, runtime_lease) = test_approval_runtime_for_thread(conversation_id).await;
+    let mut state = SessionState::new(session_configuration.clone());
+    state.set_runtime_lease(Some(runtime_lease));
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone(), true));
@@ -3162,6 +3185,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         shell_snapshot_tx: watch::channel(None).0,
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         exec_policy,
+        approval_runtime,
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
@@ -3962,7 +3986,9 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         session_configuration.session_source.clone(),
     );
 
-    let state = SessionState::new(session_configuration.clone());
+    let (approval_runtime, runtime_lease) = test_approval_runtime_for_thread(conversation_id).await;
+    let mut state = SessionState::new(session_configuration.clone());
+    state.set_runtime_lease(Some(runtime_lease));
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.clone()));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
     let skills_manager = Arc::new(SkillsManager::new(config.codex_home.clone(), true));
@@ -4000,6 +4026,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         shell_snapshot_tx: watch::channel(None).0,
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         exec_policy,
+        approval_runtime,
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),

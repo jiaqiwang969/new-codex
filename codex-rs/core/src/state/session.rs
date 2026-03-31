@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::approval_runtime::RuntimeLease;
 use crate::codex::PreviousTurnSettings;
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
@@ -45,6 +46,7 @@ pub(crate) struct SessionState {
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_source: Option<codex_hooks::SessionStartSource>,
     granted_permissions: Option<PermissionProfile>,
+    runtime_lease: Option<RuntimeLease>,
 }
 
 impl SessionState {
@@ -67,6 +69,7 @@ impl SessionState {
             active_connector_selection: HashSet::new(),
             pending_session_start_source: None,
             granted_permissions: None,
+            runtime_lease: None,
         }
     }
 
@@ -262,6 +265,18 @@ impl SessionState {
 
     pub(crate) fn granted_permissions(&self) -> Option<PermissionProfile> {
         self.granted_permissions.clone()
+    }
+
+    pub(crate) fn runtime_lease(&self) -> Option<RuntimeLease> {
+        self.runtime_lease.clone()
+    }
+
+    pub(crate) fn set_runtime_lease(&mut self, lease: Option<RuntimeLease>) {
+        self.runtime_lease = lease;
+    }
+
+    pub(crate) fn take_runtime_lease(&mut self) -> Option<RuntimeLease> {
+        self.runtime_lease.take()
     }
 }
 

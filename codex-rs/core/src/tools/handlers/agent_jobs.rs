@@ -10,14 +10,13 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::multi_agents::build_agent_spawn_config;
+use crate::tools::handlers::multi_agents_common::thread_spawn_source;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -634,9 +633,13 @@ async fn run_agent_job_loop(
                     .spawn_agent(
                         options.spawn_config.clone(),
                         items.into(),
-                        Some(SessionSource::SubAgent(SubAgentSource::Other(format!(
-                            "agent_job:{job_id}"
-                        )))),
+                        Some(thread_spawn_source(
+                            session.conversation_id,
+                            &turn.session_source,
+                            next_thread_spawn_depth(&turn.session_source),
+                            /*agent_role*/ None,
+                            /*task_name*/ None,
+                        )?),
                     )
                     .await
                 {

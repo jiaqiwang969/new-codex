@@ -1,3 +1,31 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeLeaseKind {
+    Session,
+    ChildAgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeLeaseRegistration {
+    pub(crate) owner_id: String,
+    pub(crate) thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeLease {
+    pub(crate) id: String,
+    pub(crate) kind: RuntimeLeaseKind,
+    pub(crate) owner_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) parent_lease_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeChildLeaseRequest {
+    pub(crate) parent_lease_id: String,
+    pub(crate) child_owner_id: String,
+    pub(crate) thread_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeHealth {
     Healthy,
