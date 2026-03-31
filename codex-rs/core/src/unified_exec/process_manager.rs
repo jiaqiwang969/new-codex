@@ -23,7 +23,6 @@ use crate::tools::events::ToolEventStage;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use crate::tools::network_approval::finish_deferred_network_approval;
 use crate::tools::orchestrator::ToolOrchestrator;
-use crate::tools::runtimes::unified_exec::PreparedUnifiedExecProcess;
 use crate::tools::runtimes::unified_exec::UnifiedExecRequest as UnifiedExecToolRequest;
 use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::ToolCtx;
@@ -39,11 +38,8 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WARNING_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::WriteStdinRequest;
-use crate::unified_exec::async_watcher::build_exec_output_from_transcript;
-use crate::unified_exec::async_watcher::build_failed_exec_output_from_transcript;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
-use crate::unified_exec::async_watcher::finalize_unified_exec_output_with_runtime;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
 use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::clamp_yield_time;
@@ -174,20 +170,15 @@ impl UnifiedExecProcessManager {
             .open_session_with_sandbox(&request, cwd.clone(), context)
             .await;
 
-        let (prepared_process, mut deferred_network_approval) = match process {
-            Ok((prepared_process, deferred_network_approval)) => {
-                (prepared_process, deferred_network_approval)
+        let (process, mut deferred_network_approval) = match process {
+            Ok((process, deferred_network_approval)) => {
+                (Arc::new(process), deferred_network_approval)
             }
             Err(err) => {
                 self.release_process_id(request.process_id).await;
                 return Err(err);
             }
         };
-        let PreparedUnifiedExecProcess {
-            process,
-            runtime_postflight,
-        } = prepared_process;
-        let process = Arc::new(process);
 
         let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
         let event_ctx = ToolEventCtx::new(
@@ -209,23 +200,22 @@ impl UnifiedExecProcessManager {
         // Persist live sessions before the initial yield wait so interrupting the
         // turn cannot drop the last Arc and terminate the background process.
         let process_started_alive = !process.has_exited() && process.exit_code().is_none();
-        let mut end_event_notifier = None;
         if process_started_alive {
             let network_approval_id = deferred_network_approval
                 .as_ref()
                 .map(|deferred| deferred.registration_id().to_string());
-            end_event_notifier = Some(
-                self.store_process(
-                    Arc::clone(&process),
-                    context,
-                    &request.command,
-                    start,
-                    request.process_id,
-                    request.tty,
-                    network_approval_id,
-                )
-                .await,
-            );
+            self.store_process(
+                Arc::clone(&process),
+                context,
+                &request.command,
+                cwd.clone(),
+                start,
+                request.process_id,
+                request.tty,
+                network_approval_id,
+                Arc::clone(&transcript),
+            )
+            .await;
         }
 
         let yield_time_ms = clamp_yield_time(request.yield_time_ms);
@@ -259,99 +249,39 @@ impl UnifiedExecProcessManager {
         let text = String::from_utf8_lossy(&collected).to_string();
         let chunk_id = generate_chunk_id();
         if let Some(message) = process.failure_message() {
-            let output =
-                build_failed_exec_output_from_transcript(&transcript, message.clone(), wall_time)
-                    .await;
-            let output = finalize_unified_exec_output_with_runtime(
-                &context.session,
-                &context.turn,
-                &context.call_id,
-                output,
-                runtime_postflight.as_ref(),
-            )
-            .await;
-            emit_failed_exec_end_for_unified_exec(
-                Arc::clone(&context.session),
-                Arc::clone(&context.turn),
-                context.call_id.clone(),
-                request.command.clone(),
-                cwd.clone(),
-                Some(request.process_id.to_string()),
-                output,
-            )
-            .await;
             if !process_started_alive {
-                finish_deferred_network_approval(
-                    context.session.as_ref(),
-                    deferred_network_approval.take(),
+                emit_failed_exec_end_for_unified_exec(
+                    Arc::clone(&context.session),
+                    Arc::clone(&context.turn),
+                    context.call_id.clone(),
+                    request.command.clone(),
+                    cwd.clone(),
+                    Some(request.process_id.to_string()),
+                    Arc::clone(&transcript),
+                    message.clone(),
+                    wall_time,
                 )
                 .await;
             }
             self.release_process_id(request.process_id).await;
+            finish_deferred_network_approval(
+                context.session.as_ref(),
+                deferred_network_approval.take(),
+            )
+            .await;
             return Err(UnifiedExecError::process_failed(message));
         }
         let process_id = request.process_id;
-        let (response_process_id, exit_code, raw_output) = if process_started_alive {
+        let (response_process_id, exit_code) = if process_started_alive {
             match self.refresh_process_state(process_id).await {
                 ProcessStatus::Alive {
                     exit_code,
                     process_id,
                     ..
-                } => {
-                    let Some(end_event_notifier) = end_event_notifier.take() else {
-                        process.terminate();
-                        self.release_process_id(process_id).await;
-                        return Err(UnifiedExecError::process_failed(
-                            "live unified exec missing end-event notifier".to_string(),
-                        ));
-                    };
-                    spawn_exit_watcher(
-                        Arc::clone(&process),
-                        Arc::clone(&context.session),
-                        Arc::clone(&context.turn),
-                        context.call_id.clone(),
-                        request.command.clone(),
-                        cwd.clone(),
-                        process_id,
-                        Arc::clone(&transcript),
-                        end_event_notifier,
-                        runtime_postflight,
-                        start,
-                    );
-                    (Some(process_id), exit_code, collected)
-                }
+                } => (Some(process_id), exit_code),
                 ProcessStatus::Exited { exit_code, .. } => {
-                    let output = build_exec_output_from_transcript(
-                        &transcript,
-                        text.clone(),
-                        exit_code.unwrap_or(-1),
-                        wall_time,
-                    )
-                    .await;
-                    let output = finalize_unified_exec_output_with_runtime(
-                        &context.session,
-                        &context.turn,
-                        &context.call_id,
-                        output,
-                        runtime_postflight.as_ref(),
-                    )
-                    .await;
-                    emit_exec_end_for_unified_exec(
-                        Arc::clone(&context.session),
-                        Arc::clone(&context.turn),
-                        context.call_id.clone(),
-                        request.command.clone(),
-                        cwd.clone(),
-                        Some(process_id.to_string()),
-                        output.clone(),
-                    )
-                    .await;
                     process.check_for_sandbox_denial_with_text(&text).await?;
-                    (
-                        None,
-                        Some(output.exit_code),
-                        output.aggregated_output.text.into_bytes(),
-                    )
+                    (None, exit_code)
                 }
                 ProcessStatus::Unknown => {
                     return Err(UnifiedExecError::UnknownProcessId { process_id });
@@ -361,21 +291,8 @@ impl UnifiedExecProcessManager {
             // Short‑lived command: emit ExecCommandEnd immediately using the
             // same helper as the background watcher, so all end events share
             // one implementation.
-            let output = build_exec_output_from_transcript(
-                &transcript,
-                text.clone(),
-                process.exit_code().unwrap_or(-1),
-                wall_time,
-            )
-            .await;
-            let output = finalize_unified_exec_output_with_runtime(
-                &context.session,
-                &context.turn,
-                &context.call_id,
-                output,
-                runtime_postflight.as_ref(),
-            )
-            .await;
+            let exit_code = process.exit_code();
+            let exit = exit_code.unwrap_or(-1);
             emit_exec_end_for_unified_exec(
                 Arc::clone(&context.session),
                 Arc::clone(&context.turn),
@@ -383,7 +300,10 @@ impl UnifiedExecProcessManager {
                 request.command.clone(),
                 cwd.clone(),
                 Some(process_id.to_string()),
-                output.clone(),
+                Arc::clone(&transcript),
+                text.clone(),
+                exit,
+                wall_time,
             )
             .await;
 
@@ -394,20 +314,15 @@ impl UnifiedExecProcessManager {
             )
             .await;
             process.check_for_sandbox_denial_with_text(&text).await?;
-            (
-                None,
-                Some(output.exit_code),
-                output.aggregated_output.text.into_bytes(),
-            )
+            (None, exit_code)
         };
 
-        let response_text = String::from_utf8_lossy(&raw_output).to_string();
-        let original_token_count = approx_token_count(&response_text);
+        let original_token_count = approx_token_count(&text);
         let response = ExecCommandToolOutput {
             event_call_id: context.call_id.clone(),
             chunk_id,
             wall_time,
-            raw_output,
+            raw_output: collected,
             max_output_tokens: request.max_output_tokens,
             process_id: response_process_id,
             exit_code,
@@ -623,11 +538,13 @@ impl UnifiedExecProcessManager {
         process: Arc<UnifiedExecProcess>,
         context: &UnifiedExecContext,
         command: &[String],
+        cwd: PathBuf,
         started_at: Instant,
         process_id: i32,
         tty: bool,
         network_approval_id: Option<String>,
-    ) -> Arc<Notify> {
+        transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
+    ) {
         let end_event_notifier = Arc::new(tokio::sync::Notify::new());
         let entry = ProcessEntry {
             process: Arc::clone(&process),
@@ -662,7 +579,19 @@ impl UnifiedExecProcessManager {
                 )
                 .await;
         };
-        end_event_notifier
+
+        spawn_exit_watcher(
+            Arc::clone(&process),
+            Arc::clone(&context.session),
+            Arc::clone(&context.turn),
+            context.call_id.clone(),
+            command.to_vec(),
+            cwd,
+            process_id,
+            transcript,
+            end_event_notifier,
+            started_at,
+        );
     }
 
     pub(crate) async fn open_session_with_exec_env(
@@ -734,8 +663,7 @@ impl UnifiedExecProcessManager {
         request: &ExecCommandRequest,
         cwd: PathBuf,
         context: &UnifiedExecContext,
-    ) -> Result<(PreparedUnifiedExecProcess, Option<DeferredNetworkApproval>), UnifiedExecError>
-    {
+    ) -> Result<(UnifiedExecProcess, Option<DeferredNetworkApproval>), UnifiedExecError> {
         let env = apply_unified_exec_env(create_env(
             &context.turn.shell_environment_policy,
             Some(context.session.conversation_id),

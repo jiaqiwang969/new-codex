@@ -3,9 +3,9 @@ use crate::CodexAuth;
 use crate::ModelProviderInfo;
 use crate::OPENAI_PROVIDER_ID;
 use crate::SkillsManager;
-use crate::agent::AgentControl;
 use crate::approval_runtime::RuntimeLease;
 use crate::approval_runtime::SharedApprovalRuntime;
+use crate::agent::AgentControl;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnArgs;
 use crate::codex::CodexSpawnOk;
@@ -494,55 +494,43 @@ impl ThreadManager {
         .await
     }
 
-    pub(crate) async fn start_thread_with_test_overrides_for_tests(
+    pub(crate) async fn start_thread_with_user_shell_override_for_tests(
         &self,
         config: Config,
-        user_shell_override: Option<crate::shell::Shell>,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
+        user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
-        Box::pin(self.state.spawn_thread_with_source(
+        Box::pin(self.state.spawn_thread(
             config,
             InitialHistory::New,
             Arc::clone(&self.state.auth_manager),
             self.agent_control(),
-            self.state.session_source.clone(),
             Vec::new(),
             /*persist_extended_history*/ false,
             /*metrics_service_name*/ None,
-            /*inherited_shell_snapshot*/ None,
-            /*inherited_exec_policy*/ None,
-            inherited_approval_runtime,
-            /*parent_runtime_lease*/ None,
             /*parent_trace*/ None,
-            user_shell_override,
+            /*user_shell_override*/ Some(user_shell_override),
         ))
         .await
     }
 
-    pub(crate) async fn resume_thread_from_rollout_with_test_overrides_for_tests(
+    pub(crate) async fn resume_thread_from_rollout_with_user_shell_override_for_tests(
         &self,
         config: Config,
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
-        user_shell_override: Option<crate::shell::Shell>,
-        inherited_approval_runtime: Option<SharedApprovalRuntime>,
+        user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
-        Box::pin(self.state.spawn_thread_with_source(
+        Box::pin(self.state.spawn_thread(
             config,
             initial_history,
             auth_manager,
             self.agent_control(),
-            self.state.session_source.clone(),
             Vec::new(),
             /*persist_extended_history*/ false,
             /*metrics_service_name*/ None,
-            /*inherited_shell_snapshot*/ None,
-            /*inherited_exec_policy*/ None,
-            inherited_approval_runtime,
-            /*parent_runtime_lease*/ None,
             /*parent_trace*/ None,
-            user_shell_override,
+            /*user_shell_override*/ Some(user_shell_override),
         ))
         .await
     }

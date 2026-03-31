@@ -10,8 +10,6 @@ use codex_core::config_loader::NetworkRequirementsToml;
 use codex_core::config_loader::RequirementSource;
 use codex_core::config_loader::Sourced;
 use codex_core::sandboxing::SandboxPermissions;
-use codex_core::test_support::TestApprovalRuntime;
-use codex_core::test_support::TestApprovalRuntimePreflight;
 use codex_features::Feature;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment;
@@ -22,7 +20,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::ExecPolicyAmendment;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::PatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
@@ -1753,118 +1750,6 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
         scenario.name, result.exit_code, result.stdout
     );
     scenario.expectation.verify(&test, &result)?;
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runtime_apply_patch_destructive_patch_falls_back_to_human() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let runtime = TestApprovalRuntime::new().with_preflight(vec![
-        TestApprovalRuntimePreflight::fallback_to_human("runtime fallback to human"),
-    ]);
-    let harness = core_test_support::test_codex::TestCodexHarness::with_builder(
-        test_codex().with_test_approval_runtime(runtime.clone()),
-    )
-    .await?;
-    let test = harness.test();
-    let call_id = "runtime-apply-patch-fallback";
-    let target = harness.path("runtime_patch_existing.txt");
-    fs::write(&target, "original\n")?;
-    let patch = "*** Begin Patch\n*** Update File: runtime_patch_existing.txt\n@@\n-original\n+changed\n*** End Patch\n";
-    mount_sse_once(
-        harness.server(),
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_apply_patch_function_call(call_id, patch),
-            ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-
-    let session_model = test.session_configured.model.clone();
-    test.codex
-        .submit(Op::UserTurn {
-            items: vec![UserInput::Text {
-                text: "update the existing file".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            cwd: test.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: session_model,
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
-        })
-        .await?;
-
-    let mut warning = None;
-    let mut patch_status = None;
-    wait_for_event(&test.codex, |event| match event {
-        EventMsg::Warning(event) => {
-            warning = Some(event.message.clone());
-            false
-        }
-        EventMsg::PatchApplyEnd(event) if event.call_id == call_id => {
-            patch_status = Some(event.status.clone());
-            false
-        }
-        EventMsg::TurnComplete(_) => true,
-        _ => false,
-    })
-    .await;
-
-    assert_eq!(fs::read_to_string(&target)?, "original\n");
-    let warning = warning.expect("expected runtime fallback warning");
-    assert!(
-        warning.contains("fallback"),
-        "warning should mention runtime fallback: {warning}"
-    );
-    assert_eq!(patch_status, Some(PatchApplyStatus::Declined));
-    let preflights = runtime.preflight_requests().await;
-    assert_eq!(preflights.len(), 1);
-    assert!(preflights[0].destructive);
-    assert!(runtime.finish_requests().await.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runtime_apply_patch_add_only_skips_runtime_permit() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let runtime = TestApprovalRuntime::new();
-    let harness = core_test_support::test_codex::TestCodexHarness::with_builder(
-        test_codex().with_test_approval_runtime(runtime.clone()),
-    )
-    .await?;
-    let call_id = "runtime-apply-patch-add";
-    let target = harness.path("runtime_patch_add.txt");
-    let patch = "*** Begin Patch\n*** Add File: runtime_patch_add.txt\n+created\n*** End Patch\n";
-    mount_sse_once(
-        harness.server(),
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_apply_patch_function_call(call_id, patch),
-            ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-
-    harness.submit("create the runtime patch file").await?;
-
-    assert_eq!(fs::read_to_string(&target)?, "created\n");
-    assert!(
-        runtime.preflight_requests().await.is_empty(),
-        "non-destructive add-only patch should not request a runtime permit"
-    );
-    assert!(runtime.finish_requests().await.is_empty());
 
     Ok(())
 }

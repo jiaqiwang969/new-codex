@@ -10,9 +10,6 @@ use tokio::time::Sleep;
 
 use super::UnifiedExecContext;
 use super::process::UnifiedExecProcess;
-use crate::approval_runtime::ApprovalRuntime;
-use crate::approval_runtime::RuntimeDecision;
-use crate::approval_runtime::RuntimeFinishRequest;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::exec::ExecToolCallOutput;
@@ -26,10 +23,6 @@ use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
-use crate::tools::events::emit_runtime_warning;
-use crate::tools::events::runtime_decision_message_or_generic;
-use crate::tools::events::runtime_fail_closed_output;
-use crate::tools::runtimes::unified_exec::PendingUnifiedExecRuntimePostflight;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 
 pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
@@ -41,92 +34,6 @@ pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
 /// downstream event consumers (especially app-server JSON-RPC) don't have to
 /// process arbitrarily large delta payloads.
 const UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES: usize = 8192;
-
-pub(crate) async fn build_exec_output_from_transcript(
-    transcript: &Arc<Mutex<HeadTailBuffer>>,
-    fallback_output: String,
-    exit_code: i32,
-    duration: Duration,
-) -> ExecToolCallOutput {
-    let aggregated_output = resolve_aggregated_output(transcript, fallback_output).await;
-    ExecToolCallOutput {
-        exit_code,
-        stdout: StreamOutput::new(aggregated_output.clone()),
-        stderr: StreamOutput::new(String::new()),
-        aggregated_output: StreamOutput::new(aggregated_output),
-        duration,
-        timed_out: false,
-    }
-}
-
-pub(crate) async fn build_failed_exec_output_from_transcript(
-    transcript: &Arc<Mutex<HeadTailBuffer>>,
-    message: String,
-    duration: Duration,
-) -> ExecToolCallOutput {
-    let stdout = resolve_aggregated_output(transcript, String::new()).await;
-    let aggregated_output = if stdout.is_empty() {
-        message.clone()
-    } else {
-        format!("{stdout}\n{message}")
-    };
-    ExecToolCallOutput {
-        exit_code: -1,
-        stdout: StreamOutput::new(stdout),
-        stderr: StreamOutput::new(message),
-        aggregated_output: StreamOutput::new(aggregated_output),
-        duration,
-        timed_out: false,
-    }
-}
-
-pub(crate) async fn finalize_unified_exec_output_with_runtime(
-    session_ref: &Arc<Session>,
-    turn_ref: &Arc<TurnContext>,
-    call_id: &str,
-    output: ExecToolCallOutput,
-    runtime_postflight: Option<&PendingUnifiedExecRuntimePostflight>,
-) -> ExecToolCallOutput {
-    let Some(runtime_postflight) = runtime_postflight else {
-        return output;
-    };
-
-    match ApprovalRuntime::new(session_ref.services.approval_runtime.clone())
-        .finish(&RuntimeFinishRequest {
-            lease_id: runtime_postflight.lease_id.clone(),
-            action_id: runtime_postflight.action_id.clone(),
-        })
-        .await
-    {
-        Ok(RuntimeDecision::Ok) => output,
-        Ok(decision @ RuntimeDecision::Recovery { .. }) => {
-            let event_ctx = ToolEventCtx::new(
-                session_ref.as_ref(),
-                turn_ref.as_ref(),
-                call_id,
-                /*turn_diff_tracker*/ None,
-            );
-            emit_runtime_warning(event_ctx, &decision).await;
-            output
-        }
-        Ok(
-            decision @ (RuntimeDecision::FallbackToHuman { .. }
-            | RuntimeDecision::Mismatch { .. }
-            | RuntimeDecision::PolicyDrift { .. }),
-        ) => {
-            let event_ctx = ToolEventCtx::new(
-                session_ref.as_ref(),
-                turn_ref.as_ref(),
-                call_id,
-                /*turn_diff_tracker*/ None,
-            );
-            emit_runtime_warning(event_ctx, &decision).await;
-            let message = runtime_decision_message_or_generic(&decision);
-            runtime_fail_closed_output(output, message)
-        }
-        Err(err) => runtime_fail_closed_output(output, format!("runtime postflight failed: {err}")),
-    }
-}
 
 /// Spawn a background task that continuously reads from the PTY, appends to the
 /// shared transcript, and emits ExecCommandOutputDelta events on UTF‑8
@@ -208,7 +115,6 @@ pub(crate) fn spawn_exit_watcher(
     process_id: i32,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     end_event_notifier: Arc<Notify>,
-    runtime_postflight: Option<PendingUnifiedExecRuntimePostflight>,
     started_at: Instant,
 ) {
     let exit_token = process.cancellation_token();
@@ -220,16 +126,6 @@ pub(crate) fn spawn_exit_watcher(
 
         let duration = Instant::now().saturating_duration_since(started_at);
         if let Some(message) = process.failure_message() {
-            let output =
-                build_failed_exec_output_from_transcript(&transcript, message, duration).await;
-            let output = finalize_unified_exec_output_with_runtime(
-                &session_ref,
-                &turn_ref,
-                &call_id,
-                output,
-                runtime_postflight.as_ref(),
-            )
-            .await;
             emit_failed_exec_end_for_unified_exec(
                 session_ref,
                 turn_ref,
@@ -237,22 +133,13 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
-                output,
+                transcript,
+                message,
+                duration,
             )
             .await;
         } else {
             let exit_code = process.exit_code().unwrap_or(-1);
-            let output =
-                build_exec_output_from_transcript(&transcript, String::new(), exit_code, duration)
-                    .await;
-            let output = finalize_unified_exec_output_with_runtime(
-                &session_ref,
-                &turn_ref,
-                &call_id,
-                output,
-                runtime_postflight.as_ref(),
-            )
-            .await;
             emit_exec_end_for_unified_exec(
                 session_ref,
                 turn_ref,
@@ -260,7 +147,10 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
-                output,
+                transcript,
+                String::new(),
+                exit_code,
+                duration,
             )
             .await;
         }
@@ -311,8 +201,20 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathBuf,
     process_id: Option<String>,
-    output: ExecToolCallOutput,
+    transcript: Arc<Mutex<HeadTailBuffer>>,
+    fallback_output: String,
+    exit_code: i32,
+    duration: Duration,
 ) {
+    let aggregated_output = resolve_aggregated_output(&transcript, fallback_output).await;
+    let output = ExecToolCallOutput {
+        exit_code,
+        stdout: StreamOutput::new(aggregated_output.clone()),
+        stderr: StreamOutput::new(String::new()),
+        aggregated_output: StreamOutput::new(aggregated_output),
+        duration,
+        timed_out: false,
+    };
     let event_ctx = ToolEventCtx::new(
         session_ref.as_ref(),
         turn_ref.as_ref(),
@@ -338,8 +240,24 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathBuf,
     process_id: Option<String>,
-    output: ExecToolCallOutput,
+    transcript: Arc<Mutex<HeadTailBuffer>>,
+    message: String,
+    duration: Duration,
 ) {
+    let stdout = resolve_aggregated_output(&transcript, String::new()).await;
+    let aggregated_output = if stdout.is_empty() {
+        message.clone()
+    } else {
+        format!("{stdout}\n{message}")
+    };
+    let output = ExecToolCallOutput {
+        exit_code: -1,
+        stdout: StreamOutput::new(stdout),
+        stderr: StreamOutput::new(message),
+        aggregated_output: StreamOutput::new(aggregated_output),
+        duration,
+        timed_out: false,
+    };
     let event_ctx = ToolEventCtx::new(
         session_ref.as_ref(),
         turn_ref.as_ref(),

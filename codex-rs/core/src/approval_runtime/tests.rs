@@ -12,11 +12,6 @@ use super::RuntimePreflight;
 use super::RuntimePreflightRequest;
 use async_trait::async_trait;
 use pretty_assertions::assert_eq;
-use std::fs::File;
-use std::fs::FileTimes;
-use std::path::Path;
-use std::time::Duration;
-use std::time::SystemTime;
 
 struct FakeApprovalRuntimeClient {
     preflight: RuntimePreflight,
@@ -55,6 +50,10 @@ impl ApprovalRuntimeClient for FakeApprovalRuntimeClient {
         Ok(())
     }
 
+    async fn lease_is_usable(&self, _lease_id: &str) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+
     async fn preflight(
         &self,
         _request: &RuntimePreflightRequest,
@@ -68,10 +67,6 @@ impl ApprovalRuntimeClient for FakeApprovalRuntimeClient {
     ) -> anyhow::Result<RuntimeFinishObservation> {
         Ok(self.finish.clone())
     }
-}
-
-fn hosted_client(codex_home: &Path) -> super::hosted::HostedApprovalRuntimeClient {
-    super::hosted::HostedApprovalRuntimeClient::new(codex_home)
 }
 
 #[tokio::test]
@@ -205,200 +200,6 @@ async fn approval_runtime_finish_maps_runtime_mismatch() {
         decision,
         RuntimeDecision::Mismatch {
             summary: "permit miss".to_string(),
-        }
-    );
-}
-
-#[tokio::test]
-async fn hosted_runtime_persists_leases_across_client_instances() {
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    let registered = hosted_client(codex_home.path())
-        .register_lease(RuntimeLeaseRegistration {
-            owner_id: "thread-1".to_string(),
-            thread_id: "thread-1".to_string(),
-        })
-        .await
-        .expect("register lease");
-
-    let preflight = hosted_client(codex_home.path())
-        .preflight(&RuntimePreflightRequest {
-            lease_id: registered.id.clone(),
-            destructive: true,
-            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
-        })
-        .await
-        .expect("preflight lease");
-
-    assert_eq!(
-        preflight,
-        RuntimePreflight {
-            health: RuntimeHealth::Healthy,
-            action_id: Some("action-1".to_string()),
-        }
-    );
-}
-
-#[tokio::test]
-async fn default_runtime_client_uses_hosted_backend_for_same_codex_home() {
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    let registered = super::default_runtime_client(codex_home.path())
-        .register_lease(RuntimeLeaseRegistration {
-            owner_id: "thread-1".to_string(),
-            thread_id: "thread-1".to_string(),
-        })
-        .await
-        .expect("register lease");
-
-    let preflight = super::default_runtime_client(codex_home.path())
-        .preflight(&RuntimePreflightRequest {
-            lease_id: registered.id.clone(),
-            destructive: true,
-            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
-        })
-        .await
-        .expect("preflight lease");
-
-    assert_eq!(
-        preflight,
-        RuntimePreflight {
-            health: RuntimeHealth::Healthy,
-            action_id: Some("action-1".to_string()),
-        }
-    );
-}
-
-#[tokio::test]
-async fn hosted_runtime_persists_child_parent_linkage_across_client_instances() {
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    let parent = hosted_client(codex_home.path())
-        .register_lease(RuntimeLeaseRegistration {
-            owner_id: "thread-parent".to_string(),
-            thread_id: "thread-parent".to_string(),
-        })
-        .await
-        .expect("register parent lease");
-
-    let child = hosted_client(codex_home.path())
-        .derive_child_lease(RuntimeChildLeaseRequest {
-            parent_lease_id: parent.id.clone(),
-            child_owner_id: "thread-child".to_string(),
-            thread_id: "thread-child".to_string(),
-        })
-        .await
-        .expect("derive child lease");
-
-    assert_eq!(
-        child,
-        RuntimeLease {
-            id: "lease-2".to_string(),
-            kind: RuntimeLeaseKind::ChildAgent,
-            owner_id: "thread-child".to_string(),
-            thread_id: "thread-child".to_string(),
-            parent_lease_id: Some(parent.id),
-        }
-    );
-}
-
-#[tokio::test]
-async fn hosted_runtime_revoking_parent_invalidates_child_preflight_and_finish() {
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    let parent = hosted_client(codex_home.path())
-        .register_lease(RuntimeLeaseRegistration {
-            owner_id: "thread-parent".to_string(),
-            thread_id: "thread-parent".to_string(),
-        })
-        .await
-        .expect("register parent lease");
-    let child = hosted_client(codex_home.path())
-        .derive_child_lease(RuntimeChildLeaseRequest {
-            parent_lease_id: parent.id.clone(),
-            child_owner_id: "thread-child".to_string(),
-            thread_id: "thread-child".to_string(),
-        })
-        .await
-        .expect("derive child lease");
-
-    hosted_client(codex_home.path())
-        .revoke_lease(&parent.id)
-        .await
-        .expect("revoke parent lease");
-
-    let preflight = hosted_client(codex_home.path())
-        .preflight(&RuntimePreflightRequest {
-            lease_id: child.id.clone(),
-            destructive: true,
-            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
-        })
-        .await
-        .expect("preflight child lease");
-    let finish = hosted_client(codex_home.path())
-        .finish(&RuntimeFinishRequest {
-            lease_id: child.id.clone(),
-            action_id: Some("action-1".to_string()),
-        })
-        .await
-        .expect("finish child lease");
-
-    assert_eq!(
-        preflight,
-        RuntimePreflight {
-            health: RuntimeHealth::FallbackToHuman {
-                summary: format!("runtime lease {} is no longer usable", child.id),
-            },
-            action_id: None,
-        }
-    );
-    assert_eq!(
-        finish,
-        RuntimeFinishObservation::FallbackToHuman {
-            summary: format!("runtime lease {} is no longer usable", child.id),
-        }
-    );
-}
-
-#[tokio::test]
-async fn hosted_runtime_stale_lock_recovery_surfaces_on_next_preflight() {
-    let codex_home = tempfile::tempdir().expect("create temp dir");
-    let lease = hosted_client(codex_home.path())
-        .register_lease(RuntimeLeaseRegistration {
-            owner_id: "thread-1".to_string(),
-            thread_id: "thread-1".to_string(),
-        })
-        .await
-        .expect("register lease");
-
-    let lock_path = super::hosted::hosted_approval_runtime_lock_path(codex_home.path());
-    std::fs::create_dir_all(
-        lock_path
-            .parent()
-            .expect("hosted runtime lock always has a parent directory"),
-    )
-    .expect("create hosted runtime root");
-    File::create(&lock_path).expect("create stale lock");
-    File::options()
-        .write(true)
-        .open(&lock_path)
-        .expect("open stale lock")
-        .set_times(FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(60)))
-        .expect("age lock file");
-
-    let preflight = hosted_client(codex_home.path())
-        .preflight(&RuntimePreflightRequest {
-            lease_id: lease.id,
-            destructive: true,
-            permit_summary: Some("protected_delete:/tmp/demo".to_string()),
-        })
-        .await
-        .expect("preflight recovered lease");
-
-    assert_eq!(
-        preflight,
-        RuntimePreflight {
-            health: RuntimeHealth::Recovery {
-                summary: "recovered stale hosted approval runtime lock using age fallback"
-                    .to_string(),
-            },
-            action_id: Some("action-1".to_string()),
         }
     );
 }

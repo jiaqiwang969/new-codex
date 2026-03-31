@@ -1,7 +1,4 @@
-use serde::Deserialize;
-use serde::Serialize;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeLeaseKind {
     Session,
     ChildAgent,
@@ -13,7 +10,7 @@ pub(crate) struct RuntimeLeaseRegistration {
     pub(crate) thread_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeLease {
     pub(crate) id: String,
     pub(crate) kind: RuntimeLeaseKind,

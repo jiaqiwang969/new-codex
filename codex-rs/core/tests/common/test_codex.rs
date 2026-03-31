@@ -20,7 +20,6 @@ use codex_core::config::Config;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::shell::Shell;
 use codex_core::shell::get_shell_by_model_provided_path;
-use codex_core::test_support::TestApprovalRuntime;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_features::Feature;
@@ -328,7 +327,6 @@ pub struct TestCodexBuilder {
     pre_build_hooks: Vec<Box<PreBuildHook>>,
     home: Option<Arc<TempDir>>,
     user_shell_override: Option<Shell>,
-    test_approval_runtime: Option<TestApprovalRuntime>,
 }
 
 impl TestCodexBuilder {
@@ -367,11 +365,6 @@ impl TestCodexBuilder {
 
     pub fn with_user_shell(mut self, user_shell: Shell) -> Self {
         self.user_shell_override = Some(user_shell);
-        self
-    }
-
-    pub fn with_test_approval_runtime(mut self, runtime: TestApprovalRuntime) -> Self {
-        self.test_approval_runtime = Some(runtime);
         self
     }
 
@@ -506,32 +499,42 @@ impl TestCodexBuilder {
         };
         let thread_manager = Arc::new(thread_manager);
         let user_shell_override = self.user_shell_override.clone();
-        let test_approval_runtime = self.test_approval_runtime.clone();
 
-        let new_conversation = match (resume_from, user_shell_override, test_approval_runtime) {
-            (Some(path), user_shell_override, test_approval_runtime) => {
+        let new_conversation = match (resume_from, user_shell_override) {
+            (Some(path), Some(user_shell_override)) => {
                 let auth_manager = codex_core::test_support::auth_manager_from_auth(auth);
                 Box::pin(
-                    codex_core::test_support::resume_thread_from_rollout_with_test_overrides(
+                    codex_core::test_support::resume_thread_from_rollout_with_user_shell_override(
                         thread_manager.as_ref(),
                         config.clone(),
                         path,
                         auth_manager,
                         user_shell_override,
-                        test_approval_runtime,
                     ),
                 )
                 .await?
             }
-            (None, user_shell_override, test_approval_runtime) => {
-                Box::pin(codex_core::test_support::start_thread_with_test_overrides(
-                    thread_manager.as_ref(),
+            (Some(path), None) => {
+                let auth_manager = codex_core::test_support::auth_manager_from_auth(auth);
+                Box::pin(thread_manager.resume_thread_from_rollout(
                     config.clone(),
-                    user_shell_override,
-                    test_approval_runtime,
+                    path,
+                    auth_manager,
+                    /*parent_trace*/ None,
                 ))
                 .await?
             }
+            (None, Some(user_shell_override)) => {
+                Box::pin(
+                    codex_core::test_support::start_thread_with_user_shell_override(
+                        thread_manager.as_ref(),
+                        config.clone(),
+                        user_shell_override,
+                    ),
+                )
+                .await?
+            }
+            (None, None) => Box::pin(thread_manager.start_thread(config.clone())).await?,
         };
 
         Ok(TestCodex {
@@ -910,7 +913,6 @@ pub fn test_codex() -> TestCodexBuilder {
         pre_build_hooks: vec![],
         home: None,
         user_shell_override: None,
-        test_approval_runtime: None,
     }
 }
 

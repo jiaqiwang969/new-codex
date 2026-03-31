@@ -11,14 +11,14 @@ use tokio::sync::OnceCell;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::SandboxState;
-use crate::agent::AgentControl;
-use crate::agent::AgentStatus;
-use crate::agent::agent_status_from_event;
 use crate::approval_runtime::RuntimeChildLeaseRequest;
 use crate::approval_runtime::RuntimeLease;
 use crate::approval_runtime::RuntimeLeaseRegistration;
 use crate::approval_runtime::SharedApprovalRuntime;
 use crate::approval_runtime::default_runtime_client;
+use crate::agent::AgentControl;
+use crate::agent::AgentStatus;
+use crate::agent::agent_status_from_event;
 use crate::apps::render_apps_section;
 use crate::auth_env_telemetry::collect_auth_env_telemetry;
 use crate::commit_attribution::commit_message_trailer_instruction;
@@ -1820,8 +1820,7 @@ impl Session {
                 }
             };
         session_configuration.thread_name = thread_name.clone();
-        let approval_runtime = inherited_approval_runtime
-            .unwrap_or_else(|| default_runtime_client(config.codex_home.as_path()));
+        let approval_runtime = inherited_approval_runtime.unwrap_or_else(default_runtime_client);
         let runtime_lease = if let Some(parent_runtime_lease) = parent_runtime_lease {
             approval_runtime
                 .derive_child_lease(RuntimeChildLeaseRequest {
@@ -2592,6 +2591,17 @@ impl Session {
     pub(crate) async fn runtime_lease(&self) -> Option<RuntimeLease> {
         let state = self.state.lock().await;
         state.runtime_lease()
+    }
+
+    pub(crate) async fn runtime_lease_is_usable(&self) -> bool {
+        let Some(runtime_lease) = self.runtime_lease().await else {
+            return false;
+        };
+        self.services
+            .approval_runtime
+            .lease_is_usable(runtime_lease.id.as_str())
+            .await
+            .unwrap_or(false)
     }
 
     pub(crate) async fn get_config(&self) -> std::sync::Arc<Config> {
