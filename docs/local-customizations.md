@@ -67,6 +67,18 @@ Useful entry points:
 - Checkpoint/history integration:
   [`codex-rs/core/src/entire_integration.rs`](../codex-rs/core/src/entire_integration.rs)
 
+## Example MCP presets
+
+The local example config also carries two repo-specific MCP launcher presets in
+[`codex-rs/config-examples/config.toml`](../codex-rs/config-examples/config.toml):
+
+- `claude-code-mcp` via `npx -y @steipete/claude-code-mcp@latest`
+- `watermark-remover` via `npx -y github:jiaqiwang969/watermark-removal-mcp`
+
+The supporting notes live in
+[`codex-rs/config-examples/README.md`](../codex-rs/config-examples/README.md).
+Treat them as local example integrations, not upstream Codex defaults.
+
 ## Merge-analysis notes
 
 The active upstream-merge analysis lives in `docs/plans/` and is worth reading
