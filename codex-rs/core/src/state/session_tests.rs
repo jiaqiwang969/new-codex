@@ -171,6 +171,6 @@ async fn runtime_lease_round_trips_through_session_state() {
     state.set_runtime_lease(Some(lease.clone()));
 
     assert_eq!(state.runtime_lease(), Some(lease.clone()));
-    assert_eq!(state.take_runtime_lease(), Some(lease.clone()));
+    assert_eq!(state.take_runtime_lease(), Some(lease));
     assert_eq!(state.runtime_lease(), None);
 }

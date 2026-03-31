@@ -8,17 +8,26 @@ builds sandbox transform inputs, and runs them under the current SandboxAttempt.
 pub(crate) mod unix_escalation;
 pub(crate) mod zsh_fork_backend;
 
+use crate::approval_runtime::ApprovalRuntime;
+use crate::approval_runtime::RuntimeDecision;
+use crate::approval_runtime::RuntimeFinishRequest;
+use crate::approval_runtime::RuntimePreflightRequest;
 use crate::command_canonicalization::canonicalize_command_for_approval;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecToolCallOutput;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
+use crate::is_dangerous_command::command_might_be_dangerous;
 use crate::powershell::prefix_powershell_script_with_utf8;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
 use crate::shell::ShellType;
+use crate::tools::events::ToolEventCtx;
+use crate::tools::events::emit_runtime_warning;
+use crate::tools::events::runtime_decision_message_or_generic;
+use crate::tools::events::runtime_fail_closed_error;
 use crate::tools::network_approval::NetworkApprovalMode;
 use crate::tools::network_approval::NetworkApprovalSpec;
 use crate::tools::runtimes::build_sandbox_command;
@@ -220,6 +229,52 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
+        let runtime_event_ctx = ToolEventCtx::new(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &ctx.call_id,
+            /*turn_diff_tracker*/ None,
+        );
+        let runtime = ApprovalRuntime::new(ctx.session.services.approval_runtime.clone());
+        let runtime_postflight = if command_might_be_dangerous(&req.command) {
+            let Some(runtime_lease) = ctx.session.runtime_lease().await else {
+                let decision = RuntimeDecision::FallbackToHuman {
+                    summary: "runtime lease unavailable for destructive command".to_string(),
+                };
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                return Err(ToolError::Rejected(runtime_decision_message_or_generic(
+                    &decision,
+                )));
+            };
+            let prepared = runtime
+                .prepare(&RuntimePreflightRequest {
+                    lease_id: runtime_lease.id.clone(),
+                    destructive: true,
+                    permit_summary: Some(codex_shell_command::parse_command::shlex_join(
+                        &req.command,
+                    )),
+                })
+                .await
+                .map_err(|err| ToolError::Rejected(format!("runtime preflight failed: {err}")))?;
+            match prepared.decision {
+                RuntimeDecision::Ok => Some((runtime_lease.id, prepared.action_id)),
+                RuntimeDecision::Recovery { .. } => {
+                    emit_runtime_warning(runtime_event_ctx, &prepared.decision).await;
+                    Some((runtime_lease.id, prepared.action_id))
+                }
+                RuntimeDecision::FallbackToHuman { .. }
+                | RuntimeDecision::Mismatch { .. }
+                | RuntimeDecision::PolicyDrift { .. } => {
+                    emit_runtime_warning(runtime_event_ctx, &prepared.decision).await;
+                    return Err(ToolError::Rejected(runtime_decision_message_or_generic(
+                        &prepared.decision,
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
         let session_shell = ctx.session.user_shell();
         let command = maybe_wrap_shell_lc_with_snapshot(
             &req.command,
@@ -235,7 +290,35 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
 
         if self.backend == ShellRuntimeBackend::ShellCommandZshFork {
             match zsh_fork_backend::maybe_run_shell_command(req, attempt, ctx, &command).await? {
-                Some(out) => return Ok(out),
+                Some(out) => {
+                    let out = Ok(out);
+                    if let Some((lease_id, action_id)) = runtime_postflight {
+                        let decision = runtime
+                            .finish(&RuntimeFinishRequest {
+                                lease_id,
+                                action_id,
+                            })
+                            .await
+                            .map_err(|err| {
+                                ToolError::Rejected(format!("runtime postflight failed: {err}"))
+                            })?;
+                        return match decision {
+                            RuntimeDecision::Ok => out,
+                            RuntimeDecision::Recovery { .. } => {
+                                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                                out
+                            }
+                            RuntimeDecision::FallbackToHuman { .. }
+                            | RuntimeDecision::Mismatch { .. }
+                            | RuntimeDecision::PolicyDrift { .. } => {
+                                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                                let message = runtime_decision_message_or_generic(&decision);
+                                Err(runtime_fail_closed_error(out, message))
+                            }
+                        };
+                    }
+                    return out;
+                }
                 None => {
                     tracing::warn!(
                         "ZshFork backend specified, but conditions for using it were not met, falling back to normal execution",
@@ -259,7 +342,32 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             .map_err(|err| ToolError::Codex(err.into()))?;
         let out = execute_env(env, Self::stdout_stream(ctx))
             .await
-            .map_err(ToolError::Codex)?;
-        Ok(out)
+            .map_err(ToolError::Codex);
+
+        let Some((lease_id, action_id)) = runtime_postflight else {
+            return out;
+        };
+
+        let decision = runtime
+            .finish(&RuntimeFinishRequest {
+                lease_id,
+                action_id,
+            })
+            .await
+            .map_err(|err| ToolError::Rejected(format!("runtime postflight failed: {err}")))?;
+        match decision {
+            RuntimeDecision::Ok => out,
+            RuntimeDecision::Recovery { .. } => {
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                out
+            }
+            RuntimeDecision::FallbackToHuman { .. }
+            | RuntimeDecision::Mismatch { .. }
+            | RuntimeDecision::PolicyDrift { .. } => {
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                let message = runtime_decision_message_or_generic(&decision);
+                Err(runtime_fail_closed_error(out, message))
+            }
+        }
     }
 }

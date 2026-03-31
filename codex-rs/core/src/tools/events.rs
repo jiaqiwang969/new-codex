@@ -1,8 +1,10 @@
+use crate::approval_runtime::RuntimeDecision;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::error::CodexErr;
 use crate::error::SandboxErr;
 use crate::exec::ExecToolCallOutput;
+use crate::exec::StreamOutput;
 use crate::function_tool::FunctionCallError;
 use crate::parse_command::parse_command;
 use crate::protocol::EventMsg;
@@ -15,6 +17,7 @@ use crate::protocol::PatchApplyBeginEvent;
 use crate::protocol::PatchApplyEndEvent;
 use crate::protocol::PatchApplyStatus;
 use crate::protocol::TurnDiffEvent;
+use crate::protocol::WarningEvent;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::sandboxing::ToolError;
 use codex_protocol::parse_command::ParsedCommand;
@@ -59,6 +62,82 @@ pub(crate) enum ToolEventFailure {
     Output(ExecToolCallOutput),
     Message(String),
     Rejected(String),
+}
+
+pub(crate) fn runtime_decision_message(decision: &RuntimeDecision) -> Option<String> {
+    match decision {
+        RuntimeDecision::Ok => None,
+        RuntimeDecision::Recovery { summary } => Some(format!("runtime recovery: {summary}")),
+        RuntimeDecision::FallbackToHuman { summary } => {
+            Some(format!("runtime fallback to human: {summary}"))
+        }
+        RuntimeDecision::Mismatch { summary } => {
+            Some(format!("runtime mismatch detected: {summary}"))
+        }
+        RuntimeDecision::PolicyDrift { summary } => {
+            Some(format!("runtime policy drift detected: {summary}"))
+        }
+    }
+}
+
+pub(crate) fn runtime_decision_message_or_generic(decision: &RuntimeDecision) -> String {
+    runtime_decision_message(decision)
+        .unwrap_or_else(|| "runtime blocked action without a summary".to_string())
+}
+
+pub(crate) async fn emit_runtime_warning(ctx: ToolEventCtx<'_>, decision: &RuntimeDecision) {
+    let Some(message) = runtime_decision_message(decision) else {
+        return;
+    };
+    if decision.blocks_automatic_approval() {
+        ctx.session
+            .set_out_of_band_elicitation_pause_state(/*paused*/ true);
+    }
+    ctx.session
+        .send_event(ctx.turn, EventMsg::Warning(WarningEvent { message }))
+        .await;
+}
+
+pub(crate) fn runtime_fail_closed_output(
+    mut output: ExecToolCallOutput,
+    message: String,
+) -> ExecToolCallOutput {
+    let aggregated_output = if output.aggregated_output.text.is_empty() {
+        message.clone()
+    } else {
+        format!("{}\n{message}", output.aggregated_output.text)
+    };
+    output.exit_code = -1;
+    output.stderr = StreamOutput::new(message);
+    output.aggregated_output = StreamOutput::new(aggregated_output);
+    output
+}
+
+pub(crate) fn runtime_fail_closed_error(
+    result: Result<ExecToolCallOutput, ToolError>,
+    message: String,
+) -> ToolError {
+    let output = match result {
+        Ok(output) => runtime_fail_closed_output(output, message),
+        Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))) => {
+            runtime_fail_closed_output(*output, message)
+        }
+        Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Timeout { output }))) => {
+            runtime_fail_closed_output(*output, message)
+        }
+        Err(ToolError::Codex(err)) => runtime_fail_closed_output(
+            ExecToolCallOutput::default(),
+            format!("execution error: {err:?}\n{message}"),
+        ),
+        Err(ToolError::Rejected(reason)) => runtime_fail_closed_output(
+            ExecToolCallOutput::default(),
+            format!("{reason}\n{message}"),
+        ),
+    };
+    ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
+        output: Box::new(output),
+        network_policy_decision: None,
+    }))
 }
 
 pub(crate) async fn emit_exec_command_begin(

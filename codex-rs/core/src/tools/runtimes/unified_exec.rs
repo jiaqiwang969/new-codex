@@ -4,6 +4,9 @@ Runtime: unified exec
 Handles approval + sandbox orchestration for unified exec requests, delegating to
 the process manager to spawn PTYs once an ExecRequest is prepared.
 */
+use crate::approval_runtime::ApprovalRuntime;
+use crate::approval_runtime::RuntimeDecision;
+use crate::approval_runtime::RuntimePreflightRequest;
 use crate::command_canonicalization::canonicalize_command_for_approval;
 use crate::error::CodexErr;
 use crate::error::SandboxErr;
@@ -12,10 +15,14 @@ use crate::exec::ExecExpiration;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
+use crate::is_dangerous_command::command_might_be_dangerous;
 use crate::powershell::prefix_powershell_script_with_utf8;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::ShellType;
+use crate::tools::events::ToolEventCtx;
+use crate::tools::events::emit_runtime_warning;
+use crate::tools::events::runtime_decision_message_or_generic;
 use crate::tools::network_approval::NetworkApprovalMode;
 use crate::tools::network_approval::NetworkApprovalSpec;
 use crate::tools::runtimes::build_sandbox_command;
@@ -73,6 +80,18 @@ pub struct UnifiedExecApprovalKey {
     pub tty: bool,
     pub sandbox_permissions: SandboxPermissions,
     pub additional_permissions: Option<PermissionProfile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingUnifiedExecRuntimePostflight {
+    pub(crate) lease_id: String,
+    pub(crate) action_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedUnifiedExecProcess {
+    pub(crate) process: UnifiedExecProcess,
+    pub(crate) runtime_postflight: Option<PendingUnifiedExecRuntimePostflight>,
 }
 
 /// Runtime adapter that keeps policy and sandbox orchestration on the
@@ -181,7 +200,7 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
     }
 }
 
-impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRuntime<'a> {
+impl<'a> ToolRuntime<UnifiedExecRequest, PreparedUnifiedExecProcess> for UnifiedExecRuntime<'a> {
     fn network_approval_spec(
         &self,
         req: &UnifiedExecRequest,
@@ -199,7 +218,59 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
         req: &UnifiedExecRequest,
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
-    ) -> Result<UnifiedExecProcess, ToolError> {
+    ) -> Result<PreparedUnifiedExecProcess, ToolError> {
+        let runtime_event_ctx = ToolEventCtx::new(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &ctx.call_id,
+            /*turn_diff_tracker*/ None,
+        );
+        let runtime = ApprovalRuntime::new(ctx.session.services.approval_runtime.clone());
+        let runtime_postflight = if command_might_be_dangerous(&req.command) {
+            let Some(runtime_lease) = ctx.session.runtime_lease().await else {
+                let decision = RuntimeDecision::FallbackToHuman {
+                    summary: "runtime lease unavailable for destructive command".to_string(),
+                };
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                return Err(ToolError::Rejected(runtime_decision_message_or_generic(
+                    &decision,
+                )));
+            };
+            let prepared = runtime
+                .prepare(&RuntimePreflightRequest {
+                    lease_id: runtime_lease.id.clone(),
+                    destructive: true,
+                    permit_summary: Some(codex_shell_command::parse_command::shlex_join(
+                        &req.command,
+                    )),
+                })
+                .await
+                .map_err(|err| ToolError::Rejected(format!("runtime preflight failed: {err}")))?;
+            match prepared.decision {
+                RuntimeDecision::Ok => Some(PendingUnifiedExecRuntimePostflight {
+                    lease_id: runtime_lease.id,
+                    action_id: prepared.action_id,
+                }),
+                RuntimeDecision::Recovery { .. } => {
+                    emit_runtime_warning(runtime_event_ctx, &prepared.decision).await;
+                    Some(PendingUnifiedExecRuntimePostflight {
+                        lease_id: runtime_lease.id,
+                        action_id: prepared.action_id,
+                    })
+                }
+                RuntimeDecision::FallbackToHuman { .. }
+                | RuntimeDecision::Mismatch { .. }
+                | RuntimeDecision::PolicyDrift { .. } => {
+                    emit_runtime_warning(runtime_event_ctx, &prepared.decision).await;
+                    return Err(ToolError::Rejected(runtime_decision_message_or_generic(
+                        &prepared.decision,
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
         let base_command = &req.command;
         let session_shell = ctx.session.user_shell();
         let command = maybe_wrap_shell_lc_with_snapshot(
@@ -254,6 +325,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                             ctx.turn.environment.as_ref(),
                         )
                         .await
+                        .map(|process| PreparedUnifiedExecProcess {
+                            process,
+                            runtime_postflight: runtime_postflight.clone(),
+                        })
                         .map_err(|err| match err {
                             UnifiedExecError::SandboxDenied { output, .. } => {
                                 ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
@@ -290,6 +365,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                 ctx.turn.environment.as_ref(),
             )
             .await
+            .map(|process| PreparedUnifiedExecProcess {
+                process,
+                runtime_postflight,
+            })
             .map_err(|err| match err {
                 UnifiedExecError::SandboxDenied { output, .. } => {
                     ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {

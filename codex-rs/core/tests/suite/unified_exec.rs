@@ -4,10 +4,14 @@ use std::fs;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::test_support::TestApprovalRuntime;
+use codex_core::test_support::TestApprovalRuntimeFinish;
+use codex_core::test_support::TestApprovalRuntimePreflight;
 use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
@@ -268,6 +272,180 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
         fs::read_to_string(harness.path("uexec_apply.txt"))?,
         "hello from unified exec\n"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_unified_exec_destructive_command_preflights_and_finishes_cleanly() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_windows!(Ok(()));
+
+    let runtime = TestApprovalRuntime::new()
+        .with_preflight(vec![TestApprovalRuntimePreflight::healthy()])
+        .with_finish(vec![TestApprovalRuntimeFinish::clean()]);
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_test_approval_runtime(runtime.clone())
+            .with_config(|config| {
+                config.use_experimental_unified_exec_tool = true;
+                config
+                    .features
+                    .enable(Feature::UnifiedExec)
+                    .expect("test config should allow feature update");
+            }),
+    )
+    .await?;
+
+    let call_id = "runtime-uexec-clean";
+    let target = harness.path("runtime_exec_clean.txt");
+    fs::write(&target, "delete-me")?;
+    mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(
+                    call_id,
+                    "exec_command",
+                    &serde_json::to_string(&json!({
+                        "cmd": "rm -f runtime_exec_clean.txt",
+                        "yield_time_ms": 1_000,
+                    }))?,
+                ),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    harness.submit("delete the runtime test file").await?;
+
+    assert!(
+        !target.exists(),
+        "destructive unified exec command should still run successfully"
+    );
+    let preflights = runtime.preflight_requests().await;
+    assert_eq!(preflights.len(), 1);
+    assert!(preflights[0].destructive);
+    assert!(
+        preflights[0].permit_summary.is_some(),
+        "destructive command should request a runtime permit summary"
+    );
+    let finishes = runtime.finish_requests().await;
+    assert_eq!(finishes.len(), 1);
+    assert_eq!(finishes[0].lease_id, preflights[0].lease_id);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_unified_exec_policy_drift_emits_warning_and_fails_closed() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_windows!(Ok(()));
+
+    let runtime = TestApprovalRuntime::new()
+        .with_preflight(vec![TestApprovalRuntimePreflight::healthy()])
+        .with_finish(vec![TestApprovalRuntimeFinish::policy_drift(
+            "runtime policy drift detected",
+        )]);
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_test_approval_runtime(runtime.clone())
+            .with_config(|config| {
+                config.use_experimental_unified_exec_tool = true;
+                config
+                    .features
+                    .enable(Feature::UnifiedExec)
+                    .expect("test config should allow feature update");
+            }),
+    )
+    .await?;
+    let test = harness.test();
+    let call_id = "runtime-uexec-drift";
+    let target = harness.path("runtime_exec_drift.txt");
+    fs::write(&target, "delete-me")?;
+    mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(
+                    call_id,
+                    "exec_command",
+                    &serde_json::to_string(&json!({
+                        "cmd": "rm -f runtime_exec_drift.txt",
+                        "yield_time_ms": 1_000,
+                    }))?,
+                ),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let session_model = test.session_configured.model.clone();
+    test.codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "trigger runtime drift".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.cwd_path().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            model: session_model,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let mut warning = None;
+    let mut exec_status = None;
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::Warning(event) => {
+            warning = Some(event.message.clone());
+            false
+        }
+        EventMsg::ExecCommandEnd(event) if event.call_id == call_id => {
+            exec_status = Some(event.status.clone());
+            false
+        }
+        EventMsg::TurnComplete(_) => true,
+        _ => false,
+    })
+    .await;
+
+    let warning = warning.expect("expected runtime warning");
+    assert!(
+        warning.contains("policy drift"),
+        "warning should mention runtime policy drift: {warning}"
+    );
+    assert_eq!(exec_status, Some(ExecCommandStatus::Failed));
+    let output = harness.function_call_stdout(call_id).await;
+    assert!(
+        output.contains("runtime policy drift detected"),
+        "tool output should fail closed with the runtime explanation: {output}"
+    );
+    let finishes = runtime.finish_requests().await;
+    assert_eq!(finishes.len(), 1);
 
     Ok(())
 }

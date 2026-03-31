@@ -4,6 +4,10 @@
 //! decision to avoid re-prompting, builds the self-invocation command for
 //! `codex --codex-run-as-apply-patch`, and runs under the current
 //! `SandboxAttempt` with a minimal environment.
+use crate::approval_runtime::ApprovalRuntime;
+use crate::approval_runtime::RuntimeDecision;
+use crate::approval_runtime::RuntimeFinishRequest;
+use crate::approval_runtime::RuntimePreflightRequest;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecToolCallOutput;
 use crate::guardian::GuardianApprovalRequest;
@@ -11,6 +15,10 @@ use crate::guardian::review_approval_request;
 use crate::guardian::routes_approval_to_guardian;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::execute_env;
+use crate::tools::events::ToolEventCtx;
+use crate::tools::events::emit_runtime_warning;
+use crate::tools::events::runtime_decision_message_or_generic;
+use crate::tools::events::runtime_fail_closed_error;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
@@ -50,6 +58,25 @@ pub struct ApplyPatchRuntime;
 impl ApplyPatchRuntime {
     pub fn new() -> Self {
         Self
+    }
+
+    fn destructive_permit_summary(req: &ApplyPatchRequest) -> Option<String> {
+        let mut operations = req
+            .changes
+            .iter()
+            .filter_map(|(path, change)| match change {
+                FileChange::Add { .. } => None,
+                FileChange::Delete { .. } => Some(format!("delete:{}", path.display())),
+                FileChange::Update { move_path, .. } => Some(match move_path {
+                    Some(destination) => {
+                        format!("update:{}->{}", path.display(), destination.display())
+                    }
+                    None => format!("update:{}", path.display()),
+                }),
+            })
+            .collect::<Vec<_>>();
+        operations.sort();
+        (!operations.is_empty()).then(|| operations.join(", "))
     }
 
     fn build_guardian_review_request(
@@ -212,6 +239,51 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
+        let runtime_event_ctx = ToolEventCtx::new(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &ctx.call_id,
+            /*turn_diff_tracker*/ None,
+        );
+        let runtime = ApprovalRuntime::new(ctx.session.services.approval_runtime.clone());
+        let destructive = Self::destructive_permit_summary(req);
+        let runtime_postflight = if let Some(permit_summary) = destructive {
+            let Some(runtime_lease) = ctx.session.runtime_lease().await else {
+                let decision = RuntimeDecision::FallbackToHuman {
+                    summary: "runtime lease unavailable for destructive patch".to_string(),
+                };
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                return Err(ToolError::Rejected(runtime_decision_message_or_generic(
+                    &decision,
+                )));
+            };
+            let prepared = runtime
+                .prepare(&RuntimePreflightRequest {
+                    lease_id: runtime_lease.id.clone(),
+                    destructive: true,
+                    permit_summary: Some(permit_summary),
+                })
+                .await
+                .map_err(|err| ToolError::Rejected(format!("runtime preflight failed: {err}")))?;
+            match prepared.decision {
+                RuntimeDecision::Ok => Some((runtime_lease.id, prepared.action_id)),
+                RuntimeDecision::Recovery { .. } => {
+                    emit_runtime_warning(runtime_event_ctx, &prepared.decision).await;
+                    Some((runtime_lease.id, prepared.action_id))
+                }
+                RuntimeDecision::FallbackToHuman { .. }
+                | RuntimeDecision::Mismatch { .. }
+                | RuntimeDecision::PolicyDrift { .. } => {
+                    emit_runtime_warning(runtime_event_ctx, &prepared.decision).await;
+                    return Err(ToolError::Rejected(runtime_decision_message_or_generic(
+                        &prepared.decision,
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
         #[cfg(target_os = "windows")]
         let command = Self::build_sandbox_command(req, &ctx.turn.config.codex_home)?;
         #[cfg(not(target_os = "windows"))]
@@ -225,8 +297,33 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
             .map_err(|err| ToolError::Codex(err.into()))?;
         let out = execute_env(env, Self::stdout_stream(ctx))
             .await
-            .map_err(ToolError::Codex)?;
-        Ok(out)
+            .map_err(ToolError::Codex);
+
+        let Some((lease_id, action_id)) = runtime_postflight else {
+            return out;
+        };
+
+        let decision = runtime
+            .finish(&RuntimeFinishRequest {
+                lease_id,
+                action_id,
+            })
+            .await
+            .map_err(|err| ToolError::Rejected(format!("runtime postflight failed: {err}")))?;
+        match decision {
+            RuntimeDecision::Ok => out,
+            RuntimeDecision::Recovery { .. } => {
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                out
+            }
+            RuntimeDecision::FallbackToHuman { .. }
+            | RuntimeDecision::Mismatch { .. }
+            | RuntimeDecision::PolicyDrift { .. } => {
+                emit_runtime_warning(runtime_event_ctx, &decision).await;
+                let message = runtime_decision_message_or_generic(&decision);
+                Err(runtime_fail_closed_error(out, message))
+            }
+        }
     }
 }
 
