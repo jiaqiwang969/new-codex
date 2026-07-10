@@ -405,6 +405,7 @@ use self::rate_limits::is_app_server_cyber_policy_error;
 mod recap;
 mod reset_credits;
 pub(crate) use self::rate_limits::limit_label_for_window;
+mod ralph_loop;
 mod reasoning_shortcuts;
 mod rendering;
 mod replay;
@@ -780,6 +781,8 @@ pub(crate) struct ChatWidget {
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
     external_editor_state: ExternalEditorState,
+    ralph_loop_state: Option<crate::ralph_loop::RalphLoopState>,
+    ralph_loop_turn_had_error: bool,
     last_rendered_user_message_display: Option<UserMessageDisplay>,
     last_non_retry_error: Option<(String, String)>,
 }

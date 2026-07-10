@@ -470,6 +470,8 @@ impl ChatWidget {
             submit_pending_steers_after_interrupt: self
                 .input_queue
                 .submit_pending_steers_after_interrupt,
+            ralph_loop_state: self.ralph_loop_state.clone(),
+            ralph_loop_turn_had_error: self.ralph_loop_turn_had_error,
             current_collaboration_mode: self.current_collaboration_mode.clone(),
             active_collaboration_mask: self.active_collaboration_mask.clone(),
             task_running: self.bottom_pane.is_task_running(),
@@ -497,6 +499,8 @@ impl ChatWidget {
                 preserve_in_flight_turn && input_state.user_turn_pending_start;
             self.input_queue.submit_pending_steers_after_interrupt =
                 preserve_in_flight_turn && input_state.submit_pending_steers_after_interrupt;
+            self.ralph_loop_state = input_state.ralph_loop_state;
+            self.ralph_loop_turn_had_error = input_state.ralph_loop_turn_had_error;
             self.update_collaboration_mode_indicator();
             self.refresh_model_dependent_surfaces();
             self.restore_composer_state(input_state.composer.unwrap_or_default());
@@ -557,6 +561,8 @@ impl ChatWidget {
             self.safety_buffering_prompt = None;
             self.input_queue.clear();
             self.restore_composer_state(Default::default());
+            self.ralph_loop_state = None;
+            self.ralph_loop_turn_had_error = false;
         }
         let effort = self.effective_reasoning_effort();
         self.bottom_pane

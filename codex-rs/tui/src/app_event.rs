@@ -55,6 +55,7 @@ use crate::chatwidget::ConnectorScopeGeneration;
 use crate::chatwidget::ThreadUsageOutcome;
 use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
+use crate::ralph_loop::RalphLoopTarget;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
@@ -593,6 +594,13 @@ pub(crate) enum AppEvent {
 
     /// Commit settled asynchronous usage output after stream shutdown.
     CommitPendingUsageOutputAfterStreamShutdown,
+
+    /// Continue a Ralph Loop after its configured error retry delay.
+    RalphLoopDelayedContinue {
+        target: RalphLoopTarget,
+        instance_id: String,
+        generation: u64,
+    },
 
     /// Send a user-confirmed request to notify the workspace owner.
     SendAddCreditsNudgeEmail {

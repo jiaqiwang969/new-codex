@@ -120,6 +120,16 @@ fn next_copy_selection(
     selection
 }
 
+fn next_submitted_text(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> String {
+    match next_submit_op(op_rx) {
+        Op::UserTurn { items, .. } => match items.as_slice() {
+            [UserInput::Text { text, .. }] => text.clone(),
+            _ => panic!("expected a single text input, got {items:?}"),
+        },
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn service_tier_commands_lowercase_catalog_names() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
@@ -674,6 +684,298 @@ async fn slash_init_does_not_depend_on_loaded_instruction_sources() {
     assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
     assert!(drain_insert_history(&mut rx).is_empty());
     assert_eq!(recall_latest_after_clearing(&mut chat), "/init");
+}
+
+#[tokio::test]
+async fn slash_ralph_loop_help_displays_usage_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/ralph-loop --help");
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one Ralph Loop help message");
+    let rendered = lines_to_single_string(&cells[0]);
+    insta::assert_snapshot!(
+        rendered,
+        @r###"
+• Ralph Loop - Iterative Self-Correction Loop
+
+Usage:
+  /ralph-loop
+  /ralph-loop [prompt] [options]
+  /ralph-loop --help
+  /cancel-ralph
+
+Options:
+  -n, --max-iterations, --max <N>  Maximum iterations (default: 50, 0 = unlimited)
+  -c, --completion-promise <STR>   Completion promise text (default: "COMPLETE")
+  -p, --prompt <TEXT>              Prompt to repeat each iteration
+  -d, --delay <SECONDS>            Delay before retry on error (default: 100)
+
+Examples:
+  /ralph-loop "Build the API. Output <promise>COMPLETE</promise> when done." -n 30
+  /ralph-loop --max 30 --completion-promise DONE --prompt "Fix all tests"
+  /ralph-loop -p "Fix all tests" -c DONE -n 10
+  /ralph-loop "Implement feature X" -n 20 -c FINISHED -d 60
+
+How it works:
+  1. The prompt is submitted to the agent
+  2. When the agent finishes, Codex checks for <promise>COMPLETE</promise>
+  3. If not found and iterations remain, the same prompt is re-submitted
+  4. The agent sees prior context and file changes, then continues
+  5. On error, Codex waits --delay seconds before retrying
+  6. Use /cancel-ralph to stop the loop at any time
+"###
+    );
+}
+
+#[tokio::test]
+async fn slash_ralph_loop_parse_error_shows_help_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/ralph-loop --max-iterations nope");
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(
+        cells.len(),
+        2,
+        "expected parse error plus usage help messages"
+    );
+    let rendered = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    insta::assert_snapshot!(
+        rendered,
+        @r###"
+■ Ralph Loop parse error: Invalid max-iterations value: nope
+
+---
+
+• Ralph Loop - Iterative Self-Correction Loop
+
+Usage:
+  /ralph-loop
+  /ralph-loop [prompt] [options]
+  /ralph-loop --help
+  /cancel-ralph
+
+Options:
+  -n, --max-iterations, --max <N>  Maximum iterations (default: 50, 0 = unlimited)
+  -c, --completion-promise <STR>   Completion promise text (default: "COMPLETE")
+  -p, --prompt <TEXT>              Prompt to repeat each iteration
+  -d, --delay <SECONDS>            Delay before retry on error (default: 100)
+
+Examples:
+  /ralph-loop "Build the API. Output <promise>COMPLETE</promise> when done." -n 30
+  /ralph-loop --max 30 --completion-promise DONE --prompt "Fix all tests"
+  /ralph-loop -p "Fix all tests" -c DONE -n 10
+  /ralph-loop "Implement feature X" -n 20 -c FINISHED -d 60
+
+How it works:
+  1. The prompt is submitted to the agent
+  2. When the agent finishes, Codex checks for <promise>COMPLETE</promise>
+  3. If not found and iterations remain, the same prompt is re-submitted
+  4. The agent sees prior context and file changes, then continues
+  5. On error, Codex waits --delay seconds before retrying
+  6. Use /cancel-ralph to stop the loop at any time
+"###
+    );
+}
+
+#[tokio::test]
+async fn slash_ralph_loop_activates_and_saves_state_file() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let tempdir = tempdir().expect("tempdir");
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.cwd = tempdir.path().to_path_buf().abs();
+    chat.current_cwd = Some(tempdir.path().to_path_buf());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Ship feature\" -n 2 -d 0");
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Ralph Loop activated: max=2, promise=\"COMPLETE\", delay=0s"),
+        "expected activation message, got {rendered:?}"
+    );
+    assert!(
+        crate::ralph_loop::ralph_state_file_path(tempdir.path()).exists(),
+        "expected Ralph Loop state file to exist"
+    );
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(1)
+    );
+    assert_eq!(next_submitted_text(&mut op_rx), "Ship feature");
+}
+
+#[tokio::test]
+async fn ralph_loop_requeues_after_completed_turn_until_max_iterations() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Keep going\" -n 2 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Keep going");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    complete_turn_with_message(&mut chat, "turn-1", Some("not done yet"));
+
+    assert_eq!(next_submitted_text(&mut op_rx), "Keep going");
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(2)
+    );
+
+    handle_turn_started(&mut chat, "turn-2");
+    complete_turn_with_message(&mut chat, "turn-2", Some("still not done"));
+
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.ralph_loop_state.is_none());
+}
+
+#[tokio::test]
+async fn ralph_loop_finishes_when_completion_promise_is_seen() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Finish task\" -n 10 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Finish task");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    complete_turn_with_message(
+        &mut chat,
+        "turn-1",
+        Some("done <promise>COMPLETE</promise>"),
+    );
+
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.ralph_loop_state.is_none());
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Ralph Loop complete: promise detected after 1 iteration(s)."),
+        "expected completion message, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn ralph_loop_retries_after_error_without_delay() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Retry me\" -n 2 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry me");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    chat.on_error("boom".to_string());
+
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry me");
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn ralph_loop_retries_after_cyber_policy_error_without_delay() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Retry cyber notice\" -n 2 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry cyber notice");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    handle_error(
+        &mut chat,
+        "server fallback message",
+        Some(CodexErrorInfo::CyberPolicy),
+    );
+
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry cyber notice");
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(2)
+    );
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("We take extra caution with cybersecurity requests"));
+    assert!(rendered.contains("Trusted Access"));
+}
+
+#[tokio::test]
+async fn delayed_ralph_loop_retry_is_ignored_after_cancel() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Retry later\" -n 3 -d 30");
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry later");
+    let _ = drain_insert_history(&mut rx);
+
+    let (target, instance_id, generation) = {
+        let loop_state = chat
+            .ralph_loop_state
+            .as_mut()
+            .expect("ralph loop should be active");
+        loop_state.next_iteration();
+        (
+            loop_state.target().clone(),
+            loop_state.instance_id().to_string(),
+            loop_state.schedule_retry(),
+        )
+    };
+
+    chat.handle_cancel_ralph_command();
+    chat.handle_ralph_loop_delayed_continue(target, &instance_id, generation);
+
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.ralph_loop_state.is_none());
+}
+
+#[tokio::test]
+async fn due_ralph_loop_retry_resumes_after_thread_restore() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Resume me\" -n 3 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Resume me");
+    let _ = drain_insert_history(&mut rx);
+
+    {
+        let loop_state = chat
+            .ralph_loop_state
+            .as_mut()
+            .expect("ralph loop should be active");
+        loop_state.next_iteration();
+        let _ = loop_state.schedule_retry();
+    }
+    chat.input_queue.user_turn_pending_start = false;
+
+    let input_state = chat.capture_thread_input_state();
+    let expected_state = chat.ralph_loop_state.clone();
+    chat.restore_thread_input_state(/*input_state*/ None);
+    assert_eq!(chat.ralph_loop_state, None);
+
+    chat.restore_thread_input_state(input_state);
+    assert_eq!(chat.ralph_loop_state, expected_state);
+
+    chat.maybe_resume_pending_ralph_loop_retry_if_due();
+
+    assert_eq!(next_submitted_text(&mut op_rx), "Resume me");
 }
 
 #[tokio::test]
