@@ -1370,6 +1370,8 @@ impl App {
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
+        self.chat_widget
+            .maybe_resume_pending_ralph_loop_retry_if_due();
         Ok(())
     }
 
@@ -1621,6 +1623,8 @@ impl App {
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
+        self.chat_widget
+            .maybe_resume_pending_ralph_loop_retry_if_due();
         if resume_restored_queue {
             self.chat_widget.maybe_send_next_queued_input();
         }

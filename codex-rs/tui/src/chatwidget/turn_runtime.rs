@@ -94,6 +94,7 @@ impl ChatWidget {
         self.reasoning_summary_parts.clear();
         self.reasoning_buffer.clear();
         self.reasoning_header = None;
+        self.ralph_loop_turn_had_error = false;
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Running,
             /*body*/ None,
@@ -196,6 +197,11 @@ impl ChatWidget {
         let had_pending_steers = !self.input_queue.pending_steers.is_empty();
         self.refresh_pending_input_preview();
 
+        if !from_replay {
+            let copyable_turn_output =
+                (!notification_response.is_empty()).then_some(notification_response.as_str());
+            self.on_task_complete_for_ralph_loop(copyable_turn_output);
+        }
         if !from_replay && !self.has_queued_follow_up_messages() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
         }
@@ -361,6 +367,7 @@ impl ChatWidget {
 
     fn on_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
+        self.ralph_loop_turn_had_error = true;
         self.flush_answer_stream_with_separator();
         self.finalize_turn();
         self.add_to_history(history_cell::new_error_event(message));
@@ -369,6 +376,7 @@ impl ChatWidget {
             /*body*/ None,
         );
         self.request_redraw();
+        self.on_failed_turn_for_ralph_loop();
 
         // After an error ends the turn, try sending the next queued input.
         self.maybe_send_next_queued_input();
@@ -384,6 +392,7 @@ impl ChatWidget {
 
     pub(super) fn on_cyber_policy_error(&mut self) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
+        self.ralph_loop_turn_had_error = true;
         self.finalize_turn();
         let plan_type = if self.has_chatgpt_account {
             self.plan_type
@@ -392,6 +401,7 @@ impl ChatWidget {
         };
         self.add_to_history(history_cell::new_cyber_policy_error_event(plan_type));
         self.request_redraw();
+        self.on_failed_turn_for_ralph_loop();
 
         // After an error ends the turn, try sending the next queued input.
         self.maybe_send_next_queued_input();

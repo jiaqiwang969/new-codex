@@ -386,6 +386,8 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
             queued_user_message_history_records: VecDeque::new(),
             user_turn_pending_start: false,
             submit_pending_steers_after_interrupt: false,
+            ralph_loop_state: None,
+            ralph_loop_turn_had_error: false,
             current_collaboration_mode: chat.current_collaboration_mode.clone(),
             active_collaboration_mask: chat.active_collaboration_mask.clone(),
             task_running: false,

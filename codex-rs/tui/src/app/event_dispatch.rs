@@ -1447,6 +1447,17 @@ impl App {
             AppEvent::CommitPendingUsageOutputAfterStreamShutdown => {
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
+            AppEvent::RalphLoopDelayedContinue {
+                target,
+                instance_id,
+                generation,
+            } => {
+                self.chat_widget.handle_ralph_loop_delayed_continue(
+                    target,
+                    &instance_id,
+                    generation,
+                );
+            }
             AppEvent::ConnectorsLoaded {
                 thread_id,
                 cwd,

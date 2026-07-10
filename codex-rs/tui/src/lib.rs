@@ -166,6 +166,7 @@ pub(crate) mod onboarding;
 mod oss_selection;
 mod pager_overlay;
 pub(crate) mod public_widgets;
+mod ralph_loop;
 mod render;
 mod resize_reflow_cap;
 mod resume_picker;

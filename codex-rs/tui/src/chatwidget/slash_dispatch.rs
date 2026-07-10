@@ -46,7 +46,7 @@ impl ChatWidget {
     /// rule as normal text.
     pub(super) fn handle_slash_command_dispatch(&mut self, cmd: SlashCommand) {
         self.dispatch_command(cmd);
-        if cmd == SlashCommand::Goal {
+        if matches!(cmd, SlashCommand::Goal | SlashCommand::RalphLoop) {
             self.bottom_pane.drain_pending_submission_state();
         }
         self.bottom_pane.record_pending_slash_command_history();
@@ -289,6 +289,9 @@ impl ChatWidget {
                     self.defer_input_until_settings_applied();
                 }
             }
+            SlashCommand::RalphLoop => {
+                self.handle_ralph_loop_command(crate::ralph_loop::RalphLoopCommand::default());
+            }
             SlashCommand::Rename => {
                 self.session_telemetry
                     .counter("codex.thread.rename", /*inc*/ 1, &[]);
@@ -319,6 +322,9 @@ impl ChatWidget {
                         Some(GOAL_USAGE_HINT.to_string()),
                     );
                 }
+            }
+            SlashCommand::CancelRalph => {
+                self.handle_cancel_ralph_command();
             }
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
@@ -938,6 +944,25 @@ impl ChatWidget {
                     self.clear_live_goal_submission();
                 }
             }
+            SlashCommand::RalphLoop if !trimmed.is_empty() => {
+                if crate::ralph_loop::is_ralph_loop_help_request(trimmed) {
+                    self.add_info_message(
+                        crate::ralph_loop::ralph_loop_help_text(),
+                        /*hint*/ None,
+                    );
+                } else {
+                    match crate::ralph_loop::parse_ralph_loop_args(trimmed) {
+                        Ok(cmd) => self.handle_ralph_loop_command(cmd),
+                        Err(err) => {
+                            self.add_error_message(format!("Ralph Loop parse error: {err}"));
+                            self.add_info_message(
+                                crate::ralph_loop::ralph_loop_help_text(),
+                                /*hint*/ None,
+                            );
+                        }
+                    }
+                }
+            }
             SlashCommand::Side | SlashCommand::Btw if !trimmed.is_empty() => {
                 let Some(parent_thread_id) = self.thread_id else {
                     let command = cmd.command();
@@ -1137,6 +1162,7 @@ impl ChatWidget {
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
+            | SlashCommand::CancelRalph
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate
             | SlashCommand::Mcp
@@ -1166,6 +1192,7 @@ impl ChatWidget {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Review
+            | SlashCommand::RalphLoop
             | SlashCommand::Model
             | SlashCommand::Personality
             | SlashCommand::Plan

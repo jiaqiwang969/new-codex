@@ -133,6 +133,8 @@ pub(crate) struct ThreadInputState {
     pub(super) queued_user_message_history_records: VecDeque<UserMessageHistoryRecord>,
     pub(super) user_turn_pending_start: bool,
     pub(super) submit_pending_steers_after_interrupt: bool,
+    pub(super) ralph_loop_state: Option<crate::ralph_loop::RalphLoopState>,
+    pub(super) ralph_loop_turn_had_error: bool,
     pub(super) current_collaboration_mode: CollaborationMode,
     pub(super) active_collaboration_mask: Option<CollaborationModeMask>,
     pub(super) task_running: bool,

@@ -255,6 +255,8 @@ impl ChatWidget {
             current_goal_status_indicator: None,
             current_goal_status: None,
             external_editor_state: ExternalEditorState::Closed,
+            ralph_loop_state: None,
+            ralph_loop_turn_had_error: false,
             last_rendered_user_message_display: None,
             last_non_retry_error: None,
         };

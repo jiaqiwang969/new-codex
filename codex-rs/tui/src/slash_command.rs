@@ -29,6 +29,7 @@ pub enum SlashCommand {
     Import,
     Hooks,
     Review,
+    RalphLoop,
     Rename,
     New,
     Archive,
@@ -42,6 +43,7 @@ pub enum SlashCommand {
     Plan,
     Goal,
     Agents,
+    CancelRalph,
     Side,
     Btw,
     Copy,
@@ -93,13 +95,17 @@ impl SlashCommand {
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::RalphLoop => {
+                "start a Ralph loop that repeats the same prompt until done (/ralph-loop --help)"
+            }
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Archive => "archive this session and exit",
             SlashCommand::Delete => "permanently delete this session and exit",
             SlashCommand::Clear => "clear the terminal and start a new chat",
             SlashCommand::Fork => "fork the current chat",
-            SlashCommand::App => "continue this session in the Desktop app",
+            SlashCommand::App => "continue this session in Codex Desktop",
+            SlashCommand::CancelRalph => "cancel the active Ralph loop",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Copy => "copy the last response, code block, or quote",
             SlashCommand::Export => "export the conversation as markdown",
@@ -164,6 +170,7 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::RalphLoop
                 | SlashCommand::Rename
                 | SlashCommand::New
                 | SlashCommand::Clear
@@ -222,6 +229,7 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Import
             | SlashCommand::Review
+            | SlashCommand::RalphLoop
             | SlashCommand::Plan
             | SlashCommand::Cd
             | SlashCommand::Clear
@@ -247,6 +255,7 @@ impl SlashCommand {
             | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::CancelRalph
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
