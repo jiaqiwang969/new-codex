@@ -887,6 +887,157 @@ async fn ralph_loop_retries_after_error_without_delay() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn ralph_loop_retries_after_server_overloaded_error() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let capacity_message = "Selected model is at capacity. Please try a different model.";
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Retry capacity\" -n 2 -d 1");
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry capacity");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    handle_error(
+        &mut chat,
+        capacity_message,
+        Some(CodexErrorInfo::ServerOverloaded),
+    );
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(2)
+    );
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(
+        rendered,
+        @r###"
+⚠ Selected model is at capacity. Please try a different model.
+
+
+• Ralph Loop: starting iteration 2/2
+
+
+• Ralph Loop: error detected, waiting 1s before retry...
+"###
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: chat.thread_id.expect("thread id").to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::Failed,
+                error: Some(AppServerTurnError {
+                    message: capacity_message.to_string(),
+                    codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+                    additional_details: None,
+                }),
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(2),
+        "duplicate failed-turn notification must not schedule another iteration"
+    );
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+
+    let delayed_continue =
+        std::iter::from_fn(|| rx.try_recv().ok()).find_map(|event| match event {
+            AppEvent::RalphLoopDelayedContinue {
+                target,
+                instance_id,
+                generation,
+            } => Some((target, instance_id, generation)),
+            _ => None,
+        });
+    let (target, instance_id, generation) =
+        delayed_continue.expect("expected delayed Ralph Loop continuation");
+    chat.handle_ralph_loop_delayed_continue(target, &instance_id, generation);
+
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry capacity");
+}
+
+#[tokio::test]
+async fn replayed_server_overloaded_error_does_not_advance_ralph_loop() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Keep replay stable\" -n 2 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Keep replay stable");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                message: "Selected model is at capacity. Please try a different model.".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+                additional_details: None,
+            },
+            will_retry: false,
+            thread_id: chat.thread_id.expect("thread id").to_string(),
+            turn_id: "turn-1".to_string(),
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn ralph_loop_retries_after_failed_turn_without_error_details() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Retry failed turn\" -n 2 -d 0");
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry failed turn");
+    handle_turn_started(&mut chat, "turn-1");
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: chat.thread_id.expect("thread id").to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::Failed,
+                error: None,
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(next_submitted_text(&mut op_rx), "Retry failed turn");
+    assert_eq!(
+        chat.ralph_loop_state.as_ref().map(|state| state.iteration),
+        Some(2)
+    );
+}
+
 #[tokio::test]
 async fn ralph_loop_retries_after_cyber_policy_error_without_delay() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

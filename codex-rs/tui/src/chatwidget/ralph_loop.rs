@@ -174,6 +174,15 @@ impl ChatWidget {
     }
 
     pub(super) fn on_failed_turn_for_ralph_loop(&mut self) {
+        if !self
+            .ralph_loop_state
+            .as_ref()
+            .is_some_and(|state| state.enabled)
+        {
+            return;
+        }
+
+        self.ralph_loop_turn_had_error = true;
         if self.maybe_finish_ralph_loop(/*last_agent_message*/ None) {
             return;
         }

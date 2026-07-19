@@ -350,7 +350,11 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
-    pub(super) fn on_server_overloaded_error(&mut self, message: String) {
+    pub(super) fn on_server_overloaded_error(
+        &mut self,
+        message: String,
+        replay_kind: Option<ReplayKind>,
+    ) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
 
@@ -362,12 +366,14 @@ impl ChatWidget {
 
         self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
+        if replay_kind.is_none() {
+            self.on_failed_turn_for_ralph_loop();
+        }
         self.maybe_send_next_queued_input();
     }
 
     fn on_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.ralph_loop_turn_had_error = true;
         self.flush_answer_stream_with_separator();
         self.finalize_turn();
         self.add_to_history(history_cell::new_error_event(message));
@@ -392,7 +398,6 @@ impl ChatWidget {
 
     pub(super) fn on_cyber_policy_error(&mut self) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.ralph_loop_turn_had_error = true;
         self.finalize_turn();
         let plan_type = if self.has_chatgpt_account {
             self.plan_type
@@ -456,6 +461,7 @@ impl ChatWidget {
         &mut self,
         message: String,
         codex_error_info: Option<AppServerCodexErrorInfo>,
+        replay_kind: Option<ReplayKind>,
     ) {
         if codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) {
             self.on_misalignment_policy_violation();
@@ -486,7 +492,9 @@ impl ChatWidget {
             .and_then(app_server_rate_limit_error_kind)
         {
             match info {
-                RateLimitErrorKind::ServerOverloaded => self.on_server_overloaded_error(message),
+                RateLimitErrorKind::ServerOverloaded => {
+                    self.on_server_overloaded_error(message, replay_kind)
+                }
                 RateLimitErrorKind::UsageLimit | RateLimitErrorKind::Generic => {
                     self.on_rate_limit_error(info, message)
                 }
