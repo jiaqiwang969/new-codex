@@ -1255,12 +1255,14 @@ fn config_toml_details(config: &Config, details: &mut Vec<String>) {
 
 fn auth_check(config: &Config) -> DoctorCheck {
     let mut details = Vec::new();
-    let auth_path = config.codex_home.join("auth.json");
     details.push(format!(
         "auth storage mode: {:?}",
         config.cli_auth_credentials_store_mode
     ));
-    details.push(format!("auth file: {}", auth_path.display()));
+    match codex_login::active_auth_file(&config.codex_home) {
+        Ok(auth_path) => details.push(format!("auth file: {}", auth_path.display())),
+        Err(err) => details.push(format!("auth file: invalid profile ({err})")),
+    }
 
     let env_auth_vars = [
         OPENAI_API_KEY_ENV_VAR,
@@ -1351,6 +1353,7 @@ fn auth_check(config: &Config) -> DoctorCheck {
             CheckStatus::Fail,
             "stored credentials could not be read",
         )
+        .details(details)
         .detail(err.to_string())
         .remediation("Fix auth storage access or run codex login again."),
     }

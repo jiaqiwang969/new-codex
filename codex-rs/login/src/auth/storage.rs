@@ -36,6 +36,115 @@ use codex_secrets::SecretsBackendKind;
 use codex_secrets::SecretsManager;
 use once_cell::sync::Lazy;
 
+const CODEX_AUTH_PROFILE_ENV: &str = "CODEX_AUTH_PROFILE";
+const MAX_AUTH_PROFILE_LEN: usize = 64;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AuthProfile {
+    Default,
+    Named(String),
+    Invalid,
+}
+
+impl AuthProfile {
+    fn from_env() -> Self {
+        match std::env::var_os(CODEX_AUTH_PROFILE_ENV) {
+            None => Self::Default,
+            Some(value) => match value.into_string() {
+                Ok(value) => Self::parse(&value),
+                Err(_) => Self::Invalid,
+            },
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        let bytes = value.as_bytes();
+        let Some(first) = bytes.first() else {
+            return Self::Invalid;
+        };
+        if bytes.len() > MAX_AUTH_PROFILE_LEN || !first.is_ascii_alphanumeric() {
+            return Self::Invalid;
+        }
+        if !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Self::Invalid;
+        }
+        Self::Named(value.to_string())
+    }
+
+    fn validate(&self) -> std::io::Result<()> {
+        match self {
+            Self::Default | Self::Named(_) => Ok(()),
+            Self::Invalid => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid CODEX_AUTH_PROFILE; expected [A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+            )),
+        }
+    }
+}
+
+// Authentication profile selection is process-scoped. Capture it once so every auth manager and
+// every refresh/save/delete path in this process uses the same credential slot even if a caller
+// later mutates the process environment.
+static PROCESS_AUTH_PROFILE: Lazy<AuthProfile> = Lazy::new(AuthProfile::from_env);
+
+#[derive(Clone, Debug)]
+struct AuthStorageIdentity {
+    codex_home: PathBuf,
+    profile: AuthProfile,
+}
+
+impl AuthStorageIdentity {
+    fn capture(codex_home: PathBuf) -> Self {
+        Self {
+            codex_home,
+            // Unit tests construct explicit identities when they exercise profile isolation. Keep
+            // legacy helpers deterministic even when the developer has exported this variable in
+            // the shell running the test suite.
+            profile: if cfg!(test) {
+                AuthProfile::Default
+            } else {
+                PROCESS_AUTH_PROFILE.clone()
+            },
+        }
+    }
+
+    fn auth_file(&self) -> std::io::Result<PathBuf> {
+        self.profile.validate()?;
+        Ok(match &self.profile {
+            AuthProfile::Default => get_auth_file(&self.codex_home),
+            AuthProfile::Named(profile) => self.codex_home.join(format!("auth-{profile}.json")),
+            AuthProfile::Invalid => unreachable!("profile validation returned success"),
+        })
+    }
+
+    fn profile_storage_home(&self) -> std::io::Result<PathBuf> {
+        self.profile.validate()?;
+        Ok(self.profile_storage_home_unchecked())
+    }
+
+    fn profile_storage_home_unchecked(&self) -> PathBuf {
+        match &self.profile {
+            AuthProfile::Default => self.codex_home.clone(),
+            AuthProfile::Named(profile) => self
+                .codex_home
+                .canonicalize()
+                .unwrap_or_else(|_| self.codex_home.clone())
+                .join("auth-profiles")
+                .join(profile),
+            // No operation may use this path: every backend validates before I/O. It exists only
+            // because SecretsManager construction itself is infallible and requires a path.
+            AuthProfile::Invalid => self.codex_home.join(".invalid-auth-profile"),
+        }
+    }
+
+    fn keyring_store_key(&self) -> std::io::Result<String> {
+        compute_store_key(&self.profile_storage_home()?)
+    }
+}
+
 /// Expected structure for $CODEX_HOME/auth.json.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AuthDotJson {
@@ -155,9 +264,13 @@ pub(super) fn get_auth_file(codex_home: &Path) -> PathBuf {
     codex_home.join("auth.json")
 }
 
-pub(super) fn delete_file_if_exists(codex_home: &Path) -> std::io::Result<bool> {
-    let auth_file = get_auth_file(codex_home);
-    match std::fs::remove_file(&auth_file) {
+/// Returns the credential file selected for this process by `CODEX_AUTH_PROFILE`.
+pub fn active_auth_file(codex_home: &Path) -> std::io::Result<PathBuf> {
+    AuthStorageIdentity::capture(codex_home.to_path_buf()).auth_file()
+}
+
+fn delete_file_if_exists(auth_file: &Path) -> std::io::Result<bool> {
+    match std::fs::remove_file(auth_file) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err),
@@ -172,12 +285,17 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
 
 #[derive(Clone, Debug)]
 pub(super) struct FileAuthStorage {
-    codex_home: PathBuf,
+    identity: AuthStorageIdentity,
 }
 
 impl FileAuthStorage {
+    #[cfg(test)]
     pub(super) fn new(codex_home: PathBuf) -> Self {
-        Self { codex_home }
+        Self::new_with_identity(AuthStorageIdentity::capture(codex_home))
+    }
+
+    fn new_with_identity(identity: AuthStorageIdentity) -> Self {
+        Self { identity }
     }
 
     /// Attempt to read and parse the `auth.json` file in the given `CODEX_HOME` directory.
@@ -194,7 +312,7 @@ impl FileAuthStorage {
 
 impl AuthStorageBackend for FileAuthStorage {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        let auth_file = get_auth_file(&self.codex_home);
+        let auth_file = self.identity.auth_file()?;
         let auth_dot_json = match self.try_read_auth_json(&auth_file) {
             Ok(auth) => auth,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -204,7 +322,7 @@ impl AuthStorageBackend for FileAuthStorage {
     }
 
     fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
-        let auth_file = get_auth_file(&self.codex_home);
+        let auth_file = self.identity.auth_file()?;
 
         if let Some(parent) = auth_file.parent() {
             std::fs::create_dir_all(parent)?;
@@ -223,7 +341,7 @@ impl AuthStorageBackend for FileAuthStorage {
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        delete_file_if_exists(&self.codex_home)
+        delete_file_if_exists(&self.identity.auth_file()?)
     }
 }
 
@@ -250,14 +368,22 @@ fn compute_store_key(codex_home: &Path) -> std::io::Result<String> {
 
 #[derive(Clone, Debug)]
 struct DirectKeyringAuthStorage {
-    codex_home: PathBuf,
+    identity: AuthStorageIdentity,
     keyring_store: Arc<dyn KeyringStore>,
 }
 
 impl DirectKeyringAuthStorage {
+    #[cfg(test)]
     fn new(codex_home: PathBuf, keyring_store: Arc<dyn KeyringStore>) -> Self {
+        Self::new_with_identity(AuthStorageIdentity::capture(codex_home), keyring_store)
+    }
+
+    fn new_with_identity(
+        identity: AuthStorageIdentity,
+        keyring_store: Arc<dyn KeyringStore>,
+    ) -> Self {
         Self {
-            codex_home,
+            identity,
             keyring_store,
         }
     }
@@ -294,37 +420,37 @@ impl DirectKeyringAuthStorage {
 
 impl AuthStorageBackend for DirectKeyringAuthStorage {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        let key = compute_store_key(&self.codex_home)?;
+        let key = self.identity.keyring_store_key()?;
         self.load_from_keyring(&key)
     }
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
-        let key = compute_store_key(&self.codex_home)?;
+        let key = self.identity.keyring_store_key()?;
         // Simpler error mapping per style: prefer method reference over closure
         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
         self.save_to_keyring(&key, &serialized)?;
-        if let Err(err) = delete_file_if_exists(&self.codex_home) {
+        if let Err(err) = delete_file_if_exists(&self.identity.auth_file()?) {
             warn!("failed to remove CLI auth fallback file: {err}");
         }
         Ok(())
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        let key = compute_store_key(&self.codex_home)?;
+        let key = self.identity.keyring_store_key()?;
         let keyring_removed = self
             .keyring_store
             .delete(KEYRING_SERVICE, &key)
             .map_err(|err| {
                 std::io::Error::other(format!("failed to delete auth from keyring: {err}"))
             })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        let file_removed = delete_file_if_exists(&self.identity.auth_file()?)?;
         Ok(keyring_removed || file_removed)
     }
 }
 
 #[derive(Clone)]
 struct SecretsKeyringAuthStorage {
-    codex_home: PathBuf,
+    identity: AuthStorageIdentity,
     direct_storage: DirectKeyringAuthStorage,
     secrets_manager: SecretsManager,
 }
@@ -332,23 +458,33 @@ struct SecretsKeyringAuthStorage {
 impl Debug for SecretsKeyringAuthStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretsKeyringAuthStorage")
-            .field("codex_home", &self.codex_home)
+            .field("identity", &self.identity)
             .finish_non_exhaustive()
     }
 }
 
 impl SecretsKeyringAuthStorage {
+    #[cfg(test)]
     fn new(codex_home: PathBuf, keyring_store: Arc<dyn KeyringStore>) -> Self {
-        let direct_storage =
-            DirectKeyringAuthStorage::new(codex_home.clone(), Arc::clone(&keyring_store));
+        Self::new_with_identity(AuthStorageIdentity::capture(codex_home), keyring_store)
+    }
+
+    fn new_with_identity(
+        identity: AuthStorageIdentity,
+        keyring_store: Arc<dyn KeyringStore>,
+    ) -> Self {
+        let direct_storage = DirectKeyringAuthStorage::new_with_identity(
+            identity.clone(),
+            Arc::clone(&keyring_store),
+        );
         let secrets_manager = SecretsManager::new_with_keyring_store_and_namespace(
-            codex_home.clone(),
+            identity.profile_storage_home_unchecked(),
             SecretsBackendKind::Local,
             keyring_store,
             LocalSecretsNamespace::CodexAuth,
         );
         Self {
-            codex_home,
+            identity,
             direct_storage,
             secrets_manager,
         }
@@ -357,6 +493,7 @@ impl SecretsKeyringAuthStorage {
 
 impl AuthStorageBackend for SecretsKeyringAuthStorage {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+        self.identity.profile.validate()?;
         match self
             .secrets_manager
             .get(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
@@ -375,6 +512,7 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
     }
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.identity.profile.validate()?;
         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
         self.secrets_manager
             .set(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME, &serialized)
@@ -384,13 +522,14 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                 warn!("{message}");
                 std::io::Error::other(message)
             })?;
-        if let Err(err) = delete_file_if_exists(&self.codex_home) {
+        if let Err(err) = delete_file_if_exists(&self.identity.auth_file()?) {
             warn!("failed to remove CLI auth fallback file: {err}");
         }
         Ok(())
     }
 
     fn delete(&self) -> std::io::Result<bool> {
+        self.identity.profile.validate()?;
         let keyring_removed = self
             .secrets_manager
             .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
@@ -399,7 +538,7 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                     "failed to delete auth from encrypted auth storage: {err}"
                 ))
             })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        let file_removed = delete_file_if_exists(&self.identity.auth_file()?)?;
         let direct_removed = self.direct_storage.delete()?;
         Ok(keyring_removed || file_removed || direct_removed)
     }
@@ -412,18 +551,31 @@ struct AutoAuthStorage {
 }
 
 impl AutoAuthStorage {
+    #[cfg(test)]
     fn new(
         codex_home: PathBuf,
         keyring_store: Arc<dyn KeyringStore>,
         keyring_backend_kind: AuthKeyringBackendKind,
     ) -> Self {
+        Self::new_with_identity(
+            AuthStorageIdentity::capture(codex_home),
+            keyring_store,
+            keyring_backend_kind,
+        )
+    }
+
+    fn new_with_identity(
+        identity: AuthStorageIdentity,
+        keyring_store: Arc<dyn KeyringStore>,
+        keyring_backend_kind: AuthKeyringBackendKind,
+    ) -> Self {
         Self {
-            keyring_storage: create_keyring_auth_storage(
-                codex_home.clone(),
+            keyring_storage: create_keyring_auth_storage_with_identity(
+                identity.clone(),
                 keyring_store,
                 keyring_backend_kind,
             ),
-            file_storage: Arc::new(FileAuthStorage::new(codex_home)),
+            file_storage: Arc::new(FileAuthStorage::new_with_identity(identity)),
         }
     }
 }
@@ -462,19 +614,19 @@ static EPHEMERAL_AUTH_STORE: Lazy<Mutex<HashMap<String, AuthDotJson>>> =
 
 #[derive(Clone, Debug)]
 struct EphemeralAuthStorage {
-    codex_home: PathBuf,
+    identity: AuthStorageIdentity,
 }
 
 impl EphemeralAuthStorage {
-    fn new(codex_home: PathBuf) -> Self {
-        Self { codex_home }
+    fn new_with_identity(identity: AuthStorageIdentity) -> Self {
+        Self { identity }
     }
 
     fn with_store<F, T>(&self, action: F) -> std::io::Result<T>
     where
         F: FnOnce(&mut HashMap<String, AuthDotJson>, String) -> std::io::Result<T>,
     {
-        let key = compute_store_key(&self.codex_home)?;
+        let key = self.identity.keyring_store_key()?;
         let mut store = EPHEMERAL_AUTH_STORE
             .lock()
             .map_err(|_| std::io::Error::other("failed to lock ephemeral auth storage"))?;
@@ -514,32 +666,50 @@ fn create_auth_storage_with_store(
     keyring_store: Arc<dyn KeyringStore>,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Arc<dyn AuthStorageBackend> {
+    create_auth_storage_with_store_and_identity(
+        AuthStorageIdentity::capture(codex_home),
+        mode,
+        keyring_store,
+        keyring_backend_kind,
+    )
+}
+
+fn create_auth_storage_with_store_and_identity(
+    identity: AuthStorageIdentity,
+    mode: AuthCredentialsStoreMode,
+    keyring_store: Arc<dyn KeyringStore>,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Arc<dyn AuthStorageBackend> {
     match mode {
-        AuthCredentialsStoreMode::File => Arc::new(FileAuthStorage::new(codex_home)),
+        AuthCredentialsStoreMode::File => Arc::new(FileAuthStorage::new_with_identity(identity)),
         AuthCredentialsStoreMode::Keyring => {
-            create_keyring_auth_storage(codex_home, keyring_store, keyring_backend_kind)
+            create_keyring_auth_storage_with_identity(identity, keyring_store, keyring_backend_kind)
         }
-        AuthCredentialsStoreMode::Auto => Arc::new(AutoAuthStorage::new(
-            codex_home,
+        AuthCredentialsStoreMode::Auto => Arc::new(AutoAuthStorage::new_with_identity(
+            identity,
             keyring_store,
             keyring_backend_kind,
         )),
-        AuthCredentialsStoreMode::Ephemeral => Arc::new(EphemeralAuthStorage::new(codex_home)),
+        AuthCredentialsStoreMode::Ephemeral => {
+            Arc::new(EphemeralAuthStorage::new_with_identity(identity))
+        }
     }
 }
 
-fn create_keyring_auth_storage(
-    codex_home: PathBuf,
+fn create_keyring_auth_storage_with_identity(
+    identity: AuthStorageIdentity,
     keyring_store: Arc<dyn KeyringStore>,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Arc<dyn AuthStorageBackend> {
     match keyring_backend_kind {
-        AuthKeyringBackendKind::Direct => {
-            Arc::new(DirectKeyringAuthStorage::new(codex_home, keyring_store))
-        }
-        AuthKeyringBackendKind::Secrets => {
-            Arc::new(SecretsKeyringAuthStorage::new(codex_home, keyring_store))
-        }
+        AuthKeyringBackendKind::Direct => Arc::new(DirectKeyringAuthStorage::new_with_identity(
+            identity,
+            keyring_store,
+        )),
+        AuthKeyringBackendKind::Secrets => Arc::new(SecretsKeyringAuthStorage::new_with_identity(
+            identity,
+            keyring_store,
+        )),
     }
 }
 

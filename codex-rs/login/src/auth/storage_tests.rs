@@ -815,3 +815,275 @@ fn auto_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+fn identity_with_profile(codex_home: &Path, profile: AuthProfile) -> AuthStorageIdentity {
+    AuthStorageIdentity {
+        codex_home: codex_home.to_path_buf(),
+        profile,
+    }
+}
+
+#[test]
+fn auth_profile_validation_matches_documented_grammar() {
+    for valid in [
+        "a",
+        "A0",
+        "jiaqiwang969",
+        "OmarGuthorn8",
+        "profile.with-dash_and_underscore",
+    ] {
+        assert_eq!(AuthProfile::parse(valid), AuthProfile::Named(valid.into()));
+    }
+
+    let max_len = format!("a{}", "0".repeat(MAX_AUTH_PROFILE_LEN - 1));
+    assert_eq!(
+        AuthProfile::parse(&max_len),
+        AuthProfile::Named(max_len.clone())
+    );
+
+    for invalid in [
+        "",
+        "-profile",
+        ".profile",
+        "_profile",
+        "profile/name",
+        "profile\\name",
+        "profile name",
+        "profile中文",
+    ] {
+        assert_eq!(AuthProfile::parse(invalid), AuthProfile::Invalid);
+    }
+    assert_eq!(
+        AuthProfile::parse(&format!("a{}", "0".repeat(MAX_AUTH_PROFILE_LEN))),
+        AuthProfile::Invalid
+    );
+}
+
+#[test]
+fn file_auth_profiles_are_isolated_and_default_path_is_compatible() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let default = FileAuthStorage::new_with_identity(identity_with_profile(
+        codex_home.path(),
+        AuthProfile::Default,
+    ));
+    let profile_a = FileAuthStorage::new_with_identity(identity_with_profile(
+        codex_home.path(),
+        AuthProfile::parse("jiaqiwang969"),
+    ));
+    let profile_b = FileAuthStorage::new_with_identity(identity_with_profile(
+        codex_home.path(),
+        AuthProfile::parse("OmarGuthorn8"),
+    ));
+    let default_auth = auth_with_prefix("default-profile");
+    let auth_a = auth_with_prefix("profile-a");
+    let auth_b = auth_with_prefix("profile-b");
+
+    default.save(&default_auth)?;
+    profile_a.save(&auth_a)?;
+    profile_b.save(&auth_b)?;
+
+    assert_eq!(default.load()?, Some(default_auth));
+    assert_eq!(profile_a.load()?, Some(auth_a));
+    assert_eq!(profile_b.load()?, Some(auth_b.clone()));
+    assert!(codex_home.path().join("auth.json").exists());
+    assert!(codex_home.path().join("auth-jiaqiwang969.json").exists());
+    assert!(codex_home.path().join("auth-OmarGuthorn8.json").exists());
+
+    assert!(profile_a.delete()?);
+    assert_eq!(profile_a.load()?, None);
+    assert_eq!(profile_b.load()?, Some(auth_b));
+    assert!(codex_home.path().join("auth.json").exists());
+    Ok(())
+}
+
+#[test]
+fn direct_keyring_auth_profiles_are_isolated() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let identity_a = identity_with_profile(codex_home.path(), AuthProfile::parse("profile-a"));
+    let identity_b = identity_with_profile(codex_home.path(), AuthProfile::parse("profile-b"));
+    let storage_a = DirectKeyringAuthStorage::new_with_identity(
+        identity_a.clone(),
+        Arc::new(mock_keyring.clone()),
+    );
+    let storage_b = DirectKeyringAuthStorage::new_with_identity(
+        identity_b.clone(),
+        Arc::new(mock_keyring.clone()),
+    );
+    let auth_a = auth_with_prefix("direct-a");
+    let auth_b = auth_with_prefix("direct-b");
+
+    storage_a.save(&auth_a)?;
+    storage_b.save(&auth_b)?;
+
+    let key_a = identity_a.keyring_store_key()?;
+    let key_b = identity_b.keyring_store_key()?;
+    assert_ne!(key_a, key_b);
+    assert!(mock_keyring.saved_value(&key_a).is_some());
+    assert!(mock_keyring.saved_value(&key_b).is_some());
+    assert_eq!(storage_a.load()?, Some(auth_a));
+    assert_eq!(storage_b.load()?, Some(auth_b.clone()));
+
+    assert!(storage_a.delete()?);
+    assert_eq!(storage_a.load()?, None);
+    assert_eq!(storage_b.load()?, Some(auth_b));
+    Ok(())
+}
+
+#[test]
+fn secrets_keyring_auth_profiles_are_isolated() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let identity_a = identity_with_profile(codex_home.path(), AuthProfile::parse("profile-a"));
+    let identity_b = identity_with_profile(codex_home.path(), AuthProfile::parse("profile-b"));
+    let storage_a = SecretsKeyringAuthStorage::new_with_identity(
+        identity_a.clone(),
+        Arc::new(mock_keyring.clone()),
+    );
+    let storage_b = SecretsKeyringAuthStorage::new_with_identity(
+        identity_b.clone(),
+        Arc::new(mock_keyring.clone()),
+    );
+    let auth_a = auth_with_prefix("secrets-a");
+    let auth_b = auth_with_prefix("secrets-b");
+
+    storage_a.save(&auth_a)?;
+    storage_b.save(&auth_b)?;
+
+    let home_a = identity_a.profile_storage_home()?;
+    let home_b = identity_b.profile_storage_home()?;
+    assert_ne!(home_a, home_b);
+    assert!(encrypted_auth_file(&home_a).exists());
+    assert!(encrypted_auth_file(&home_b).exists());
+    assert!(
+        mock_keyring
+            .saved_value(&compute_keyring_account(&home_a))
+            .is_some()
+    );
+    assert!(
+        mock_keyring
+            .saved_value(&compute_keyring_account(&home_b))
+            .is_some()
+    );
+    assert_eq!(storage_a.load()?, Some(auth_a));
+    assert_eq!(storage_b.load()?, Some(auth_b.clone()));
+
+    assert!(storage_a.delete()?);
+    assert_eq!(storage_a.load()?, None);
+    assert_eq!(storage_b.load()?, Some(auth_b));
+    Ok(())
+}
+
+#[test]
+fn auto_auth_profiles_are_isolated() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let storage_a = AutoAuthStorage::new_with_identity(
+        identity_with_profile(codex_home.path(), AuthProfile::parse("profile-a")),
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let storage_b = AutoAuthStorage::new_with_identity(
+        identity_with_profile(codex_home.path(), AuthProfile::parse("profile-b")),
+        Arc::new(mock_keyring),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let auth_a = auth_with_prefix("auto-a");
+    let auth_b = auth_with_prefix("auto-b");
+
+    storage_a.save(&auth_a)?;
+    storage_b.save(&auth_b)?;
+
+    assert_eq!(storage_a.load()?, Some(auth_a));
+    assert_eq!(storage_b.load()?, Some(auth_b.clone()));
+    assert!(storage_a.delete()?);
+    assert_eq!(storage_b.load()?, Some(auth_b));
+    Ok(())
+}
+
+#[test]
+fn ephemeral_auth_profiles_are_isolated() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage_a = EphemeralAuthStorage::new_with_identity(identity_with_profile(
+        codex_home.path(),
+        AuthProfile::parse("profile-a"),
+    ));
+    let storage_b = EphemeralAuthStorage::new_with_identity(identity_with_profile(
+        codex_home.path(),
+        AuthProfile::parse("profile-b"),
+    ));
+    let auth_a = auth_with_prefix("ephemeral-a");
+    let auth_b = auth_with_prefix("ephemeral-b");
+
+    storage_a.save(&auth_a)?;
+    storage_b.save(&auth_b)?;
+
+    assert_eq!(storage_a.load()?, Some(auth_a));
+    assert_eq!(storage_b.load()?, Some(auth_b.clone()));
+    assert!(storage_a.delete()?);
+    assert_eq!(storage_a.load()?, None);
+    assert_eq!(storage_b.load()?, Some(auth_b));
+    Ok(())
+}
+
+#[test]
+fn invalid_auth_profile_fails_closed_for_every_storage_backend() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let auth = auth_with_prefix("must-not-persist");
+    let cases = [
+        (
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::Direct,
+        ),
+        (
+            AuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        ),
+        (
+            AuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Secrets,
+        ),
+        (
+            AuthCredentialsStoreMode::Auto,
+            AuthKeyringBackendKind::Secrets,
+        ),
+        (
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::Direct,
+        ),
+    ];
+
+    for (mode, keyring_backend_kind) in cases {
+        let storage = create_auth_storage_with_store_and_identity(
+            identity_with_profile(codex_home.path(), AuthProfile::Invalid),
+            mode,
+            Arc::new(MockKeyringStore::default()),
+            keyring_backend_kind,
+        );
+        assert_eq!(
+            storage
+                .load()
+                .expect_err("invalid profile must not load")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            storage
+                .save(&auth)
+                .expect_err("invalid profile must not save")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            storage
+                .delete()
+                .expect_err("invalid profile must not delete")
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+
+    assert!(!get_auth_file(codex_home.path()).exists());
+    assert!(!codex_home.path().join(".invalid-auth-profile").exists());
+    Ok(())
+}
