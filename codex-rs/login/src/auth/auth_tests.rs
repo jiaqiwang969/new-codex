@@ -2643,6 +2643,7 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
 
     let err = super::enforce_login_restrictions_with_agent_identity_authapi_base_url(
         &config,
+        /*wellau_profile*/ None,
         Some(&authapi_base_url),
     )
     .await

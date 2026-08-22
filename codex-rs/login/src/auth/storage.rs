@@ -83,12 +83,32 @@ impl AuthProfile {
             )),
         }
     }
+
+    fn name(&self) -> std::io::Result<Option<&str>> {
+        self.validate()?;
+        Ok(match self {
+            Self::Default => None,
+            Self::Named(profile) => Some(profile),
+            Self::Invalid => unreachable!("profile validation returned success"),
+        })
+    }
 }
 
 // Authentication profile selection is process-scoped. Capture it once so every auth manager and
 // every refresh/save/delete path in this process uses the same credential slot even if a caller
 // later mutates the process environment.
 static PROCESS_AUTH_PROFILE: Lazy<AuthProfile> = Lazy::new(AuthProfile::from_env);
+
+fn captured_auth_profile() -> AuthProfile {
+    // Unit tests construct explicit identities when they exercise profile isolation. Keep legacy
+    // helpers deterministic even when the developer has exported this variable in the shell
+    // running the test suite.
+    if cfg!(test) {
+        AuthProfile::Default
+    } else {
+        PROCESS_AUTH_PROFILE.clone()
+    }
+}
 
 #[derive(Clone, Debug)]
 struct AuthStorageIdentity {
@@ -100,14 +120,7 @@ impl AuthStorageIdentity {
     fn capture(codex_home: PathBuf) -> Self {
         Self {
             codex_home,
-            // Unit tests construct explicit identities when they exercise profile isolation. Keep
-            // legacy helpers deterministic even when the developer has exported this variable in
-            // the shell running the test suite.
-            profile: if cfg!(test) {
-                AuthProfile::Default
-            } else {
-                PROCESS_AUTH_PROFILE.clone()
-            },
+            profile: captured_auth_profile(),
         }
     }
 
@@ -269,6 +282,55 @@ pub fn active_auth_file(codex_home: &Path) -> std::io::Result<PathBuf> {
     AuthStorageIdentity::capture(codex_home.to_path_buf()).auth_file()
 }
 
+/// Returns the named authentication profile selected for this process, if any.
+pub fn active_auth_profile_name() -> std::io::Result<Option<String>> {
+    captured_auth_profile()
+        .name()
+        .map(|profile| profile.map(str::to_string))
+}
+
+/// Returns the WellAU API-key proxy profile when `profile` uses the reserved
+/// `wellau-<account>` namespace.
+///
+/// The namespace is deliberately lowercase. Rejecting case-only variants avoids
+/// credential-slot collisions on case-insensitive filesystems. The common
+/// `wellua-` transposition is also rejected so a proxy key cannot silently fall
+/// back to the default OpenAI route.
+pub fn wellau_auth_profile_name(profile: Option<&str>) -> std::io::Result<Option<&str>> {
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    let lowercase = profile.to_ascii_lowercase();
+    if lowercase.starts_with("wellua-") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid WellAU auth profile prefix `wellua-`; use lowercase `wellau-`",
+        ));
+    }
+    if !lowercase.starts_with("wellau-") {
+        return Ok(None);
+    }
+    if !profile.starts_with("wellau-") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "WellAU auth profiles must use the lowercase `wellau-` prefix",
+        ));
+    }
+    if profile.len() == "wellau-".len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "WellAU auth profiles require a non-empty account suffix, for example `wellau-example`",
+        ));
+    }
+    Ok(Some(profile))
+}
+
+/// Returns the active process-scoped WellAU API-key proxy profile, if any.
+pub fn active_wellau_auth_profile_name() -> std::io::Result<Option<String>> {
+    let profile = active_auth_profile_name()?;
+    wellau_auth_profile_name(profile.as_deref()).map(|profile| profile.map(str::to_string))
+}
+
 fn delete_file_if_exists(auth_file: &Path) -> std::io::Result<bool> {
     match std::fs::remove_file(auth_file) {
         Ok(()) => Ok(true),
@@ -281,6 +343,63 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>>;
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()>;
     fn delete(&self) -> std::io::Result<bool>;
+}
+
+#[derive(Clone, Debug)]
+struct ProfilePolicyAuthStorage {
+    identity: AuthStorageIdentity,
+    storage: Arc<dyn AuthStorageBackend>,
+}
+
+impl ProfilePolicyAuthStorage {
+    fn validate_auth(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.identity.profile.validate()?;
+        let profile = self.identity.profile.name()?;
+        let Some(wellau_profile) = wellau_auth_profile_name(profile)? else {
+            return Ok(());
+        };
+
+        let resolved_mode = auth.auth_mode.unwrap_or_else(|| {
+            if auth.personal_access_token.is_some() {
+                AuthMode::PersonalAccessToken
+            } else if auth.bedrock_api_key.is_some() {
+                AuthMode::BedrockApiKey
+            } else if auth.openai_api_key.is_some() {
+                AuthMode::ApiKey
+            } else {
+                AuthMode::Chatgpt
+            }
+        });
+        if resolved_mode == AuthMode::ApiKey {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CODEX_AUTH_PROFILE={wellau_profile} only accepts dedicated API-key credentials; found {resolved_mode:?}"
+                ),
+            ))
+        }
+    }
+}
+
+impl AuthStorageBackend for ProfilePolicyAuthStorage {
+    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+        let auth = self.storage.load()?;
+        if let Some(auth) = auth.as_ref() {
+            self.validate_auth(auth)?;
+        }
+        Ok(auth)
+    }
+
+    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.validate_auth(auth)?;
+        self.storage.save(auth)
+    }
+
+    fn delete(&self) -> std::io::Result<bool> {
+        self.storage.delete()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -680,20 +799,25 @@ fn create_auth_storage_with_store_and_identity(
     keyring_store: Arc<dyn KeyringStore>,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Arc<dyn AuthStorageBackend> {
-    match mode {
-        AuthCredentialsStoreMode::File => Arc::new(FileAuthStorage::new_with_identity(identity)),
-        AuthCredentialsStoreMode::Keyring => {
-            create_keyring_auth_storage_with_identity(identity, keyring_store, keyring_backend_kind)
+    let storage: Arc<dyn AuthStorageBackend> = match mode {
+        AuthCredentialsStoreMode::File => {
+            Arc::new(FileAuthStorage::new_with_identity(identity.clone()))
         }
+        AuthCredentialsStoreMode::Keyring => create_keyring_auth_storage_with_identity(
+            identity.clone(),
+            keyring_store,
+            keyring_backend_kind,
+        ),
         AuthCredentialsStoreMode::Auto => Arc::new(AutoAuthStorage::new_with_identity(
-            identity,
+            identity.clone(),
             keyring_store,
             keyring_backend_kind,
         )),
         AuthCredentialsStoreMode::Ephemeral => {
-            Arc::new(EphemeralAuthStorage::new_with_identity(identity))
+            Arc::new(EphemeralAuthStorage::new_with_identity(identity.clone()))
         }
-    }
+    };
+    Arc::new(ProfilePolicyAuthStorage { identity, storage })
 }
 
 fn create_keyring_auth_storage_with_identity(

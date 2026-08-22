@@ -23,4 +23,7 @@ pub use error::RefreshTokenFailedError;
 pub use error::RefreshTokenFailedReason;
 pub use manager::*;
 pub use storage::active_auth_file;
+pub use storage::active_auth_profile_name;
+pub use storage::active_wellau_auth_profile_name;
+pub use storage::wellau_auth_profile_name;
 pub use workload_identity::is_workload_identity_selected;

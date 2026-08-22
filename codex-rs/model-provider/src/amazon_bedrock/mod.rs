@@ -30,6 +30,7 @@ use codex_protocol::openai_models::ModelsResponse;
 
 use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth as resolve_configured_provider_auth;
+use crate::auth::validate_active_wellau_provider_route;
 use crate::provider::ModelProvider;
 use crate::provider::ModelProviderFuture;
 use crate::provider::ProviderAccountResult;
@@ -148,12 +149,14 @@ impl AmazonBedrockModelProvider {
     }
 
     async fn api_provider(&self) -> Result<Provider> {
+        validate_active_wellau_provider_route(&self.info)?;
         let mut api_provider_info = self.info.clone();
         api_provider_info.base_url = self.runtime_base_url().await?;
         api_provider_info.to_api_provider(/*auth_mode*/ None)
     }
 
     async fn runtime_base_url(&self) -> Result<Option<String>> {
+        validate_active_wellau_provider_route(&self.info)?;
         if let Some(base_url) = self.info.base_url.clone() {
             return Ok(Some(base_url));
         }
@@ -172,6 +175,7 @@ impl AmazonBedrockModelProvider {
     }
 
     async fn api_auth(&self) -> Result<SharedAuthProvider> {
+        validate_active_wellau_provider_route(&self.info)?;
         let source = self.auth_source();
         if source == auth::BedrockAuthSource::CommandBearerToken {
             let auth = self.auth().await;
@@ -349,6 +353,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+    use crate::auth::validate_wellau_provider_route_for_profile;
 
     fn command_auth_provider(base_url: Option<&str>) -> ModelProviderInfo {
         let mut provider = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
@@ -364,6 +369,22 @@ mod tests {
                 .expect("current directory should be absolute"),
         });
         provider
+    }
+
+    #[test]
+    fn wellau_profile_rejects_bedrock_before_aws_resolution() {
+        let provider_info =
+            ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
+                profile: Some("must-not-be-read".to_string()),
+                region: Some("us-east-1".to_string()),
+                auth_refresh: None,
+            }));
+
+        let error =
+            validate_wellau_provider_route_for_profile(Some("wellau-account"), &provider_info)
+                .expect_err("a WellAU profile must reject the Bedrock provider route");
+
+        assert!(error.to_string().contains("locked WellAU provider route"));
     }
 
     #[test]

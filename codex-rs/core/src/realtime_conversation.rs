@@ -1178,6 +1178,12 @@ async fn prepare_realtime_start(
     sess: &Arc<Session>,
     params: ConversationStartParams,
 ) -> CodexResult<PreparedRealtimeConversationStart> {
+    reject_wellau_realtime_profile(
+        codex_login::active_auth_profile_name()
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?
+            .as_deref(),
+    )?;
+
     let provider = sess.provider().await;
     let auth_manager = sess
         .services
@@ -1299,6 +1305,17 @@ async fn prepare_realtime_start(
         session_config,
         transport,
     })
+}
+
+fn reject_wellau_realtime_profile(auth_profile: Option<&str>) -> CodexResult<()> {
+    let wellau_profile = codex_login::wellau_auth_profile_name(auth_profile)
+        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+    if let Some(auth_profile) = wellau_profile {
+        return Err(CodexErr::InvalidRequest(format!(
+            "CODEX_AUTH_PROFILE={auth_profile} cannot start a realtime conversation; WellAU credentials are restricted to the configured WellAU Responses endpoint"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_avas_webrtc_start(

@@ -51,6 +51,7 @@ pub use crate::auth::storage::AgentIdentityStorage;
 pub use crate::auth::storage::AuthDotJson;
 pub use crate::auth::storage::AuthKeyringBackendKind;
 use crate::auth::storage::AuthStorageBackend;
+use crate::auth::storage::active_wellau_auth_profile_name;
 use crate::auth::storage::create_auth_storage;
 use crate::auth::util::try_parse_error_message;
 use crate::default_client::create_client;
@@ -1270,10 +1271,23 @@ fn validate_auth_restrictions(
 
 /// Enforces configured login restrictions using auth-owned HTTP settings.
 pub async fn enforce_login_restrictions(config: &AuthConfig) -> std::io::Result<()> {
+    let wellau_profile = active_wellau_auth_profile_name()?;
+    if let Some(profile) = wellau_profile.as_deref()
+        && config.forced_login_method != Some(ForcedLoginMethod::Api)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CODEX_AUTH_PROFILE={profile} requires `forced_login_method = \"api\"` in wellau.config.toml"
+            ),
+        ));
+    }
+
     let agent_identity_authapi_base_url =
         agent_identity_authapi_base_url(config.chatgpt_base_url.as_deref()).ok();
     enforce_login_restrictions_with_agent_identity_authapi_base_url(
         config,
+        wellau_profile.as_deref(),
         agent_identity_authapi_base_url.as_deref(),
     )
     .await
@@ -1281,6 +1295,7 @@ pub async fn enforce_login_restrictions(config: &AuthConfig) -> std::io::Result<
 
 async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
     config: &AuthConfig,
+    wellau_profile: Option<&str>,
     agent_identity_authapi_base_url: Option<&str>,
 ) -> std::io::Result<()> {
     // Managed-only restrictions are enforced by AuthManager.
@@ -1303,6 +1318,15 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
     else {
         return Ok(());
     };
+
+    if let Some(profile) = wellau_profile
+        && auth.auth_mode() != AuthMode::ApiKey
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("CODEX_AUTH_PROFILE={profile} only accepts dedicated API-key credentials"),
+        ));
+    }
 
     if let Some(required_method) = config.forced_login_method {
         let method_violation = match (required_method, auth.auth_mode()) {
@@ -1453,8 +1477,14 @@ async fn load_auth(
     agent_identity_authapi_base_url: Option<&str>,
     auth_route_config: &AuthRouteConfig,
 ) -> std::io::Result<Option<CodexAuth>> {
+    // A WellAU process is bound to its named credential slot. Do not let first-party process
+    // credential variables override that slot and get forwarded to the proxy accidentally.
+    // Default and ordinary named profiles retain the existing environment precedence.
+    let allow_process_env_auth = active_wellau_auth_profile_name()?.is_none();
+
     // API key via env var takes precedence over any other auth method.
-    if enable_codex_api_key_env
+    if allow_process_env_auth
+        && enable_codex_api_key_env
         && auth_mode_is_allowed(allowed_login_methods, AuthMode::ApiKey)
         && let Some(api_key) = read_codex_api_key_from_env()
     {
@@ -1490,7 +1520,8 @@ async fn load_auth(
         return Ok(Some(auth));
     }
 
-    if auth_mode_is_allowed(allowed_login_methods, AuthMode::AgentIdentity)
+    if allow_process_env_auth
+        && auth_mode_is_allowed(allowed_login_methods, AuthMode::AgentIdentity)
         && let Some(access_token) = read_codex_access_token_from_env()
     {
         return match classify_codex_access_token(&access_token) {

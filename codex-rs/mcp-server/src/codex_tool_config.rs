@@ -1,6 +1,7 @@
 //! Configuration object accepted by the `codex` MCP tool-call.
 
 use codex_arg0::Arg0DispatchPaths;
+use codex_config::LoaderOverrides;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
@@ -142,6 +143,7 @@ impl CodexToolCallParam {
     pub async fn into_config(
         self,
         arg0_paths: Arg0DispatchPaths,
+        loader_overrides: LoaderOverrides,
     ) -> std::io::Result<(String, Config)> {
         let Self {
             prompt,
@@ -178,6 +180,7 @@ impl CodexToolCallParam {
 
         let cfg = ConfigBuilder::default()
             .cli_overrides(cli_overrides)
+            .loader_overrides(loader_overrides)
             .harness_overrides(overrides)
             .build()
             .await?;
@@ -274,7 +277,51 @@ fn create_tool_input_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn tool_call_config_keeps_selected_wellau_user_config() {
+        let temp_dir = tempfile::tempdir().expect("create temporary config home");
+        let config_path = temp_dir.path().join("wellau.config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+model_provider = "wellau"
+model = "gpt-5.4"
+
+[model_providers.wellau]
+name = "WellAU"
+base_url = "https://api.wellau.com/v1"
+requires_openai_auth = true
+wire_api = "responses"
+"#,
+        )
+        .expect("write WellAU profile config");
+        let loader_overrides = LoaderOverrides {
+            user_config_path: Some(
+                AbsolutePathBuf::from_absolute_path(config_path)
+                    .expect("temporary config path is absolute"),
+            ),
+            ..Default::default()
+        };
+        let tool_call = CodexToolCallParam {
+            prompt: "hello".to_string(),
+            cwd: Some(temp_dir.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let (_, config) = tool_call
+            .into_config(Arg0DispatchPaths::default(), loader_overrides)
+            .await
+            .expect("tool call config should load selected user config");
+
+        assert_eq!(config.model_provider_id, "wellau");
+        assert_eq!(
+            config.model_provider.base_url.as_deref(),
+            Some("https://api.wellau.com/v1")
+        );
+    }
 
     /// We include a test to verify the exact JSON schema as "executable
     /// documentation" for the schema. When can track changes to this test as a

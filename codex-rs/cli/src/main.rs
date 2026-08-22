@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Args;
 use clap::CommandFactory;
 use clap::Parser;
@@ -39,6 +40,7 @@ use codex_utils_cli::SharedCliOptions;
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
@@ -1083,6 +1085,11 @@ async fn cli_main(
         .shared
         .take_auto_review_config_overrides(&mut root_config_overrides);
     reject_root_strict_config_for_subcommand(root_strict_config, &subcommand)?;
+    validate_login_command_for_auth_profile(
+        codex_login::active_auth_profile_name()?.as_deref(),
+        subcommand.as_ref(),
+    )?;
+    inherit_matching_config_profile_from_auth(&mut interactive, subcommand.as_ref())?;
     if let Some(subcommand) = subcommand.as_ref() {
         profile_v2_for_subcommand(&interactive, subcommand)?;
     }
@@ -1187,9 +1194,12 @@ async fn cli_main(
                 root_remote_auth_token_env.as_deref(),
                 "mcp-server",
             )?;
-            codex_mcp_server::run_main(
+            let loader_overrides =
+                loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
+            codex_mcp_server::run_main_with_loader_overrides(
                 arg0_paths.clone(),
                 root_config_overrides,
+                loader_overrides,
                 strict_config || root_strict_config,
             )
             .await?;
@@ -1268,6 +1278,8 @@ async fn cli_main(
                         listen
                     };
                     let auth = auth.try_into_settings()?;
+                    let loader_overrides =
+                        loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?;
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
                         code_mode_host_transport: code_mode_host.into(),
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)
@@ -1287,7 +1299,7 @@ async fn cli_main(
                     codex_app_server::run_main_with_transport_options(
                         arg0_paths.clone(),
                         root_config_overrides,
-                        LoaderOverrides::default(),
+                        loader_overrides,
                         strict_config,
                         analytics_default_enabled,
                         transport,
@@ -1829,25 +1841,142 @@ fn profile_v2_for_subcommand<'a>(
         return Ok(None);
     };
 
-    match subcommand {
-        Subcommand::Agents(_)
-        | Subcommand::Exec(_)
-        | Subcommand::Review(_)
-        | Subcommand::Resume(_)
-        | Subcommand::Queue(_)
-        | Subcommand::Archive(_)
-        | Subcommand::Delete(_)
-        | Subcommand::Unarchive(_)
-        | Subcommand::Fork(_)
-        | Subcommand::Mcp(_)
-        | Subcommand::Sandbox(_)
-        | Subcommand::Debug(DebugCommand {
-            subcommand: DebugSubcommand::PromptInput(_),
-        }) => Ok(Some(profile_v2)),
-        _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
-        ),
+    if subcommand_supports_profile_v2(subcommand) {
+        Ok(Some(profile_v2))
+    } else {
+        anyhow::bail!(
+            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex agents`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex mcp-server`, `codex app-server`, `codex sandbox`, and `codex debug prompt-input`."
+        )
     }
+}
+
+fn subcommand_supports_profile_v2(subcommand: &Subcommand) -> bool {
+    matches!(
+        subcommand,
+        Subcommand::Agents(_)
+            | Subcommand::Exec(_)
+            | Subcommand::Review(_)
+            | Subcommand::Resume(_)
+            | Subcommand::Queue(_)
+            | Subcommand::Archive(_)
+            | Subcommand::Delete(_)
+            | Subcommand::Unarchive(_)
+            | Subcommand::Fork(_)
+            | Subcommand::Mcp(_)
+            | Subcommand::McpServer(_)
+            | Subcommand::AppServer(AppServerCommand {
+                subcommand: None,
+                ..
+            })
+            | Subcommand::Sandbox(_)
+            | Subcommand::Debug(DebugCommand {
+                subcommand: DebugSubcommand::PromptInput(_),
+            })
+    )
+}
+
+fn subcommand_has_explicit_profile_v2(subcommand: &Subcommand) -> bool {
+    match subcommand {
+        Subcommand::Exec(command) => command.shared.config_profile_v2.is_some(),
+        Subcommand::Resume(command) => command.config_overrides.0.config_profile_v2.is_some(),
+        Subcommand::Archive(command) | Subcommand::Unarchive(command) => {
+            command.config_overrides.shared.config_profile_v2.is_some()
+        }
+        Subcommand::Delete(command) => command
+            .session
+            .config_overrides
+            .shared
+            .config_profile_v2
+            .is_some(),
+        Subcommand::Fork(command) => command.config_overrides.0.config_profile_v2.is_some(),
+        Subcommand::Sandbox(command) => command.config_profile.is_some(),
+        _ => false,
+    }
+}
+
+fn validate_login_command_for_auth_profile(
+    auth_profile: Option<&str>,
+    subcommand: Option<&Subcommand>,
+) -> anyhow::Result<()> {
+    let Some(auth_profile) = codex_login::wellau_auth_profile_name(auth_profile)? else {
+        return Ok(());
+    };
+    let Some(Subcommand::Login(command)) = subcommand else {
+        return Ok(());
+    };
+    if matches!(command.action, Some(LoginSubcommand::Status)) {
+        return Ok(());
+    }
+    let is_api_key_only = command.action.is_none()
+        && command.with_api_key
+        && !command.with_access_token
+        && !command.use_device_code
+        && command.api_key.is_none()
+        && command.issuer_base_url.is_none()
+        && command.client_id.is_none();
+    if is_api_key_only {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "CODEX_AUTH_PROFILE={auth_profile} only supports `codex login --with-api-key`; browser, device, and access-token login are disabled for WellAU proxy profiles"
+        )
+    }
+}
+
+fn matching_config_profile_for_auth(
+    codex_home: &Path,
+    auth_profile: Option<&str>,
+) -> anyhow::Result<Option<ProfileV2Name>> {
+    let Some(auth_profile) = codex_login::wellau_auth_profile_name(auth_profile)? else {
+        return Ok(None);
+    };
+    let profile = "wellau"
+        .parse::<ProfileV2Name>()
+        .map_err(anyhow::Error::new)?;
+    let config_path = resolve_profile_v2_config_path(codex_home, &profile);
+    match std::fs::metadata(config_path.as_path()) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(profile)),
+        Ok(_) => anyhow::bail!(
+            "CODEX_AUTH_PROFILE={auth_profile} requires {} to be a regular file",
+            config_path.as_path().display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
+            "CODEX_AUTH_PROFILE={auth_profile} requires the paired WellAU config file {}",
+            config_path.as_path().display()
+        ),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to inspect config profile {} for CODEX_AUTH_PROFILE={auth_profile}",
+                config_path.as_path().display()
+            )
+        }),
+    }
+}
+
+fn inherit_matching_config_profile_from_auth(
+    interactive: &mut TuiCli,
+    subcommand: Option<&Subcommand>,
+) -> anyhow::Result<()> {
+    // Agents and queue attach to already-running shared sessions; their provider configuration
+    // belongs to the app-server that owns those sessions, not this client process.
+    if interactive.config_profile_v2.is_some()
+        || subcommand.is_some_and(subcommand_has_explicit_profile_v2)
+        || subcommand.is_some_and(|subcommand| {
+            !subcommand_supports_profile_v2(subcommand)
+                || matches!(subcommand, Subcommand::Agents(_) | Subcommand::Queue(_))
+        })
+    {
+        return Ok(());
+    }
+
+    let active_auth_profile = codex_login::active_auth_profile_name()?;
+    let Some(active_auth_profile) = active_auth_profile.as_deref() else {
+        return Ok(());
+    };
+    let codex_home = find_codex_home()?;
+    interactive.config_profile_v2 =
+        matching_config_profile_for_auth(&codex_home, Some(active_auth_profile))?;
+    Ok(())
 }
 
 async fn run_exec_server_command(
@@ -1972,6 +2101,8 @@ async fn load_exec_server_remote_auth_provider(
     base_url: &str,
     use_agent_identity_auth: bool,
 ) -> anyhow::Result<codex_api::SharedAuthProvider> {
+    reject_wellau_remote_exec_server_profile(codex_login::active_auth_profile_name()?.as_deref())?;
+
     if use_agent_identity_auth {
         read_codex_access_token_from_env().ok_or_else(|| {
             anyhow::anyhow!("CODEX_ACCESS_TOKEN is required when --use-agent-identity-auth is set")
@@ -2013,6 +2144,15 @@ async fn load_exec_server_remote_auth_provider(
     } else {
         Ok(codex_model_provider::auth_provider_from_auth(&auth))
     }
+}
+
+fn reject_wellau_remote_exec_server_profile(auth_profile: Option<&str>) -> anyhow::Result<()> {
+    if let Some(auth_profile) = codex_login::wellau_auth_profile_name(auth_profile)? {
+        anyhow::bail!(
+            "CODEX_AUTH_PROFILE={auth_profile} cannot be used with remote exec-server; WellAU credentials are restricted to the configured WellAU model endpoint"
+        );
+    }
+    Ok(())
 }
 
 fn is_supported_exec_server_remote_auth(auth: &CodexAuth) -> bool {
@@ -2962,6 +3102,19 @@ mod tests {
     }
 
     #[test]
+    fn wellau_auth_profile_rejects_remote_exec_server_before_auth_loading() {
+        let error = reject_wellau_remote_exec_server_profile(Some("wellau-account"))
+            .expect_err("WellAU credentials must not enter the remote exec-server path");
+
+        assert_eq!(
+            error.to_string(),
+            "CODEX_AUTH_PROFILE=wellau-account cannot be used with remote exec-server; WellAU credentials are restricted to the configured WellAU model endpoint"
+        );
+        assert!(reject_wellau_remote_exec_server_profile(Some("ordinary-account")).is_ok());
+        assert!(reject_wellau_remote_exec_server_profile(None).is_ok());
+    }
+
+    #[test]
     fn exec_server_remote_api_key_auth_accepts_https_openai_domains() {
         for base_url in [
             "https://openai.com/api",
@@ -3172,11 +3325,155 @@ mod tests {
             Some("work")
         );
         assert_eq!(
+            profile_v2_for_args(&["codex", "--profile", "work", "mcp-server"])
+                .expect("mcp-server supports profile-v2")
+                .as_deref(),
+            Some("work")
+        );
+        assert_eq!(
+            profile_v2_for_args(&["codex", "--profile", "work", "app-server"])
+                .expect("the app-server runtime supports profile-v2")
+                .as_deref(),
+            Some("work")
+        );
+        assert!(
+            profile_v2_for_args(&[
+                "codex",
+                "--profile",
+                "work",
+                "app-server",
+                "generate-json-schema",
+                "--out",
+                "/tmp/codex-schema-test",
+            ])
+            .is_err()
+        );
+        assert_eq!(
             profile_v2_for_args(&["codex", "--profile", "work", "sandbox"])
                 .expect("sandbox supports config profile")
                 .as_deref(),
             Some("work")
         );
+    }
+
+    #[test]
+    fn existing_auth_profiles_do_not_change_config_selection() -> anyhow::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let profile_name = "jiaqiwang969";
+
+        assert_eq!(
+            matching_config_profile_for_auth(codex_home.path(), Some(profile_name))?,
+            None
+        );
+
+        std::fs::write(
+            codex_home
+                .path()
+                .join(format!("{profile_name}.config.toml")),
+            "model_provider = \"wellau\"\n",
+        )?;
+        assert_eq!(
+            matching_config_profile_for_auth(codex_home.path(), Some(profile_name))?.as_deref(),
+            None
+        );
+        assert_eq!(
+            matching_config_profile_for_auth(codex_home.path(), None)?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auth_profile_with_config_profile_unsupported_name_keeps_shared_config() -> anyhow::Result<()>
+    {
+        assert_eq!(
+            matching_config_profile_for_auth(Path::new("."), Some("account.with-dot"))?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wellau_auth_profiles_share_required_wellau_config() -> anyhow::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let missing =
+            matching_config_profile_for_auth(codex_home.path(), Some("wellau-jiaqiwang969"))
+                .expect_err("WellAU profiles must fail closed without their provider config");
+        assert!(missing.to_string().contains("wellau.config.toml"));
+
+        std::fs::create_dir(codex_home.path().join("wellau.config.toml"))?;
+        let not_a_file =
+            matching_config_profile_for_auth(codex_home.path(), Some("wellau-jiaqiwang969"))
+                .expect_err("the required WellAU config must be a regular file");
+        assert!(not_a_file.to_string().contains("regular file"));
+        std::fs::remove_dir(codex_home.path().join("wellau.config.toml"))?;
+
+        std::fs::write(
+            codex_home.path().join("wellau.config.toml"),
+            "model_provider = \"wellau\"\n",
+        )?;
+        for auth_profile in ["wellau-jiaqiwang969", "wellau-zhiyingzhong969"] {
+            assert_eq!(
+                matching_config_profile_for_auth(codex_home.path(), Some(auth_profile))?.as_deref(),
+                Some("wellau")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn wellau_auth_profile_requires_account_suffix() {
+        let error = matching_config_profile_for_auth(Path::new("."), Some("wellau-"))
+            .expect_err("an empty WellAU account suffix must be rejected");
+        assert!(error.to_string().contains("non-empty account suffix"));
+    }
+
+    #[test]
+    fn wellau_login_allows_only_api_key_and_status() {
+        for args in [
+            ["codex", "login", "--with-api-key"].as_slice(),
+            ["codex", "login", "status"].as_slice(),
+        ] {
+            let cli = MultitoolCli::try_parse_from(args).expect("parse allowed login command");
+            validate_login_command_for_auth_profile(
+                Some("wellau-jiaqiwang969"),
+                cli.subcommand.as_ref(),
+            )
+            .expect("allowed WellAU login command");
+        }
+
+        for args in [
+            ["codex", "login"].as_slice(),
+            ["codex", "login", "--device-auth"].as_slice(),
+            ["codex", "login", "--with-access-token"].as_slice(),
+            ["codex", "login", "--with-api-key", "--device-auth"].as_slice(),
+        ] {
+            let cli = MultitoolCli::try_parse_from(args).expect("parse rejected login command");
+            validate_login_command_for_auth_profile(
+                Some("wellau-jiaqiwang969"),
+                cli.subcommand.as_ref(),
+            )
+            .expect_err("non-API WellAU login must fail before reading credentials");
+        }
+
+        let ordinary = MultitoolCli::try_parse_from(["codex", "login"]).expect("parse");
+        validate_login_command_for_auth_profile(Some("jiaqiwang969"), ordinary.subcommand.as_ref())
+            .expect("ordinary named profiles retain browser login");
+    }
+
+    #[test]
+    fn subcommand_explicit_profiles_prevent_automatic_profile_inheritance() {
+        for args in [
+            ["codex", "exec", "--profile", "custom", "hello"].as_slice(),
+            ["codex", "resume", "--profile", "custom", "--last"].as_slice(),
+        ] {
+            let cli = MultitoolCli::try_parse_from(args).expect("parse explicit profile");
+            assert!(
+                cli.subcommand
+                    .as_ref()
+                    .is_some_and(subcommand_has_explicit_profile_v2)
+            );
+        }
     }
 
     #[test]

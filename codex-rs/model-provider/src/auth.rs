@@ -12,10 +12,14 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthHeaders;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::active_auth_profile_name;
+use codex_login::active_wellau_auth_profile_name;
 use codex_login::auth::AgentIdentityAuth;
 use codex_login::auth::AgentIdentityAuthError;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_login::wellau_auth_profile_name;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
@@ -25,6 +29,72 @@ use crate::bearer_auth_provider::BearerAuthProvider;
 
 const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
     "Bedrock API key auth is only supported by the Amazon Bedrock model provider";
+const WELLAU_API_BASE_URL: &str = "https://api.wellau.com/v1";
+
+pub(crate) fn validate_wellau_provider_route_for_profile<'a>(
+    profile: Option<&'a str>,
+    provider: &ModelProviderInfo,
+) -> codex_protocol::error::Result<Option<&'a str>> {
+    let Some(profile) = wellau_auth_profile_name(profile)? else {
+        return Ok(None);
+    };
+
+    let has_authorization_header =
+        provider.http_headers.as_ref().is_some_and(|headers| {
+            headers
+                .keys()
+                .any(|header| header.eq_ignore_ascii_case("authorization"))
+        }) || provider.env_http_headers.as_ref().is_some_and(|headers| {
+            headers
+                .keys()
+                .any(|header| header.eq_ignore_ascii_case("authorization"))
+        });
+    let valid_provider = provider.base_url.as_deref() == Some(WELLAU_API_BASE_URL)
+        && provider.requires_openai_auth
+        && provider.wire_api == WireApi::Responses
+        && provider.env_key.is_none()
+        && provider.experimental_bearer_token.is_none()
+        && provider.auth.is_none()
+        && provider.aws.is_none()
+        && !has_authorization_header;
+    if !valid_provider {
+        return Err(CodexErr::InvalidRequest(format!(
+            "CODEX_AUTH_PROFILE={profile} requires the locked WellAU provider route {WELLAU_API_BASE_URL} with Responses API and stored API-key authentication"
+        )));
+    }
+    Ok(Some(profile))
+}
+
+fn validate_wellau_provider_auth_for_profile(
+    profile: Option<&str>,
+    auth: Option<&CodexAuth>,
+    provider: &ModelProviderInfo,
+) -> codex_protocol::error::Result<()> {
+    let Some(profile) = validate_wellau_provider_route_for_profile(profile, provider)? else {
+        return Ok(());
+    };
+    if !matches!(auth, Some(CodexAuth::ApiKey(_))) {
+        return Err(CodexErr::InvalidRequest(format!(
+            "CODEX_AUTH_PROFILE={profile} requires a dedicated API key; run `codex login --with-api-key` for this profile"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_active_wellau_provider_route(
+    provider: &ModelProviderInfo,
+) -> codex_protocol::error::Result<()> {
+    let profile = active_auth_profile_name()?;
+    validate_wellau_provider_route_for_profile(profile.as_deref(), provider).map(|_| ())
+}
+
+fn validate_active_wellau_provider_auth(
+    auth: Option<&CodexAuth>,
+    provider: &ModelProviderInfo,
+) -> codex_protocol::error::Result<()> {
+    let profile = active_wellau_auth_profile_name()?;
+    validate_wellau_provider_auth_for_profile(profile.as_deref(), auth, provider)
+}
 
 #[derive(Clone, Debug)]
 pub struct ProviderAuthScope {
@@ -198,6 +268,8 @@ pub(crate) fn resolve_provider_auth(
     auth: Option<&CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<SharedAuthProvider> {
+    validate_active_wellau_provider_auth(auth, provider)?;
+
     if let Some(auth) = bearer_auth_for_provider(provider)? {
         return Ok(Arc::new(auth));
     }
@@ -216,7 +288,7 @@ pub(crate) fn resolve_provider_auth(
     }
 
     Ok(match auth {
-        Some(auth) => auth_provider_from_auth(auth),
+        Some(auth) => auth_provider_from_auth_for_validated_provider(auth),
         None => unauthenticated_auth_provider(),
     })
 }
@@ -227,6 +299,8 @@ pub(crate) async fn resolve_provider_auth_for_scope(
     provider: &ModelProviderInfo,
     scope: ProviderAuthScope,
 ) -> codex_protocol::error::Result<ResolvedProviderAuth> {
+    validate_active_wellau_provider_auth(auth, provider)?;
+
     let ProviderAuthScope {
         agent_identity_policy,
         session_source,
@@ -305,6 +379,25 @@ fn bearer_auth_for_provider(
 
 /// Builds request-header auth for a first-party Codex auth snapshot.
 pub fn auth_provider_from_auth(auth: &CodexAuth) -> SharedAuthProvider {
+    let profile = match active_auth_profile_name() {
+        Ok(profile) => profile,
+        Err(_) => return unauthenticated_auth_provider(),
+    };
+    auth_provider_from_auth_for_profile(auth, profile.as_deref())
+}
+
+fn auth_provider_from_auth_for_profile(
+    auth: &CodexAuth,
+    profile: Option<&str>,
+) -> SharedAuthProvider {
+    match wellau_auth_profile_name(profile) {
+        Ok(None) => auth_provider_from_auth_for_validated_provider(auth),
+        Ok(Some(_)) | Err(_) => unauthenticated_auth_provider(),
+    }
+}
+
+/// Builds headers only after the caller has validated the final model-provider route.
+fn auth_provider_from_auth_for_validated_provider(auth: &CodexAuth) -> SharedAuthProvider {
     match auth {
         CodexAuth::AgentIdentity(auth) => {
             Arc::new(AgentIdentityAuthProvider { auth: auth.clone() })
@@ -355,6 +448,7 @@ mod tests {
     use http::header::AUTHORIZATION;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::num::NonZeroU64;
     use std::path::Path;
     use std::path::PathBuf;
@@ -580,6 +674,83 @@ mod tests {
         assert_eq!(auth.to_auth_headers(), expected);
     }
 
+    fn wellau_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: "WellAU".to_string(),
+            base_url: Some(WELLAU_API_BASE_URL.to_string()),
+            requires_openai_auth: true,
+            wire_api: WireApi::Responses,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn wellau_proxy_policy_accepts_only_locked_route_and_api_key() {
+        let provider = wellau_provider();
+        let auth = CodexAuth::from_api_key("wellau-test-key");
+
+        validate_wellau_provider_auth_for_profile(
+            Some("wellau-test-account"),
+            Some(&auth),
+            &provider,
+        )
+        .expect("the locked WellAU route with an API key should be accepted");
+        validate_wellau_provider_auth_for_profile(
+            Some("ordinary-account"),
+            /*auth*/ None,
+            &ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        )
+        .expect("ordinary profiles must retain existing provider behavior");
+
+        let missing_auth = validate_wellau_provider_auth_for_profile(
+            Some("wellau-test-account"),
+            /*auth*/ None,
+            &provider,
+        )
+        .expect_err("a WellAU request without an API key must fail closed");
+        assert!(missing_auth.to_string().contains("dedicated API key"));
+    }
+
+    #[test]
+    fn wellau_proxy_policy_rejects_route_or_auth_header_overrides() {
+        let auth = CodexAuth::from_api_key("wellau-test-key");
+        let mut wrong_base_url = wellau_provider();
+        wrong_base_url.base_url = Some("https://api.openai.com/v1".to_string());
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &wrong_base_url,
+            )
+            .is_err()
+        );
+
+        let mut alternate_auth = wellau_provider();
+        alternate_auth.env_key = Some("OPENAI_API_KEY".to_string());
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &alternate_auth,
+            )
+            .is_err()
+        );
+
+        let mut authorization_header = wellau_provider();
+        authorization_header.http_headers = Some(HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer override".to_string(),
+        )]));
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &authorization_header,
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn header_auth_adds_predefined_headers() {
         let mut expected = HeaderMap::new();
@@ -593,6 +764,22 @@ mod tests {
         let actual = auth_provider_from_auth(&auth).to_auth_headers();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn unscoped_auth_provider_never_emits_wellau_profile_credentials() {
+        let auth = CodexAuth::from_api_key("sk-wellau-test");
+
+        let wellau_headers =
+            auth_provider_from_auth_for_profile(&auth, Some("wellau-account")).to_auth_headers();
+        let ordinary_headers =
+            auth_provider_from_auth_for_profile(&auth, Some("ordinary-account")).to_auth_headers();
+
+        assert!(!wellau_headers.contains_key(AUTHORIZATION));
+        assert_eq!(
+            ordinary_headers.get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer sk-wellau-test"))
+        );
     }
 
     #[test]

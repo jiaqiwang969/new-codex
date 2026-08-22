@@ -11,6 +11,7 @@ use super::classify_realtime_input_error_with_pending;
 use super::realtime_delegation_from_handoff;
 use super::realtime_request_headers;
 use super::realtime_text_from_handoff_request;
+use super::reject_wellau_realtime_profile;
 use super::wrap_realtime_delegation_input;
 use crate::context::RealtimeDelegationSource;
 use async_channel::bounded;
@@ -27,6 +28,19 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
+
+#[test]
+fn wellau_auth_profile_rejects_realtime_before_credentials_are_loaded() {
+    let error = reject_wellau_realtime_profile(Some("wellau-account"))
+        .expect_err("WellAU credentials must not enter the realtime path");
+
+    assert_eq!(
+        error.to_string(),
+        "CODEX_AUTH_PROFILE=wellau-account cannot start a realtime conversation; WellAU credentials are restricted to the configured WellAU Responses endpoint"
+    );
+    assert!(reject_wellau_realtime_profile(Some("ordinary-account")).is_ok());
+    assert!(reject_wellau_realtime_profile(None).is_ok());
+}
 
 #[test]
 fn prefers_handoff_input_transcript_over_active_transcript() {
