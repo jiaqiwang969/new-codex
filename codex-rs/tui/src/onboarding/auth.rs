@@ -688,13 +688,24 @@ impl AuthModeWidget {
         ])
         .areas(area);
 
+        let is_wellau_profile = codex_login::active_wellau_auth_profile_name()
+            .ok()
+            .flatten()
+            .is_some();
+        let title = if is_wellau_profile {
+            "Use the dedicated API key for this WellAU account"
+        } else {
+            "Use your own OpenAI API key for usage-based billing"
+        };
+        let storage_description = if is_wellau_profile {
+            "  Paste or type the WellAU API key below. It will be stored only in this auth profile."
+        } else {
+            "  Paste or type your API key below. It will be stored locally in auth.json."
+        };
         let mut intro_lines: Vec<Line> = vec![
-            Line::from(vec![
-                "> ".into(),
-                "Use your own OpenAI API key for usage-based billing".bold(),
-            ]),
+            Line::from(vec!["> ".into(), title.bold()]),
             "".into(),
-            "  Paste or type your API key below. It will be stored locally in auth.json.".into(),
+            storage_description.into(),
             "".into(),
         ];
         if state.prepopulated_from_env {
@@ -839,7 +850,12 @@ impl AuthModeWidget {
             return;
         }
         self.set_error(/*message*/ None);
-        let prefill_from_env = read_openai_api_key_from_env();
+        let prefill_from_env = match codex_login::active_auth_profile_name() {
+            Ok(profile) if auth_profile_allows_openai_key_prefill(profile.as_deref()) => {
+                read_openai_api_key_from_env()
+            }
+            Ok(_) | Err(_) => None,
+        };
         let mut guard = self.sign_in_state.write().unwrap();
         match &mut *guard {
             SignInState::ApiKeyEntry(state) => {
@@ -1029,6 +1045,13 @@ impl AuthModeWidget {
     }
 }
 
+fn auth_profile_allows_openai_key_prefill(auth_profile: Option<&str>) -> bool {
+    matches!(
+        codex_login::wellau_auth_profile_name(auth_profile),
+        Ok(None)
+    )
+}
+
 impl StepStateProvider for AuthModeWidget {
     fn get_step_state(&self) -> StepState {
         let sign_in_state = self.sign_in_state.read().unwrap();
@@ -1121,6 +1144,20 @@ mod tests {
         "state=8cHjQ4nVx2Yp7Lm9Rk3Wf6Ta1Bs5Du0Ei4Go7Nz2PqM&",
         "originator=codex_cli_rs"
     );
+
+    #[test]
+    fn wellau_api_key_entry_never_prefills_openai_environment_key() {
+        assert!(!auth_profile_allows_openai_key_prefill(Some(
+            "wellau-account"
+        )));
+        assert!(!auth_profile_allows_openai_key_prefill(Some(
+            "wellua-account"
+        )));
+        assert!(auth_profile_allows_openai_key_prefill(Some(
+            "ordinary-account"
+        )));
+        assert!(auth_profile_allows_openai_key_prefill(None));
+    }
 
     async fn widget_forced_chatgpt() -> (AuthModeWidget, TempDir) {
         let codex_home = TempDir::new().unwrap();

@@ -30,9 +30,11 @@ token。参见官方的 [Login caching](https://learn.chatgpt.com/docs/auth#logi
 | `CODEX_AUTH_PROFILE=jiaqiwang969` | `$CODEX_HOME/auth-jiaqiwang969.json` |
 | `CODEX_AUTH_PROFILE=OmarGuthorn8` | `$CODEX_HOME/auth-OmarGuthorn8.json` |
 | `CODEX_AUTH_PROFILE=zhiyingzhong969` | `$CODEX_HOME/auth-zhiyingzhong969.json` |
+| `CODEX_AUTH_PROFILE=wellau-example` | `$CODEX_HOME/auth-wellau-example.json` |
 
 `config.toml`、sessions、history、memories、SQLite、skills、plugins 和 MCP 配置仍由
-同一个 `CODEX_HOME` 提供，因此继续共享。
+同一个 `CODEX_HOME` 提供，因此继续共享。普通命名认证 profile 不改变配置选择；只有
+下文专门保留的 `wellau-*` namespace 会自动选择 API-key 代理配置。
 
 ## Profile 名称
 
@@ -113,9 +115,54 @@ CODEX_AUTH_PROFILE=OmarGuthorn8 codex
 CODEX_AUTH_PROFILE=zhiyingzhong969 codex
 ```
 
+现有 ChatGPT/OpenAI 多账号行为保持不变。作为纯增量扩展，只有名称以
+`wellau-` 开头的认证槽会启用 API-key 代理模式，并自动绑定到同一个共享供应商配置：
+
+```toml
+# $CODEX_HOME/wellau.config.toml
+forced_login_method = "api"
+cli_auth_credentials_store = "file"
+model_provider = "wellau"
+model = "gpt-5.4"
+disable_response_storage = true
+
+[model_providers.wellau]
+name = "WellAU"
+base_url = "https://api.wellau.com/v1"
+requires_openai_auth = true
+wire_api = "responses"
+supports_websockets = false
+```
+
+先在各自 profile 下保存专用 WellAU API key：
+
+```bash
+CODEX_AUTH_PROFILE=wellau-example codex login --with-api-key
+CODEX_AUTH_PROFILE=wellau-example codex login status
+CODEX_AUTH_PROFILE=wellau-example codex
+```
+
+`wellau.config.toml` 只保存公共代理参数，不能包含 API key；每个 key 仍独立存在
+`auth-wellau-<账号>.json` 或对应的操作系统凭据槽中。`wellau-*` 只允许
+`--with-api-key`、`login status` 和 `logout`，浏览器/device/access-token 登录会被拒绝；
+存储层也拒绝加载任何非 API-key 凭据。运行时还会锁定 HTTPS 地址
+`https://api.wellau.com/v1`、Responses API 和 API-key 认证，在实际生成 Authorization
+header 前再次校验，防止配置覆盖导致 key 发错地址。`codex`、`exec`、app-server 和
+mcp-server runtime 都会继承同一个 `wellau.config.toml`；显式改成其他 provider 会在
+发起请求前失败。
+
+WellAU key 不能进入未绑定最终模型地址的通用认证通道：remote exec-server 与 realtime
+conversation 会被明确拒绝，analytics、cloud、plugins、skills 等辅助服务的通用 auth
+provider 不会生成该 key 的 Authorization header，app-server 的 legacy auth-status API
+也不会返回完整 key。交互式 API-key 输入页不会从 `OPENAI_API_KEY` 自动预填 WellAU
+profile，避免把真正的 OpenAI key 误存并发送给代理。
+
+前缀必须准确写成小写 `wellau-`。常见误写 `wellua-`、大小写变体以及空账号后缀都会
+fail closed。
+
 `codex login status` 只确认本地凭据可读取及其认证方式，不会向服务端证明 token 尚未
-吊销。若服务请求返回 `token_revoked`，应在对应 profile 下重新进行浏览器登录，然后
-启动一个新的同 profile Codex 进程。
+吊销。普通 ChatGPT profile 若返回 `token_revoked`，应在对应 profile 下重新进行浏览器
+登录，然后启动一个新的同 profile Codex 进程；WellAU profile 应重新保存其专用 API key。
 
 ## 并发语义与限制
 

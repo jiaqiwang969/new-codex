@@ -860,6 +860,159 @@ fn auth_profile_validation_matches_documented_grammar() {
 }
 
 #[test]
+fn auth_profile_name_distinguishes_default_named_and_invalid_profiles() -> anyhow::Result<()> {
+    assert_eq!(AuthProfile::Default.name()?, None);
+    assert_eq!(
+        AuthProfile::parse("wellau-jiaqiwang969").name()?,
+        Some("wellau-jiaqiwang969")
+    );
+
+    let err = AuthProfile::Invalid
+        .name()
+        .expect_err("invalid profiles must fail closed");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    Ok(())
+}
+
+#[test]
+fn wellau_profile_namespace_is_lowercase_and_typo_safe() -> anyhow::Result<()> {
+    assert_eq!(wellau_auth_profile_name(None)?, None);
+    assert_eq!(wellau_auth_profile_name(Some("jiaqiwang969"))?, None);
+    assert_eq!(
+        wellau_auth_profile_name(Some("wellau-jiaqiwang969"))?,
+        Some("wellau-jiaqiwang969")
+    );
+
+    for invalid in ["wellau-", "WellAU-jiaqiwang969", "wellua-jiaqiwang969"] {
+        let error = wellau_auth_profile_name(Some(invalid))
+            .expect_err("reserved WellAU names must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+    Ok(())
+}
+
+#[test]
+fn wellau_storage_policy_accepts_only_api_keys_for_every_backend() -> anyhow::Result<()> {
+    let cases = [
+        (
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::Direct,
+        ),
+        (
+            AuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        ),
+        (
+            AuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Secrets,
+        ),
+        (
+            AuthCredentialsStoreMode::Auto,
+            AuthKeyringBackendKind::Secrets,
+        ),
+        (
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::Direct,
+        ),
+    ];
+    let legacy_api_key = AuthDotJson {
+        auth_mode: None,
+        openai_api_key: Some("wellau-test-key".to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    };
+    let chatgpt_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    };
+
+    for (mode, keyring_backend_kind) in cases {
+        let codex_home = tempdir()?;
+        let storage = create_auth_storage_with_store_and_identity(
+            identity_with_profile(codex_home.path(), AuthProfile::parse("wellau-test-account")),
+            mode,
+            Arc::new(MockKeyringStore::default()),
+            keyring_backend_kind,
+        );
+
+        storage.save(&legacy_api_key)?;
+        assert_eq!(storage.load()?, Some(legacy_api_key.clone()));
+        let error = storage
+            .save(&chatgpt_auth)
+            .expect_err("WellAU storage must reject non-API-key credentials");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(storage.load()?, Some(legacy_api_key.clone()));
+        assert!(storage.delete()?);
+    }
+    Ok(())
+}
+
+#[test]
+fn wellau_storage_rejects_wrong_existing_file_but_allows_delete() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let identity =
+        identity_with_profile(codex_home.path(), AuthProfile::parse("wellau-test-account"));
+    let auth_file = identity.auth_file()?;
+    std::fs::write(
+        &auth_file,
+        serde_json::to_vec(&AuthDotJson {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: None,
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+            personal_access_token: None,
+            bedrock_api_key: None,
+        })?,
+    )?;
+    let storage = create_auth_storage_with_store_and_identity(
+        identity,
+        AuthCredentialsStoreMode::File,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    );
+
+    let error = storage
+        .load()
+        .expect_err("an existing non-API WellAU credential must not load");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(storage.delete()?);
+    assert!(!auth_file.exists());
+    Ok(())
+}
+
+#[test]
+fn ordinary_named_profile_keeps_existing_auth_mode_behavior() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = create_auth_storage_with_store_and_identity(
+        identity_with_profile(codex_home.path(), AuthProfile::parse("jiaqiwang969")),
+        AuthCredentialsStoreMode::File,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    };
+    storage.save(&auth)?;
+    assert_eq!(storage.load()?, Some(auth));
+    Ok(())
+}
+
+#[test]
 fn file_auth_profiles_are_isolated_and_default_path_is_compatible() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let default = FileAuthStorage::new_with_identity(identity_with_profile(

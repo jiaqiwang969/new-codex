@@ -76,6 +76,17 @@ enum BedrockLoginCredentials {
     },
 }
 
+fn auth_status_may_include_token_for_profile(requested: bool, auth_profile: Option<&str>) -> bool {
+    requested && auth_status_may_read_token_for_profile(auth_profile)
+}
+
+fn auth_status_may_read_token_for_profile(auth_profile: Option<&str>) -> bool {
+    matches!(
+        codex_login::wellau_auth_profile_name(auth_profile),
+        Ok(None)
+    )
+}
+
 impl Drop for ActiveLogin {
     fn drop(&mut self) {
         self.cancel();
@@ -1035,7 +1046,19 @@ impl AccountRequestProcessor {
         &self,
         params: GetAuthStatusParams,
     ) -> Result<GetAuthStatusResponse, JSONRPCErrorError> {
-        let include_token = params.include_token.unwrap_or(false);
+        let (include_token, may_read_token) = match codex_login::active_auth_profile_name() {
+            Ok(profile) => (
+                auth_status_may_include_token_for_profile(
+                    params.include_token.unwrap_or(false),
+                    profile.as_deref(),
+                ),
+                auth_status_may_read_token_for_profile(profile.as_deref()),
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "refusing to return an auth token for an invalid auth profile");
+                (false, false)
+            }
+        };
         let do_refresh = params.refresh_token.unwrap_or(false);
 
         self.refresh_token_if_requested(do_refresh).await;
@@ -1064,7 +1087,9 @@ impl AccountRequestProcessor {
                         self.auth_manager.refresh_failure_for_auth(&auth).is_some();
                     let auth_mode = auth_mode_to_api(auth.api_auth_mode());
                     let (reported_auth_method, token_opt) =
-                        if self.auth_manager.is_workload_identity_selected()
+                        if !may_read_token && matches!(auth, CodexAuth::ApiKey(_)) {
+                            (Some(auth_mode), None)
+                        } else if self.auth_manager.is_workload_identity_selected()
                             || matches!(
                                 auth,
                                 CodexAuth::Headers(_)
@@ -1479,6 +1504,32 @@ mod tests {
     use codex_backend_client::TokenUsageProfileStats;
     use http::StatusCode;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn wellau_auth_status_never_returns_the_stored_api_key() {
+        assert!(!auth_status_may_include_token_for_profile(
+            true,
+            Some("wellau-account")
+        ));
+        assert!(!auth_status_may_include_token_for_profile(
+            true,
+            Some("wellua-account")
+        ));
+        assert!(auth_status_may_include_token_for_profile(
+            true,
+            Some("ordinary-account")
+        ));
+        assert!(!auth_status_may_include_token_for_profile(
+            false,
+            Some("ordinary-account")
+        ));
+        assert!(!auth_status_may_read_token_for_profile(Some(
+            "wellau-account"
+        )));
+        assert!(auth_status_may_read_token_for_profile(Some(
+            "ordinary-account"
+        )));
+    }
 
     #[test]
     fn account_token_usage_response_maps_profile_stats_and_daily_buckets() {

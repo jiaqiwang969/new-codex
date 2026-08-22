@@ -7,6 +7,7 @@ use std::io::Result as IoResult;
 use std::sync::Arc;
 
 use codex_arg0::Arg0DispatchPaths;
+use codex_config::LoaderOverrides;
 use codex_core::config::ConfigBuilder;
 use codex_core::resolve_installation_id;
 use codex_exec_server::EnvironmentManager;
@@ -64,6 +65,21 @@ pub async fn run_main(
     cli_config_overrides: CliConfigOverrides,
     strict_config: bool,
 ) -> IoResult<()> {
+    run_main_with_loader_overrides(
+        arg0_paths,
+        cli_config_overrides,
+        LoaderOverrides::default(),
+        strict_config,
+    )
+    .await
+}
+
+pub async fn run_main_with_loader_overrides(
+    arg0_paths: Arg0DispatchPaths,
+    cli_config_overrides: CliConfigOverrides,
+    loader_overrides: LoaderOverrides,
+    strict_config: bool,
+) -> IoResult<()> {
     reject_workload_identity(codex_login::is_workload_identity_selected())?;
     // Parse CLI overrides once and derive the base Config eagerly so later
     // components do not need to work with raw TOML values.
@@ -75,6 +91,7 @@ pub async fn run_main(
     })?;
     let config = ConfigBuilder::default()
         .cli_overrides(cli_kv_overrides)
+        .loader_overrides(loader_overrides.clone())
         .strict_config(strict_config)
         .build()
         .await
@@ -158,6 +175,7 @@ pub async fn run_main(
             outgoing_message_sender,
             arg0_paths,
             Arc::new(config),
+            loader_overrides,
             environment_manager,
             state_db,
             installation_id,
