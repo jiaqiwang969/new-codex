@@ -58,7 +58,9 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::item_event_to_server_notification;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::active_auth_profile_name;
 use codex_login::default_client::create_client;
+use codex_login::wellau_auth_profile_name;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::ThreadId;
@@ -154,6 +156,21 @@ fn analytics_capture_file_from_env() -> Option<PathBuf> {
     None
 }
 
+/// WellAU credentials are scoped exclusively to the configured WellAU Responses endpoint.
+/// Analytics events use a separate first-party route, so disable that route entirely for a
+/// WellAU profile (and fail closed for reserved-prefix typos) instead of relying only on the
+/// unscoped auth provider to omit the credential header.
+fn analytics_events_allowed_for_profile(profile: Option<&str>) -> bool {
+    matches!(wellau_auth_profile_name(profile), Ok(None))
+}
+
+fn active_profile_allows_analytics_events() -> bool {
+    let Ok(profile) = active_auth_profile_name() else {
+        return false;
+    };
+    analytics_events_allowed_for_profile(profile.as_deref())
+}
+
 impl AnalyticsEventsQueue {
     fn new(auth_manager: Arc<AuthManager>, destination: AnalyticsEventsDestination) -> Self {
         let (sender, mut receiver) = mpsc::channel(ANALYTICS_EVENTS_QUEUE_SIZE);
@@ -243,7 +260,7 @@ impl AnalyticsEventsClient {
     ) -> Self {
         let destination = AnalyticsEventsDestination::from_base_url(base_url);
         Self {
-            queue: (analytics_enabled != Some(false))
+            queue: (analytics_enabled != Some(false) && active_profile_allows_analytics_events())
                 .then(|| AnalyticsEventsQueue::new(Arc::clone(&auth_manager), destination)),
         }
     }
@@ -819,8 +836,23 @@ fn analytics_turn(turn_id: &str, status: TurnStatus) -> Turn {
 async fn send_track_events(
     auth_manager: &AuthManager,
     destination: &AnalyticsEventsDestination,
-    mut events: Vec<TrackEventRequest>,
+    events: Vec<TrackEventRequest>,
 ) {
+    let Ok(profile) = active_auth_profile_name() else {
+        return;
+    };
+    send_track_events_for_profile(auth_manager, destination, events, profile.as_deref()).await;
+}
+
+async fn send_track_events_for_profile(
+    auth_manager: &AuthManager,
+    destination: &AnalyticsEventsDestination,
+    mut events: Vec<TrackEventRequest>,
+    profile: Option<&str>,
+) {
+    if !analytics_events_allowed_for_profile(profile) {
+        return;
+    }
     if events.is_empty() {
         return;
     }

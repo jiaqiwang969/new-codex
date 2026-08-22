@@ -30,6 +30,7 @@ use crate::bearer_auth_provider::BearerAuthProvider;
 const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
     "Bedrock API key auth is only supported by the Amazon Bedrock model provider";
 const WELLAU_API_BASE_URL: &str = "https://api.wellau.com/v1";
+const WELLAU_PROVIDER_NAME: &str = "WellAU";
 
 pub(crate) fn validate_wellau_provider_route_for_profile<'a>(
     profile: Option<&'a str>,
@@ -39,27 +40,32 @@ pub(crate) fn validate_wellau_provider_route_for_profile<'a>(
         return Ok(None);
     };
 
-    let has_authorization_header =
-        provider.http_headers.as_ref().is_some_and(|headers| {
-            headers
-                .keys()
-                .any(|header| header.eq_ignore_ascii_case("authorization"))
-        }) || provider.env_http_headers.as_ref().is_some_and(|headers| {
-            headers
-                .keys()
-                .any(|header| header.eq_ignore_ascii_case("authorization"))
-        });
-    let valid_provider = provider.base_url.as_deref() == Some(WELLAU_API_BASE_URL)
+    let has_custom_headers = provider
+        .http_headers
+        .as_ref()
+        .is_some_and(|headers| !headers.is_empty())
+        || provider
+            .env_http_headers
+            .as_ref()
+            .is_some_and(|headers| !headers.is_empty());
+    let valid_provider = provider.name == WELLAU_PROVIDER_NAME
+        && provider.base_url.as_deref() == Some(WELLAU_API_BASE_URL)
         && provider.requires_openai_auth
         && provider.wire_api == WireApi::Responses
         && provider.env_key.is_none()
         && provider.experimental_bearer_token.is_none()
         && provider.auth.is_none()
         && provider.aws.is_none()
-        && !has_authorization_header;
+        && provider
+            .query_params
+            .as_ref()
+            .is_none_or(|params| params.is_empty())
+        && !provider.supports_websockets
+        && !provider.supports_standalone_web_search
+        && !has_custom_headers;
     if !valid_provider {
         return Err(CodexErr::InvalidRequest(format!(
-            "CODEX_AUTH_PROFILE={profile} requires the locked WellAU provider route {WELLAU_API_BASE_URL} with Responses API and stored API-key authentication"
+            "CODEX_AUTH_PROFILE={profile} requires the locked {WELLAU_PROVIDER_NAME} provider route {WELLAU_API_BASE_URL} with Responses API and stored API-key authentication"
         )));
     }
     Ok(Some(profile))
@@ -714,6 +720,17 @@ mod tests {
     #[test]
     fn wellau_proxy_policy_rejects_route_or_auth_header_overrides() {
         let auth = CodexAuth::from_api_key("wellau-test-key");
+        let mut spoofed_openai_name = wellau_provider();
+        spoofed_openai_name.name = "OpenAI".to_string();
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &spoofed_openai_name,
+            )
+            .is_err()
+        );
+
         let mut wrong_base_url = wellau_provider();
         wrong_base_url.base_url = Some("https://api.openai.com/v1".to_string());
         assert!(
@@ -736,6 +753,28 @@ mod tests {
             .is_err()
         );
 
+        let mut websocket_route = wellau_provider();
+        websocket_route.supports_websockets = true;
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &websocket_route,
+            )
+            .is_err()
+        );
+
+        let mut standalone_search_route = wellau_provider();
+        standalone_search_route.supports_standalone_web_search = true;
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &standalone_search_route,
+            )
+            .is_err()
+        );
+
         let mut authorization_header = wellau_provider();
         authorization_header.http_headers = Some(HashMap::from([(
             "Authorization".to_string(),
@@ -746,6 +785,48 @@ mod tests {
                 Some("wellau-test-account"),
                 Some(&auth),
                 &authorization_header,
+            )
+            .is_err()
+        );
+
+        let mut custom_header = wellau_provider();
+        custom_header.http_headers = Some(HashMap::from([(
+            "X-Custom-Route".to_string(),
+            "override".to_string(),
+        )]));
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &custom_header,
+            )
+            .is_err()
+        );
+
+        let mut environment_header = wellau_provider();
+        environment_header.env_http_headers = Some(HashMap::from([(
+            "X-Proxy-Key".to_string(),
+            "OPENAI_API_KEY".to_string(),
+        )]));
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &environment_header,
+            )
+            .is_err()
+        );
+
+        let mut query_override = wellau_provider();
+        query_override.query_params = Some(HashMap::from([(
+            "route".to_string(),
+            "alternate".to_string(),
+        )]));
+        assert!(
+            validate_wellau_provider_auth_for_profile(
+                Some("wellau-test-account"),
+                Some(&auth),
+                &query_override,
             )
             .is_err()
         );

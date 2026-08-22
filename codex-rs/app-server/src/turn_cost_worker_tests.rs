@@ -1,5 +1,6 @@
 use super::*;
 use codex_backend_client::ApiKeyResponseCost;
+use codex_config::types::OtelHttpProtocol;
 use codex_core::config::ConfigBuilder;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
@@ -20,6 +21,41 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 const TURN_COST_PATH: &str = "/v1/analytics/codex/turn-costs";
+
+#[tokio::test]
+async fn wellau_profile_disables_worker_even_for_openai_named_provider() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let codex_home = TempDir::new().expect("temporary Codex home");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await
+        .expect("test config");
+    assert!(config.model_provider.is_openai());
+    config.chatgpt_base_url = server.uri();
+    config.otel.exporter = OtelExporterKind::OtlpHttp {
+        endpoint: "http://localhost:4318".to_string(),
+        headers: HashMap::new(),
+        protocol: OtelHttpProtocol::Json,
+        tls: None,
+    };
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("sk-wellau-test"));
+
+    let worker =
+        TurnCostWorker::spawn_for_profile(Arc::new(config), auth_manager, Some("wellau-account"));
+
+    assert!(worker.is_none());
+    assert!(!turn_cost_worker_allowed_for_profile(Some(
+        "wellua-account"
+    )));
+    server.verify().await;
+}
 
 #[tokio::test]
 async fn worker_starts_with_otlp_metrics_exporter_without_log_exporter() {
