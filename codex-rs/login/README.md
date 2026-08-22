@@ -147,15 +147,18 @@ CODEX_AUTH_PROFILE=wellau-example codex
 `--with-api-key`、`login status` 和 `logout`，浏览器/device/access-token 登录会被拒绝；
 存储层也拒绝加载任何非 API-key 凭据。运行时还会锁定 HTTPS 地址
 `https://api.wellau.com/v1`、Responses API 和 API-key 认证，在实际生成 Authorization
-header 前再次校验，防止配置覆盖导致 key 发错地址。`codex`、`exec`、app-server 和
+header 前再次校验；自定义 query、header、env-header 以及替代认证配置都会被拒绝，
+防止配置覆盖导致 key 或环境凭据发错路径。`codex`、`exec`、app-server 和
 mcp-server runtime 都会继承同一个 `wellau.config.toml`；显式改成其他 provider 会在
 发起请求前失败。
 
 WellAU key 不能进入未绑定最终模型地址的通用认证通道：remote exec-server 与 realtime
-conversation 会被明确拒绝，analytics、cloud、plugins、skills 等辅助服务的通用 auth
-provider 不会生成该 key 的 Authorization header，app-server 的 legacy auth-status API
-也不会返回完整 key。交互式 API-key 输入页不会从 `OPENAI_API_KEY` 自动预填 WellAU
-profile，避免把真正的 OpenAI key 误存并发送给代理。
+conversation 会被明确拒绝；analytics 事件通道在 WellAU profile 下整体禁用，cloud、
+plugins、skills 等辅助服务的通用 auth provider 也不会生成该 key 的 Authorization
+header，app-server 的 legacy auth-status API 不会返回完整 key。交互式 API-key 输入页不会
+从 `OPENAI_API_KEY` 自动预填 WellAU profile，避免把真正的 OpenAI key 误存并发送给代理。
+独立的 image-generation、standalone web-search 与 WebSocket 通道同样禁用，确保专用 key
+只进入锁定的 WellAU Responses 请求路径。
 
 前缀必须准确写成小写 `wellau-`。常见误写 `wellua-`、大小写变体以及空账号后缀都会
 fail closed。

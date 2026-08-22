@@ -18,6 +18,8 @@ use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
 use codex_login::AuthManager;
+use codex_login::active_auth_profile_name;
+use codex_login::wellau_auth_profile_name;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
@@ -42,14 +44,26 @@ impl From<&Config> for WebSearchExtensionConfig {
         let web_search_mode = config.web_search_mode.value();
         Self {
             // Core selects this executor per turn using the feature flag or model metadata.
-            available: (config.model_provider.is_openai()
-                || config.model_provider.uses_openai_actor_authorization()
-                || config.model_provider.supports_standalone_web_search)
+            available: active_profile_allows_web_search()
+                && (config.model_provider.is_openai()
+                    || config.model_provider.uses_openai_actor_authorization()
+                    || config.model_provider.supports_standalone_web_search)
                 && web_search_mode != WebSearchMode::Disabled,
             provider: config.model_provider.clone(),
             settings: search_settings(config, web_search_mode),
         }
     }
+}
+
+fn web_search_allowed_for_auth_profile(auth_profile: Option<&str>) -> bool {
+    matches!(wellau_auth_profile_name(auth_profile), Ok(None))
+}
+
+fn active_profile_allows_web_search() -> bool {
+    let Ok(profile) = active_auth_profile_name() else {
+        return false;
+    };
+    web_search_allowed_for_auth_profile(profile.as_deref())
 }
 
 fn search_settings(config: &Config, web_search_mode: WebSearchMode) -> SearchSettings {
@@ -166,6 +180,7 @@ mod tests {
     use super::WebSearchExtensionConfig;
     use super::external_web_access_for_mode;
     use super::install;
+    use super::web_search_allowed_for_auth_profile;
     use crate::tool::RUN_TOOL_NAME;
     use crate::tool::WEB_NAMESPACE;
     use codex_api::ExternalWebAccess;
@@ -189,6 +204,16 @@ mod tests {
                 ExternalWebAccess::Boolean(true),
             ]
         );
+    }
+
+    #[test]
+    fn wellau_profiles_disable_standalone_web_search() {
+        assert!(web_search_allowed_for_auth_profile(None));
+        assert!(web_search_allowed_for_auth_profile(Some(
+            "ordinary-account"
+        )));
+        assert!(!web_search_allowed_for_auth_profile(Some("wellau-account")));
+        assert!(!web_search_allowed_for_auth_profile(Some("wellua-account")));
     }
 
     #[test]

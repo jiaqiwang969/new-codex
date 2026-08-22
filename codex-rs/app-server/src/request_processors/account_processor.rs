@@ -87,6 +87,32 @@ fn auth_status_may_read_token_for_profile(auth_profile: Option<&str>) -> bool {
     )
 }
 
+fn reject_wellau_amazon_bedrock_login(auth_profile: Option<&str>) -> Result<(), JSONRPCErrorError> {
+    match codex_login::wellau_auth_profile_name(auth_profile) {
+        Ok(None) => Ok(()),
+        Ok(Some(auth_profile)) => Err(invalid_request(format!(
+            "CODEX_AUTH_PROFILE={auth_profile} cannot use Amazon Bedrock login; WellAU credentials and provider configuration are isolated to the WellAU Responses endpoint"
+        ))),
+        Err(err) => Err(invalid_request(err.to_string())),
+    }
+}
+
+fn validate_login_account_params_for_auth_profile(
+    auth_profile: Option<&str>,
+    params: &LoginAccountParams,
+) -> Result<(), JSONRPCErrorError> {
+    let wellau_profile = codex_login::wellau_auth_profile_name(auth_profile)
+        .map_err(|err| invalid_request(err.to_string()))?;
+    if let Some(auth_profile) = wellau_profile
+        && !matches!(params, LoginAccountParams::ApiKey { .. })
+    {
+        return Err(invalid_request(format!(
+            "CODEX_AUTH_PROFILE={auth_profile} only supports API-key login; ChatGPT, device-code, external-token, and Amazon Bedrock login are disabled for WellAU proxy profiles"
+        )));
+    }
+    Ok(())
+}
+
 impl Drop for ActiveLogin {
     fn drop(&mut self) {
         self.cancel();
@@ -302,6 +328,9 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
         params: LoginAccountParams,
     ) -> Result<(), JSONRPCErrorError> {
+        let auth_profile = codex_login::active_auth_profile_name()
+            .map_err(|err| invalid_request(err.to_string()))?;
+        validate_login_account_params_for_auth_profile(auth_profile.as_deref(), &params)?;
         if self.auth_manager.is_workload_identity_selected() {
             return Err(self.configured_auth_owned_by_host_error());
         }
@@ -468,6 +497,9 @@ impl AccountRequestProcessor {
         region: String,
     ) {
         let result = async {
+            let auth_profile = codex_login::active_auth_profile_name()
+                .map_err(|err| invalid_request(err.to_string()))?;
+            reject_wellau_amazon_bedrock_login(auth_profile.as_deref())?;
             self.ensure_bedrock_login_allowed()?;
 
             match &credentials {
@@ -1529,6 +1561,59 @@ mod tests {
         assert!(auth_status_may_read_token_for_profile(Some(
             "ordinary-account"
         )));
+    }
+
+    #[test]
+    fn wellau_profile_rejects_amazon_bedrock_login_before_side_effects() {
+        let error = reject_wellau_amazon_bedrock_login(Some("wellau-account"))
+            .expect_err("WellAU profiles must not enter the Bedrock login path");
+        assert_eq!(
+            error.message,
+            "CODEX_AUTH_PROFILE=wellau-account cannot use Amazon Bedrock login; WellAU credentials and provider configuration are isolated to the WellAU Responses endpoint"
+        );
+        assert!(reject_wellau_amazon_bedrock_login(Some("ordinary-account")).is_ok());
+        assert!(reject_wellau_amazon_bedrock_login(None).is_ok());
+        assert!(reject_wellau_amazon_bedrock_login(Some("wellua-account")).is_err());
+    }
+
+    #[test]
+    fn wellau_app_server_login_policy_allows_only_api_keys() {
+        let api_key = LoginAccountParams::ApiKey {
+            api_key: "wellau-test-key".to_string(),
+        };
+        validate_login_account_params_for_auth_profile(Some("wellau-account"), &api_key)
+            .expect("WellAU API-key login should remain available");
+
+        let rejected = [
+            LoginAccountParams::Chatgpt {
+                codex_streamlined_login: false,
+                use_hosted_login_success_page: false,
+                app_brand: None,
+            },
+            LoginAccountParams::ChatgptDeviceCode,
+            LoginAccountParams::ChatgptAuthTokens {
+                access_token: "external-token".to_string(),
+                chatgpt_account_id: "workspace".to_string(),
+                chatgpt_plan_type: None,
+            },
+            LoginAccountParams::AmazonBedrock {
+                api_key: "bedrock-key".to_string(),
+                region: "us-west-2".to_string(),
+            },
+        ];
+        for params in &rejected {
+            validate_login_account_params_for_auth_profile(Some("wellau-account"), params)
+                .expect_err("non-API WellAU login must fail before side effects");
+        }
+
+        for params in rejected.iter().chain(std::iter::once(&api_key)) {
+            validate_login_account_params_for_auth_profile(Some("ordinary-account"), params)
+                .expect("ordinary auth profiles retain existing login behavior");
+        }
+        assert!(
+            validate_login_account_params_for_auth_profile(Some("wellua-account"), &api_key)
+                .is_err()
+        );
     }
 
     #[test]

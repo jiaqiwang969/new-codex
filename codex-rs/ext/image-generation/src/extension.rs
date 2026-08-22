@@ -12,6 +12,8 @@ use codex_extension_api::ToolCall;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolExecutor;
 use codex_login::AuthManager;
+use codex_login::active_auth_profile_name;
+use codex_login::wellau_auth_profile_name;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -38,13 +40,25 @@ impl ImageGenerationExtensionConfig {
     /// Resolves the image provider and save root for a thread.
     fn from_config(config: &Config, resolve_save_root: &SaveRootResolver) -> Self {
         Self {
-            available: config.model_provider.is_openai()
-                || config.model_provider.requires_openai_auth
-                || config.model_provider.uses_openai_actor_authorization(),
+            available: active_profile_allows_image_generation()
+                && (config.model_provider.is_openai()
+                    || config.model_provider.requires_openai_auth
+                    || config.model_provider.uses_openai_actor_authorization()),
             provider: config.model_provider.clone(),
             save_root: resolve_save_root(config),
         }
     }
+}
+
+fn image_generation_allowed_for_auth_profile(auth_profile: Option<&str>) -> bool {
+    matches!(wellau_auth_profile_name(auth_profile), Ok(None))
+}
+
+fn active_profile_allows_image_generation() -> bool {
+    let Ok(profile) = active_auth_profile_name() else {
+        return false;
+    };
+    image_generation_allowed_for_auth_profile(profile.as_deref())
 }
 
 impl ThreadLifecycleContributor<Config> for ImageGenerationExtension {
@@ -120,4 +134,23 @@ pub fn install(
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.tool_contributor(extension);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_generation_allowed_for_auth_profile;
+
+    #[test]
+    fn wellau_profiles_disable_standalone_image_generation() {
+        assert!(image_generation_allowed_for_auth_profile(None));
+        assert!(image_generation_allowed_for_auth_profile(Some(
+            "ordinary-account"
+        )));
+        assert!(!image_generation_allowed_for_auth_profile(Some(
+            "wellau-account"
+        )));
+        assert!(!image_generation_allowed_for_auth_profile(Some(
+            "wellua-account"
+        )));
+    }
 }

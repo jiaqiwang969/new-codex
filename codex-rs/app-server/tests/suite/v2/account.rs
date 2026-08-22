@@ -1265,6 +1265,94 @@ async fn login_amazon_bedrock_replaces_primary_auth_and_persists_provider(
 }
 
 #[tokio::test]
+async fn wellau_profile_rejects_non_api_logins_without_changing_auth_or_config() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let config_path = codex_home.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+model = "gpt-5.4"
+forced_login_method = "api"
+cli_auth_credentials_store = "file"
+model_provider = "wellau"
+disable_response_storage = true
+
+[model_providers.wellau]
+name = "WellAU"
+base_url = "https://api.wellau.com/v1"
+requires_openai_auth = true
+wire_api = "responses"
+supports_websockets = false
+"#,
+    )?;
+    let auth_path = codex_home.path().join("auth-wellau-account.json");
+    let existing_auth = AuthDotJson {
+        auth_mode: Some(DomainAuthMode::ApiKey),
+        openai_api_key: Some("existing-wellau-key".to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    };
+    std::fs::write(&auth_path, serde_json::to_vec_pretty(&existing_auth)?)?;
+    let expected_config = std::fs::read(&config_path)?;
+    let expected_auth = std::fs::read(&auth_path)?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[
+            ("CODEX_AUTH_PROFILE", Some("wellau-account")),
+            ("OPENAI_API_KEY", None),
+        ])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let request_id = mcp
+        .send_chatgpt_auth_tokens_login_request(
+            "external-token".to_string(),
+            "workspace".to_string(),
+            Some("pro".to_string()),
+        )
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(
+        error.error.message,
+        "CODEX_AUTH_PROFILE=wellau-account only supports API-key login; ChatGPT, device-code, external-token, and Amazon Bedrock login are disabled for WellAU proxy profiles"
+    );
+    assert_eq!(
+        read_account(&mut mcp).await?,
+        GetAccountResponse {
+            account: Some(Account::ApiKey {}),
+            requires_openai_auth: true,
+        }
+    );
+
+    let request_id = mcp
+        .send_login_account_amazon_bedrock_request("new-bedrock-key", "us-west-2")
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(
+        error.error.message,
+        "CODEX_AUTH_PROFILE=wellau-account only supports API-key login; ChatGPT, device-code, external-token, and Amazon Bedrock login are disabled for WellAU proxy profiles"
+    );
+    assert_eq!(std::fs::read(&config_path)?, expected_config);
+    assert_eq!(std::fs::read(&auth_path)?, expected_auth);
+    assert!(!codex_home.path().join("auth.json").exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn login_amazon_bedrock_rejects_non_bedrock_provider_override_without_changes() -> Result<()>
 {
     let codex_home = TempDir::new()?;

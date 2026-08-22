@@ -2,10 +2,13 @@ use super::AnalyticsEventsClient;
 use super::AnalyticsEventsDestination;
 use super::AnalyticsEventsQueue;
 use super::AnalyticsEventsQueueMessage;
+use super::analytics_events_allowed_for_profile;
 #[cfg(debug_assertions)]
 use super::capture_track_events_request;
 #[cfg(debug_assertions)]
 use super::send_track_events;
+#[cfg(debug_assertions)]
+use super::send_track_events_for_profile;
 #[cfg(debug_assertions)]
 use super::send_track_events_request;
 use super::track_event_request_batches;
@@ -332,6 +335,49 @@ fn analytics_destination_uses_http_without_capture_file() {
             url: "https://chatgpt.com/backend-api/codex/analytics-events/events".to_string()
         }
     );
+}
+
+#[test]
+fn wellau_profiles_disable_analytics_and_reserved_prefix_typos_fail_closed() {
+    assert!(analytics_events_allowed_for_profile(None));
+    assert!(analytics_events_allowed_for_profile(Some(
+        "ordinary-account"
+    )));
+    assert!(!analytics_events_allowed_for_profile(Some(
+        "wellau-account"
+    )));
+    assert!(!analytics_events_allowed_for_profile(Some("wellau-")));
+    assert!(!analytics_events_allowed_for_profile(Some(
+        "WellAU-account"
+    )));
+    assert!(!analytics_events_allowed_for_profile(Some(
+        "wellua-account"
+    )));
+}
+
+#[tokio::test]
+#[cfg(debug_assertions)]
+async fn wellau_profile_does_not_write_or_send_analytics_events() {
+    let capture_path = unique_capture_path("wellau-disabled");
+    let destination = AnalyticsEventsDestination::CaptureFile {
+        path: capture_path.clone(),
+    };
+    let auth_manager = codex_login::AuthManager::from_auth_for_testing(
+        codex_login::CodexAuth::from_api_key("sk-wellau-test"),
+    );
+
+    send_track_events_for_profile(
+        &auth_manager,
+        &destination,
+        vec![sample_skill_track_event(
+            "wellau-thread",
+            Some("sample@test"),
+        )],
+        Some("wellau-account"),
+    )
+    .await;
+
+    assert!(!capture_path.exists());
 }
 
 #[test]

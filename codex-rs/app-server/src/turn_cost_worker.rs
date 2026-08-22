@@ -5,6 +5,9 @@ use codex_backend_client::RequestError;
 use codex_config::types::OtelExporterKind;
 use codex_core::config::Config;
 use codex_login::AuthManager;
+use codex_login::CodexAuth;
+use codex_login::active_auth_profile_name;
+use codex_login::wellau_auth_profile_name;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_otel::SessionTelemetry;
@@ -95,6 +98,18 @@ enum BackendAvailability {
 
 impl TurnCostWorker {
     pub(crate) fn spawn(config: Arc<Config>, auth_manager: Arc<AuthManager>) -> Option<Self> {
+        let profile = active_auth_profile_name().ok()?;
+        Self::spawn_for_profile(config, auth_manager, profile.as_deref())
+    }
+
+    fn spawn_for_profile(
+        config: Arc<Config>,
+        auth_manager: Arc<AuthManager>,
+        auth_profile: Option<&str>,
+    ) -> Option<Self> {
+        if !turn_cost_worker_allowed_for_profile(auth_profile) {
+            return None;
+        }
         let has_otel_log_exporter = matches!(
             config.otel.exporter,
             OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. }
@@ -146,6 +161,10 @@ impl TurnCostWorker {
     pub(crate) fn shutdown(&self) {
         self.shutdown.cancel();
     }
+}
+
+fn turn_cost_worker_allowed_for_profile(auth_profile: Option<&str>) -> bool {
+    matches!(wellau_auth_profile_name(auth_profile), Ok(None))
 }
 
 impl Drop for TurnCostWorker {
