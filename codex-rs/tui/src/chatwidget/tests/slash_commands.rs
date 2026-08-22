@@ -878,7 +878,7 @@ async fn ralph_loop_retries_after_error_without_delay() {
     handle_turn_started(&mut chat, "turn-1");
     let _ = drain_insert_history(&mut rx);
 
-    chat.on_error("boom".to_string());
+    handle_error(&mut chat, "boom", /*codex_error_info*/ None);
 
     assert_eq!(next_submitted_text(&mut op_rx), "Retry me");
     assert_eq!(
@@ -1098,6 +1098,43 @@ async fn delayed_ralph_loop_retry_is_ignored_after_cancel() {
 }
 
 #[tokio::test]
+async fn delayed_ralph_loop_retry_is_scoped_to_thread_instance_and_generation() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let owning_thread_id = ThreadId::new();
+    chat.thread_id = Some(owning_thread_id);
+
+    submit_composer_text(&mut chat, "/ralph-loop \"Scoped retry\" -n 3 -d 30");
+    assert_eq!(next_submitted_text(&mut op_rx), "Scoped retry");
+    let _ = drain_insert_history(&mut rx);
+
+    let (target, instance_id, generation) = {
+        let loop_state = chat
+            .ralph_loop_state
+            .as_mut()
+            .expect("ralph loop should be active");
+        loop_state.next_iteration();
+        (
+            loop_state.target().clone(),
+            loop_state.instance_id().to_string(),
+            loop_state.schedule_retry(),
+        )
+    };
+    chat.input_queue.user_turn_pending_start = false;
+
+    chat.thread_id = Some(ThreadId::new());
+    chat.handle_ralph_loop_delayed_continue(target.clone(), &instance_id, generation);
+    assert_no_submit_op(&mut op_rx);
+
+    chat.thread_id = Some(owning_thread_id);
+    chat.handle_ralph_loop_delayed_continue(target.clone(), "stale-instance", generation);
+    chat.handle_ralph_loop_delayed_continue(target.clone(), &instance_id, generation + 1);
+    assert_no_submit_op(&mut op_rx);
+
+    chat.handle_ralph_loop_delayed_continue(target, &instance_id, generation);
+    assert_eq!(next_submitted_text(&mut op_rx), "Scoped retry");
+}
+
+#[tokio::test]
 async fn due_ralph_loop_retry_resumes_after_thread_restore() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -1118,10 +1155,20 @@ async fn due_ralph_loop_retry_resumes_after_thread_restore() {
 
     let input_state = chat.capture_thread_input_state();
     let expected_state = chat.ralph_loop_state.clone();
-    chat.restore_thread_input_state(/*input_state*/ None);
+    chat.restore_thread_input_state(
+        /*input_state*/ None,
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
     assert_eq!(chat.ralph_loop_state, None);
 
-    chat.restore_thread_input_state(input_state);
+    chat.restore_thread_input_state(
+        input_state,
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
     assert_eq!(chat.ralph_loop_state, expected_state);
 
     chat.maybe_resume_pending_ralph_loop_retry_if_due();
