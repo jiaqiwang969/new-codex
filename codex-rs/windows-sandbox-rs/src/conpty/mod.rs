@@ -26,6 +26,9 @@ use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::System::Console::COORD;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
 use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
@@ -34,6 +37,29 @@ use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
 use windows_sys::Win32::System::Threading::STARTUPINFOEXW;
 
 use crate::process::make_env_block;
+
+/// Resize a ConPTY when the host OS exposes the API.
+///
+/// `ResizePseudoConsole` was added in Windows 10. Loading it dynamically keeps
+/// the entire executable loadable on older Windows releases, where the normal
+/// non-ConPTY pipe backend is used instead.
+pub fn resize_pseudo_console(hpc: HANDLE, size: COORD) -> i32 {
+    type ResizePseudoConsoleFn = unsafe extern "system" fn(HANDLE, COORD) -> i32;
+    const E_NOTIMPL: i32 = 0x8000_4001_u32 as i32;
+
+    let module = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
+    if module == 0 {
+        return E_NOTIMPL;
+    }
+
+    let Some(symbol) = (unsafe { GetProcAddress(module, c"ResizePseudoConsole".as_ptr().cast()) })
+    else {
+        return E_NOTIMPL;
+    };
+
+    let resize: ResizePseudoConsoleFn = unsafe { std::mem::transmute(symbol) };
+    unsafe { resize(hpc, size) }
+}
 
 /// Owns a ConPTY handle and its backing pipe handles.
 pub struct ConptyInstance {

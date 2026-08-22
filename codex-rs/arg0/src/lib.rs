@@ -500,9 +500,17 @@ fn janitor_cleanup(temp_root: &Path) -> std::io::Result<()> {
         }
 
         // Skip the directory if locking fails or the lock is currently held.
-        let Some(_lock_file) = try_lock_dir(&path)? else {
+        let Some(lock_file) = try_lock_dir(&path)? else {
             continue;
         };
+
+        // Windows cannot reliably remove the directory while the lock file is
+        // still open. A successfully acquired lock proves this is not a live
+        // session directory, so release the handle before deleting it.
+        #[cfg(windows)]
+        drop(lock_file);
+        #[cfg(not(windows))]
+        let _lock_file = lock_file;
 
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {}

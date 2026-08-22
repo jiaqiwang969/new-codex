@@ -11,6 +11,7 @@ use crate::process::StdinMode;
 use crate::process::read_handle_loop;
 use crate::process::spawn_process_with_pipes;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+use crate::resize_pseudo_console;
 use crate::spawn_prep::LegacyAclSids;
 use crate::spawn_prep::LegacySessionSecurity;
 use crate::spawn_prep::SpawnPrepOptions;
@@ -41,7 +42,6 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::Console::COORD;
-use windows_sys::Win32::System::Console::ResizePseudoConsole;
 use windows_sys::Win32::System::Threading::GetExitCodeProcess;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
@@ -293,15 +293,13 @@ fn resize_conpty_handle(hpc: &Arc<StdMutex<Option<HANDLE>>>, size: TerminalSize)
         .as_ref()
         .copied()
         .ok_or_else(|| anyhow::anyhow!("process is not attached to a PTY"))?;
-    let result = unsafe {
-        ResizePseudoConsole(
-            hpc,
-            COORD {
-                X: size.cols as i16,
-                Y: size.rows as i16,
-            },
-        )
-    };
+    let result = resize_pseudo_console(
+        hpc,
+        COORD {
+            X: size.cols as i16,
+            Y: size.rows as i16,
+        },
+    );
     if result == 0 {
         Ok(())
     } else {
