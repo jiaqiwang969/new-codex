@@ -22,5 +22,5 @@ pub use bedrock_api_key::login_with_bedrock_api_key;
 pub use error::RefreshTokenFailedError;
 pub use error::RefreshTokenFailedReason;
 pub use manager::*;
-pub use workload_identity::is_workload_identity_selected;
 pub use storage::active_auth_file;
+pub use workload_identity::is_workload_identity_selected;
