@@ -42,8 +42,9 @@
           codex-rs = pkgs.callPackage ./codex-rs {
             inherit version;
             rustPlatform = pkgs.makeRustPlatform {
-              cargo = pkgs.rust-bin.stable.latest.minimal;
-              rustc = pkgs.rust-bin.stable.latest.minimal;
+              # Keep the Nix package on the same MSRV pin as rust-toolchain.toml.
+              cargo = pkgs.rust-bin.stable."1.95.0".minimal;
+              rustc = pkgs.rust-bin.stable."1.95.0".minimal;
             };
           };
         in
@@ -59,7 +60,7 @@
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };
-          rust = pkgs.rust-bin.stable.latest.default.override {
+          rust = pkgs.rust-bin.stable."1.95.0".default.override {
             extensions = [ "rust-src" "rust-analyzer" ];
           };
         in
