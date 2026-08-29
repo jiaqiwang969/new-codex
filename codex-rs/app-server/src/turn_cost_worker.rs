@@ -5,7 +5,6 @@ use codex_backend_client::RequestError;
 use codex_config::types::OtelExporterKind;
 use codex_core::config::Config;
 use codex_login::AuthManager;
-use codex_login::CodexAuth;
 use codex_login::active_auth_profile_name;
 use codex_login::wellau_auth_profile_name;
 use codex_model_provider::SharedModelProvider;
