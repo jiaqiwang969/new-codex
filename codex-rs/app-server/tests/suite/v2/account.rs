@@ -1294,6 +1294,7 @@ supports_websockets = false
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     };
     std::fs::write(&auth_path, serde_json::to_vec_pretty(&existing_auth)?)?;
     let expected_config = std::fs::read(&config_path)?;
