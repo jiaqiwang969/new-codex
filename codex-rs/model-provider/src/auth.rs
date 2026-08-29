@@ -451,6 +451,7 @@ mod tests {
     use codex_protocol::account::PlanType;
     use codex_protocol::config_types::ModelProviderAuthInfo;
     use codex_protocol::error::CodexErrorDetails;
+    use codex_utils_redacted_string::RedactedString;
     use http::header::AUTHORIZATION;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -778,7 +779,7 @@ mod tests {
         let mut authorization_header = wellau_provider();
         authorization_header.http_headers = Some(HashMap::from([(
             "Authorization".to_string(),
-            "Bearer override".to_string(),
+            RedactedString::from("Bearer override"),
         )]));
         assert!(
             validate_wellau_provider_auth_for_profile(
@@ -792,7 +793,7 @@ mod tests {
         let mut custom_header = wellau_provider();
         custom_header.http_headers = Some(HashMap::from([(
             "X-Custom-Route".to_string(),
-            "override".to_string(),
+            RedactedString::from("override"),
         )]));
         assert!(
             validate_wellau_provider_auth_for_profile(
@@ -820,7 +821,7 @@ mod tests {
         let mut query_override = wellau_provider();
         query_override.query_params = Some(HashMap::from([(
             "route".to_string(),
-            "alternate".to_string(),
+            RedactedString::from("alternate"),
         )]));
         assert!(
             validate_wellau_provider_auth_for_profile(

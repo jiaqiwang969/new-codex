@@ -923,6 +923,7 @@ fn wellau_storage_policy_accepts_only_api_keys_for_every_backend() -> anyhow::Re
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     };
     let chatgpt_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
@@ -932,6 +933,7 @@ fn wellau_storage_policy_accepts_only_api_keys_for_every_backend() -> anyhow::Re
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     };
 
     for (mode, keyring_backend_kind) in cases {
@@ -971,6 +973,7 @@ fn wellau_storage_rejects_wrong_existing_file_but_allows_delete() -> anyhow::Res
             agent_identity: None,
             personal_access_token: None,
             bedrock_api_key: None,
+            bedrock_access_keys: None,
         })?,
     )?;
     let storage = create_auth_storage_with_store_and_identity(
@@ -1006,6 +1009,7 @@ fn ordinary_named_profile_keeps_existing_auth_mode_behavior() -> anyhow::Result<
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     };
     storage.save(&auth)?;
     assert_eq!(storage.load()?, Some(auth));
